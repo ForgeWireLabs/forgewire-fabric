@@ -1,0 +1,334 @@
+"""Service installers for ForgeWire hub + runner.
+
+Cross-platform install/uninstall helpers for the hub and runner. On Windows
+this drives the bundled NSSM ``ps1`` scripts (NSSM must be on PATH). On Linux
+it installs a systemd unit via ``systemctl``. On macOS it installs a launchd
+plist into ``/Library/LaunchDaemons``.
+
+These helpers are idempotent. The ``uninstall`` operation stops + removes the
+service/unit but never touches ``~/.forgewire/`` config or DB files.
+"""
+
+from __future__ import annotations
+
+import os
+import secrets
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+
+def _asset(*relparts: str) -> Path:
+    """Return a filesystem path to a bundled installer asset.
+
+    Assets are shipped inside the wheel under
+    ``forgewire/_installer_assets/``. For source checkouts we also fall back
+    to the top-level ``scripts/install/`` tree.
+    """
+    here = Path(__file__).resolve().parent  # python/forgewire/
+    bundled = here / "_installer_assets" / Path(*relparts)
+    if bundled.exists():
+        return bundled
+    repo = here.parent.parent / "scripts" / "install" / Path(*relparts)
+    if repo.exists():
+        return repo
+    raise FileNotFoundError(
+        f"Installer asset not found in either {bundled} or {repo}."
+    )
+
+
+def _require_root_unix() -> None:
+    if hasattr(os, "geteuid") and os.geteuid() != 0:  # type: ignore[attr-defined]
+        raise SystemExit("This command must be run as root (try sudo).")
+
+
+def _python_exe() -> str:
+    return sys.executable
+
+
+def _new_token() -> str:
+    return secrets.token_hex(16)
+
+
+def _powershell_env() -> dict[str, str]:
+    """Return an env dict suitable for invoking powershell.exe.
+
+    Strips ``PSModulePath`` so a caller's mangled module path (e.g. from a
+    venv ``Activate.ps1``) cannot prevent ``Microsoft.PowerShell.Security``
+    from loading inside the installer script.
+    """
+    env = os.environ.copy()
+    env.pop("PSModulePath", None)
+    return env
+
+
+# ---------------------------------------------------------------------------
+# Windows (NSSM)
+# ---------------------------------------------------------------------------
+
+
+def _windows_install_hub(*, port: int, host: str, token: str | None) -> None:
+    if shutil.which("nssm.exe") is None:
+        raise SystemExit(
+            "NSSM not found on PATH. Install with 'winget install nssm.nssm' "
+            "or download from https://nssm.cc/."
+        )
+    script = _asset("nssm-install-hub.ps1")
+    cmd = [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script),
+        "-PythonExe",
+        _python_exe(),
+        "-Token",
+        token or _new_token(),
+        "-Port",
+        str(port),
+        "-BindHost",
+        host,
+    ]
+    subprocess.run(cmd, check=True, env=_powershell_env())
+
+
+def _windows_install_runner(
+    *,
+    hub_url: str,
+    hub_token: str,
+    workspace_root: str,
+    hub_ssh_host: str | None = None,
+    hub_ssh_user: str | None = None,
+    hub_ssh_key_file: str | None = None,
+    hub_service_name: str = "ForgeWireHub",
+    hub_healthz_url: str | None = None,
+    no_hub_watchdog: bool = False,
+) -> None:
+    if shutil.which("nssm.exe") is None:
+        raise SystemExit("NSSM not found on PATH.")
+    script = _asset("nssm-install-runner.ps1")
+    cmd = [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script),
+        "-PythonExe",
+        _python_exe(),
+        "-HubUrl",
+        hub_url,
+        "-Token",
+        hub_token,
+        "-WorkspaceRoot",
+        workspace_root,
+    ]
+    if hub_ssh_host:
+        cmd += ["-HubSshHost", hub_ssh_host]
+    if hub_ssh_user:
+        cmd += ["-HubSshUser", hub_ssh_user]
+    if hub_ssh_key_file:
+        cmd += ["-HubSshKeyFile", hub_ssh_key_file]
+    if hub_service_name and hub_service_name != "ForgeWireHub":
+        cmd += ["-HubServiceName", hub_service_name]
+    if hub_healthz_url:
+        cmd += ["-HubHealthzUrl", hub_healthz_url]
+    if no_hub_watchdog:
+        cmd += ["-NoHubWatchdog"]
+    subprocess.run(cmd, check=True, env=_powershell_env())
+
+
+def _windows_uninstall(service: str) -> None:
+    if shutil.which("nssm.exe") is None:
+        raise SystemExit("NSSM not found on PATH.")
+    subprocess.run(["nssm.exe", "stop", service], check=False)
+    subprocess.run(["nssm.exe", "remove", service, "confirm"], check=False)
+
+
+# ---------------------------------------------------------------------------
+# Linux (systemd)
+# ---------------------------------------------------------------------------
+
+
+def _linux_install_unit(unit_name: str, asset_name: str) -> None:
+    _require_root_unix()
+    src = _asset("systemd", asset_name)
+    dst = Path(f"/etc/systemd/system/{unit_name}")
+    dst.write_bytes(src.read_bytes())
+    subprocess.run(["systemctl", "daemon-reload"], check=True)
+    subprocess.run(["systemctl", "enable", unit_name], check=True)
+    subprocess.run(["systemctl", "start", unit_name], check=True)
+    print(f"Installed {dst}; started {unit_name}.")
+
+
+def _linux_uninstall_unit(unit_name: str) -> None:
+    _require_root_unix()
+    subprocess.run(["systemctl", "stop", unit_name], check=False)
+    subprocess.run(["systemctl", "disable", unit_name], check=False)
+    p = Path(f"/etc/systemd/system/{unit_name}")
+    if p.exists():
+        p.unlink()
+    subprocess.run(["systemctl", "daemon-reload"], check=False)
+
+
+# ---------------------------------------------------------------------------
+# macOS (launchd)
+# ---------------------------------------------------------------------------
+
+
+def _macos_install_plist(plist_name: str) -> None:
+    _require_root_unix()
+    src = _asset("launchd", plist_name)
+    dst = Path(f"/Library/LaunchDaemons/{plist_name}")
+    dst.write_bytes(src.read_bytes())
+    os.chmod(dst, 0o644)
+    subprocess.run(["launchctl", "load", "-w", str(dst)], check=True)
+    print(f"Installed {dst}; loaded via launchctl.")
+
+
+def _macos_uninstall_plist(plist_name: str) -> None:
+    _require_root_unix()
+    p = Path(f"/Library/LaunchDaemons/{plist_name}")
+    if p.exists():
+        subprocess.run(["launchctl", "unload", str(p)], check=False)
+        p.unlink()
+
+
+# ---------------------------------------------------------------------------
+# public dispatchers
+# ---------------------------------------------------------------------------
+
+
+def install_hub(*, port: int, host: str, token: str | None) -> None:
+    if sys.platform.startswith("win"):
+        _windows_install_hub(port=port, host=host, token=token)
+    elif sys.platform.startswith("linux"):
+        _linux_install_unit("forgewire-hub.service", "forgewire-hub.service")
+    elif sys.platform == "darwin":
+        _macos_install_plist("com.forgewire_fabric.hub.plist")
+    else:
+        raise SystemExit(f"Unsupported platform: {sys.platform}")
+
+
+def uninstall_hub() -> None:
+    if sys.platform.startswith("win"):
+        _windows_uninstall("ForgeWireHub")
+    elif sys.platform.startswith("linux"):
+        _linux_uninstall_unit("forgewire-hub.service")
+    elif sys.platform == "darwin":
+        _macos_uninstall_plist("com.forgewire_fabric.hub.plist")
+    else:
+        raise SystemExit(f"Unsupported platform: {sys.platform}")
+
+
+def install_runner(
+    *,
+    hub_url: str,
+    hub_token: str,
+    workspace_root: str,
+    tags: str | None = None,
+    scope_prefixes: str | None = None,
+    tenant: str | None = None,
+    max_concurrent: int | None = None,
+    poll_interval: float | None = None,
+    hub_ssh_host: str | None = None,
+    hub_ssh_user: str | None = None,
+    hub_ssh_key_file: str | None = None,
+    hub_service_name: str = "ForgeWireHub",
+    hub_healthz_url: str | None = None,
+    no_hub_watchdog: bool = False,
+) -> None:
+    # Bootstrap the machine-wide identity directory before the service
+    # starts so the runner — regardless of the OS account it runs under —
+    # always resolves the same identity file on this host. This is what
+    # prevents an upgrade or service-account change from minting a new
+    # runner_id.
+    #
+    # We also seed the runner-config sidecar with the operator's install-
+    # time intent (workspace_root + tags + scope_prefixes + tenant +
+    # concurrency + poll interval). The sidecar is read as a fallback by
+    # ``RunnerConfig.from_env`` so a future service reinstall that omits
+    # one of the env vars cannot silently downgrade the runner's routing
+    # capabilities. Operators can override on the command line; env vars
+    # still win.
+    from forgewire_fabric.runner.identity import (
+        ensure_identity_dir,
+        save_runner_config_overrides,
+    )
+
+    ensure_identity_dir()
+    sidecar: dict[str, object] = {"workspace_root": workspace_root}
+    if tags is not None:
+        sidecar["tags"] = tags
+    if scope_prefixes is not None:
+        sidecar["scope_prefixes"] = scope_prefixes
+    if tenant is not None:
+        sidecar["tenant"] = tenant
+    if max_concurrent is not None:
+        sidecar["max_concurrent"] = max_concurrent
+    if poll_interval is not None:
+        sidecar["poll_interval_seconds"] = poll_interval
+    save_runner_config_overrides(sidecar)
+    if sys.platform.startswith("win"):
+        _windows_install_runner(
+            hub_url=hub_url,
+            hub_token=hub_token,
+            workspace_root=workspace_root,
+            hub_ssh_host=hub_ssh_host,
+            hub_ssh_user=hub_ssh_user,
+            hub_ssh_key_file=hub_ssh_key_file,
+            hub_service_name=hub_service_name,
+            hub_healthz_url=hub_healthz_url,
+            no_hub_watchdog=no_hub_watchdog,
+        )
+    elif sys.platform.startswith("linux"):
+        _linux_install_unit("forgewire-runner.service", "forgewire-runner.service")
+    elif sys.platform == "darwin":
+        _macos_install_plist("com.forgewire_fabric.runner.plist")
+    else:
+        raise SystemExit(f"Unsupported platform: {sys.platform}")
+
+
+def uninstall_runner() -> None:
+    if sys.platform.startswith("win"):
+        _windows_uninstall("ForgeWireRunner")
+    elif sys.platform.startswith("linux"):
+        _linux_uninstall_unit("forgewire-runner.service")
+    elif sys.platform == "darwin":
+        _macos_uninstall_plist("com.forgewire_fabric.runner.plist")
+    else:
+        raise SystemExit(f"Unsupported platform: {sys.platform}")
+
+
+def grant_service_control(services: list[str], account: str | None = None) -> None:
+    """Grant ``account`` start/stop/pause rights on each named Windows service.
+
+    Lets the invoking user bounce ForgeWire services from a normal,
+    non-elevated shell after a one-time UAC consent. Per-service ACL only;
+    no system-wide UAC change. No-op on non-Windows platforms.
+    """
+    if not sys.platform.startswith("win"):
+        return
+    if not services:
+        return
+    script = _asset("grant-service-control.ps1")
+    cmd = [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script),
+        "-Services",
+        ",".join(services),
+    ]
+    if account:
+        cmd += ["-Account", account]
+    subprocess.run(cmd, check=True, env=_powershell_env())
