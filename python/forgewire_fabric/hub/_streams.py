@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import os
 import threading
+
+from forgewire_fabric.runtime_validation import validate_runtime_mapping
 from typing import Protocol
 
 __all__ = ["HAS_RUST", "StreamCounter", "make_counter"]
@@ -37,9 +39,15 @@ if not _force_python():
     try:
         import forgewire_runtime as _rust  # type: ignore[import-not-found]
 
-        _use_rust = bool(getattr(_rust, "HAS_RUST", False)) and hasattr(
-            _rust, "StreamCounter"
+        _has_rust = bool(getattr(_rust, "HAS_RUST", False))
+        _missing_symbols = [name for name in ("StreamCounter",) if not hasattr(_rust, name)]
+        validate_runtime_mapping(
+            component="hub.stream_counter",
+            has_rust_flag=_has_rust,
+            missing_symbols=_missing_symbols,
+            force_python=False,
         )
+        _use_rust = _has_rust and not _missing_symbols
     except ImportError:
         _use_rust = False
 

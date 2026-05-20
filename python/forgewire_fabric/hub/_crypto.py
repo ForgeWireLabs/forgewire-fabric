@@ -16,6 +16,8 @@ import os
 from typing import Any
 from collections.abc import Mapping
 
+from forgewire_fabric.runtime_validation import validate_runtime_mapping
+
 __all__ = [
     "HAS_RUST",
     "canonicalize",
@@ -40,7 +42,19 @@ if not _force_python():
     try:
         import forgewire_runtime as _rust  # type: ignore[import-not-found]
 
-        _use_rust = bool(getattr(_rust, "HAS_RUST", False))
+        _has_rust = bool(getattr(_rust, "HAS_RUST", False))
+        _missing_symbols = [
+            name
+            for name in ("canonicalize", "verify_signature", "sign_payload", "verify_envelope", "sign_envelope")
+            if not hasattr(_rust, name)
+        ]
+        validate_runtime_mapping(
+            component="hub.crypto",
+            has_rust_flag=_has_rust,
+            missing_symbols=_missing_symbols,
+            force_python=False,
+        )
+        _use_rust = _has_rust and not _missing_symbols
     except ImportError:
         _use_rust = False
 
