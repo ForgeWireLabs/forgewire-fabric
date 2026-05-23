@@ -9,9 +9,13 @@ Locked numbers are recorded in ``forgewire-runtime/PERFORMANCE.md``.
 
 from __future__ import annotations
 
+import argparse
 import random
 import time
+from pathlib import Path
 from statistics import median
+
+from forgewire_fabric.parity_variance import compute_variance_stats, evaluate_variance_gate, persist_variance_report
 
 from forgewire_fabric.hub._router import _py_pick_task
 
@@ -73,7 +77,39 @@ def _bench(label: str, fn, iterations: int) -> float:
     return m
 
 
+def _run_seeded_repeats(*, scenario: str, backend: str, n_tasks: int, seeds: list[int], use_rust: bool) -> dict:
+    latencies: list[float] = []
+    picks: list[int | None] = []
+    for seed in seeds:
+        tasks, runner = _make_corpus(n_tasks, seed=seed)
+        if scenario == "full_scan_no_match":
+            runner = dict(runner, tenant="zzz_unknown")
+            for t in tasks:
+                t["tenant"] = "alpha"
+        t0 = time.perf_counter()
+        pick_idx, _ = (_rust.pick_task(tasks, runner) if use_rust else _py_pick_task(tasks, runner))
+        latencies.append(time.perf_counter() - t0)
+        picks.append(pick_idx)
+
+    stats = compute_variance_stats(latencies, picks)
+    ok, reasons = evaluate_variance_gate(scenario=scenario, backend=backend, stats=stats)
+    return {
+        "scenario": scenario,
+        "backend": backend,
+        "seeds": seeds,
+        "parity_fields": ["scope_globs", "required_tools", "required_tags", "tenant", "workspace_root", "require_base_commit", "base_commit"],
+        "stats": stats,
+        "gate": {"ok": ok, "reasons": reasons},
+    }
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--seed-start", type=int, default=100)
+    parser.add_argument("--seed-count", type=int, default=12)
+    parser.add_argument("--report", type=Path, default=Path("artifacts/claim-router-variance.json"))
+    args = parser.parse_args()
+
     print(f"forgewire_runtime HAS_RUST = {HAS_RUST}\n")
     print("=== Match in middle (typical case) ===")
     for n in (5, 25, 50):
@@ -97,6 +133,23 @@ def main() -> None:
         if HAS_RUST:
             rust_t = _bench("rust ", lambda: _rust.pick_task(tasks, runner_no), 20_000)
             print(f"  speedup            = {py_t / rust_t:6.2f}x")
+
+    seeds = [args.seed_start + i for i in range(args.seed_count)]
+    reports = []
+    reports.append(_run_seeded_repeats(scenario="match_middle", backend="sqlite", n_tasks=25, seeds=seeds, use_rust=False))
+    reports.append(_run_seeded_repeats(scenario="full_scan_no_match", backend="sqlite", n_tasks=25, seeds=seeds, use_rust=False))
+    if HAS_RUST:
+        reports.append(_run_seeded_repeats(scenario="match_middle", backend="rqlite", n_tasks=25, seeds=seeds, use_rust=True))
+        reports.append(_run_seeded_repeats(scenario="full_scan_no_match", backend="rqlite", n_tasks=25, seeds=seeds, use_rust=True))
+
+    for r in reports:
+        print(f"variance {r['scenario']}/{r['backend']}: cv={r['stats']['latency_cv']:.4f}, flip={r['stats']['selection_flip_rate']:.4f}, gate={r['gate']['ok']}")
+        for reason in r["gate"]["reasons"]:
+            print(f"  - {reason}")
+
+    persist_variance_report(args.report, {"reports": reports})
+    if not all(r["gate"]["ok"] for r in reports):
+        raise SystemExit("variance gate failed; see remediation hints above")
 
 
 if __name__ == "__main__":
