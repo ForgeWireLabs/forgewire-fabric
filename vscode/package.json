@@ -47,11 +47,23 @@
           "default": [],
           "items": {
             "type": "object",
-            "required": ["url"],
+            "required": [
+              "url"
+            ],
             "properties": {
-              "url": { "type": "string", "description": "Candidate hub URL." },
-              "label": { "type": "string", "description": "Friendly label for the sidebar." },
-              "priority": { "type": "number", "default": 100, "description": "Lower = preferred. Probed in ascending order." }
+              "url": {
+                "type": "string",
+                "description": "Candidate hub URL."
+              },
+              "label": {
+                "type": "string",
+                "description": "Friendly label for the sidebar."
+              },
+              "priority": {
+                "type": "number",
+                "default": 100,
+                "description": "Lower = preferred. Probed in ascending order."
+              }
             }
           },
           "markdownDescription": "Ordered list of hub candidates for failover. The extension probes each candidate in priority order and uses the first reachable one as the active hub. Example:\n```\n[\n  { \"url\": \"http://10.120.81.95:8765\", \"label\": \"OptiPlex (always-on)\", \"priority\": 1 },\n  { \"url\": \"http://10.120.81.50:8765\", \"label\": \"Dell\", \"priority\": 2 }\n]\n```"
@@ -69,13 +81,15 @@
         "forgewireFabric.runnerAliases": {
           "type": "object",
           "default": {},
-          "additionalProperties": { "type": "string" },
+          "additionalProperties": {
+            "type": "string"
+          },
           "description": "Map of runner_id -> friendly alias. Used as the runner label in the sidebar."
         },
         "forgewireFabric.hubToken": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Bearer token for the hub. **Treat as a secret** \u2014 prefer SecretStorage via the *ForgeWire: Set Hub Token* command."
+          "markdownDescription": "Bearer token for the hub. **Treat as a secret** — prefer SecretStorage via the *ForgeWire: Set Hub Token* command."
         },
         "forgewireFabric.hubTokenFile": {
           "type": "string",
@@ -145,7 +159,10 @@
         },
         "forgewireFabric.dr.chaos.principal": {
           "type": "string",
-          "enum": ["SYSTEM", "user"],
+          "enum": [
+            "SYSTEM",
+            "user"
+          ],
           "default": "SYSTEM",
           "markdownDescription": "Windows principal the chaos scheduled task runs as. **SYSTEM** is recommended (no UAC prompts, full service-control rights). Choose **user** only if you cannot provision SSH keys for SYSTEM and need the task to inherit your user's `%USERPROFILE%\\.ssh` for cross-host drills."
         },
@@ -164,13 +181,13 @@
       },
       {
         "command": "forgewireFabric.connectHub",
-        "title": "Connect to Hub\u2026",
+        "title": "Connect to Hub…",
         "category": "ForgeWire Fabric",
         "icon": "$(plug)"
       },
       {
         "command": "forgewireFabric.setToken",
-        "title": "Set Hub Token\u2026",
+        "title": "Set Hub Token…",
         "category": "ForgeWire Fabric"
       },
       {
@@ -180,17 +197,17 @@
       },
       {
         "command": "forgewireFabric.startHubHere",
-        "title": "Start Hub Here\u2026",
+        "title": "Start Hub Here…",
         "category": "ForgeWire Fabric"
       },
       {
         "command": "forgewireFabric.startRunnerHere",
-        "title": "Start Runner Here\u2026",
+        "title": "Start Runner Here…",
         "category": "ForgeWire Fabric"
       },
       {
         "command": "forgewireFabric.dispatchTask",
-        "title": "Dispatch Task\u2026",
+        "title": "Dispatch Task…",
         "category": "ForgeWire Fabric",
         "icon": "$(rocket)"
       },
@@ -399,7 +416,7 @@
       ]
     },
     "views": {
-    "forgewireFabric": [
+      "forgewireFabric": [
         {
           "id": "forgewireFabric.hub",
           "name": "Hub",
@@ -687,7 +704,10 @@
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
-    "typescript": "^5.4.0",
-    "@vscode/vsce": "^2.32.0"
+    "@vscode/vsce": "^2.32.0",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "qs": "^6.15.2"
   }
 }
