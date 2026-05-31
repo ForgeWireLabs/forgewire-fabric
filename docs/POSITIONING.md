@@ -16,6 +16,16 @@ A standalone remote dispatch/control-plane layer that ships:
 - VS Code integration surface for dispatch and task observation
 - Optional Rust accelerators with Python parity fallback
 
+## Relationship to Python Fabric (`fabric`)
+
+ForgeWire Fabric is unrelated to the Python
+[`fabric`](https://pypi.org/project/fabric/) SSH library. It does not wrap, fork, import,
+or depend on that project. Python Fabric provides SSH-oriented remote command execution
+through the `fabric` import namespace and `fab` CLI. ForgeWire Fabric provides a signed
+hub/runner control plane through the `forgewire_fabric` import namespace and
+`forgewire-fabric` CLI. Always use the full **ForgeWire Fabric** name in public-facing
+prose when the shorter subsystem label could be ambiguous.
+
 ## What ForgeWire Fabric is not
 
 ForgeWire Fabric is not the complete ForgeWire/PhrenForge assistant platform.
