@@ -36,7 +36,7 @@ It does not provide the full desktop shell, persona ecosystem, memory system, lo
 
 ## Project lineage
 
-ForgeWire Fabric began as the remote dispatch layer inside the larger ForgeWire platform, formerly PhrenForge. It was extracted into a standalone project so developers can use the remote runner fabric independently while still allowing the parent platform to integrate with it.
+ForgeWire Fabric began as the remote dispatch layer inside the larger ForgeWire platform, formerly PhrenForge. It remains independently consumable and publicly mirrored as a standalone project. Canonical development now occurs in the ForgeWire repository's `forgewire-fabric/` subtree; the separate public-facing repository is synchronized from that subtree for releases and independent adoption.
 
 ## What problem Fabric solves
 
@@ -44,7 +44,7 @@ Most teams with trusted machines (laptops, workstations, and homelab nodes) stil
 
 ## What is included in this repo
 
-This repository contains the standalone Fabric implementation:
+The canonical ForgeWire source tree contains this implementation under `forgewire-fabric/`. When synchronized into the public-facing repository, this directory exposes the same standalone package:
 
 - Hub server (FastAPI)
 - Runner agent

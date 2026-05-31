@@ -3,10 +3,10 @@
 > **Audience.** Any agent (human or LLM) editing this repository. This
 > file is the *how*: invariants, supervision discipline, and shipping
 > conventions that survive milestone churn. For the *what* — milestone
-> slicing, roadmap, phase docs — see todo 114 in the sibling repo at
-> [`forgewire/todos/114-forgewire-fabric/`](../forgewire/todos/114-forgewire-fabric/).
+> slicing, roadmap, phase docs — see todo 114 in the canonical ForgeWire repository at
+> [`todos/114-forgewire-fabric/`](https://github.com/DigitalHallucinations/forgewire/tree/main/todos/114-forgewire-fabric).
 >
-> The thesis at [`forgewire/docs/thesis.md`](../forgewire/docs/thesis.md)
+> The thesis at [`docs/thesis.md`](https://github.com/DigitalHallucinations/forgewire/blob/main/docs/thesis.md)
 > is binding here: **graceful degradation, parity paths, audit trails,
 > ownership boundaries, and substrate replaceability** are the
 > properties that determine whether this code is useful. A request to
@@ -16,17 +16,20 @@
 
 ## 1. Repo identity & boundaries
 
-- **This repo (`forgewire-fabric`)** owns: the hub server, runner
-  agent, CLI, installer scripts, VS Code extension, and Rust crates
-  under `crates/`.
-- **Sibling repo (`forgewire`)** owns: substrate
-  (`forgewire_core/**`), planning surface (`todos/`), and the binding
-  thesis. Substrate is **read-only from this repo's perspective**.
-  Never `pip install -e ../forgewire/...` into this venv; never import
-  from `forgewire_core` here.
-- **Two checkouts, one developer.** If you find yourself editing
-  `C:\Projects\forgewire\python\forgewire_fabric\...`, stop. That tree
-  is stale planning content — implementation lives only here.
+- **Canonical source location:** `forgewire/forgewire-fabric/` in the ForgeWire
+  repository owns the hub server, runner agent, CLI, installer scripts, VS Code
+  extension, and Rust crates under `crates/`. If this file is being read from
+  the separate public-facing repository, that checkout is a synchronized mirror.
+- **The ForgeWire repository root** owns: substrate (`forgewire_core/**`),
+  planning surface (`todos/`), and the binding thesis. Fabric remains a leaf:
+  never import from `forgewire_core` here.
+- **Public-facing mirror.** `DigitalHallucinations/forgewire-fabric` and
+  deployed standalone checkouts exist for independent consumption and release.
+  Synchronize them from this canonical subtree through a reviewed mirror-sync
+  step. Do not develop features only in the public mirror.
+- **Path discipline.** If you find yourself editing
+  `C:\Projects\forgewire\python\forgewire_fabric\...`, stop. The canonical
+  package tree is `C:\Projects\forgewire\forgewire-fabric\python\forgewire_fabric\...`.
 
 ---
 
@@ -35,9 +38,9 @@
 When two answers disagree, take the higher item:
 
 1. The live hub's `/healthz` and `/audit/tail` responses.
-2. `git log` on `main` in this repo.
+2. Canonical ForgeWire `git log` for the `forgewire-fabric/**` subtree.
 3. This `AGENTS.md` and the per-area `AGENTS.md` files under it.
-4. The phase docs in `forgewire/todos/114-forgewire-fabric/`.
+4. The phase docs in `todos/114-forgewire-fabric/`.
 
 The version reported by `/healthz` **must** match
 `python/forgewire_fabric/__init__.py.__version__`. If they disagree the
@@ -286,9 +289,9 @@ The thesis is binding. Stop and ask before:
 
 ## 11. Pointers
 
-- **Milestones / roadmap:** [`forgewire/todos/114-forgewire-fabric/`](../forgewire/todos/114-forgewire-fabric/)
+- **Milestones / roadmap:** [`todos/114-forgewire-fabric/`](https://github.com/DigitalHallucinations/forgewire/tree/main/todos/114-forgewire-fabric)
 - **Phase doc (operator control plane):**
-  [`phase-2.5-operator-control-plane.md`](../forgewire/todos/114-forgewire-fabric/phase-2.5-operator-control-plane.md)
+  [`phase-2.5-operator-control-plane.md`](https://github.com/DigitalHallucinations/forgewire/blob/main/todos/114-forgewire-fabric/phase-2.5-operator-control-plane.md)
 - **Test policy:** [`tests/AGENTS.md`](tests/AGENTS.md)
 - **Live smoke pattern:** any `scripts/live_smoke_*.py` already in
   the repo is a copyable template.

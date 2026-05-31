@@ -15,9 +15,11 @@ This repository was created on **2026-05-03** by extracting Fabric-focused compo
 
 The historical extraction lineage is retained for auditability and provenance only.
 
-## Current operator guidance (authoritative)
+## Current source-of-truth topology
 
-For day-to-day usage and release operations, treat the following as source of truth:
+Canonical development now occurs in the ForgeWire repository's `forgewire-fabric/` subtree. The separate public-facing `DigitalHallucinations/forgewire-fabric` repository is a synchronized publication mirror for independent consumers and releases. Deployed standalone checkouts are operational mirrors. Feature work lands in the canonical subtree first; mirror synchronization is a reviewed release/deployment step that records the originating ForgeWire commit.
+
+For day-to-day usage and release operations, treat the following as product guidance:
 
 - Product identity and scope: [`README.md`](../README.md)
 - Positioning and boundary with parent platform: [`docs/POSITIONING.md`](POSITIONING.md)
@@ -37,4 +39,4 @@ These are compatibility shims, not indications that this repository is the full 
 
 ## Contribution note
 
-Open issues/PRs against this repo for Fabric behavior, docs, and releases. Historical roadmap references are acceptable as lineage context, but new release and operator guidance should be documented in this repository.
+Plan and land Fabric behavior in the canonical ForgeWire `forgewire-fabric/` subtree. Synchronize the public-facing repository through the reviewed mirror process for releases and independent-consumer visibility. Historical roadmap references are acceptable as lineage context, but new release and operator guidance must land canonically before publication.

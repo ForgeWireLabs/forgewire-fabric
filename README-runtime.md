@@ -1,8 +1,8 @@
 # forgewire-runtime
 
-Rust acceleration core for the [ForgeWire](../todos/114-forgewire-fabric/README.md) control plane.
+Rust acceleration core for the [ForgeWire](https://github.com/DigitalHallucinations/forgewire/blob/main/todos/114-forgewire-fabric/README.md) control plane.
 
-Hot paths migrated to Rust + PyO3, with a Python fallback that ships alongside until the standalone ForgeWire repo cuts wheels for all platforms (Stage E).
+Hot paths migrated to Rust + PyO3, with a Python fallback that ships alongside until synchronized public-package wheels exist for all supported platforms.
 
 ## Crates
 
@@ -38,4 +38,4 @@ Operators can opt out via `FORGEWIRE_FORCE_PYTHON=1` (mirrors PhrenForge's `PHRE
 
 ## License
 
-Apache-2.0. When this workspace moves to the standalone `forgewire/` repo at Stage E, the license carries.
+Apache-2.0. The canonical workspace lives under the ForgeWire repository's `forgewire-fabric/` subtree and synchronizes to the standalone public-facing Fabric mirror for release.
