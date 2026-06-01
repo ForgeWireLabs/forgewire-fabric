@@ -7,7 +7,10 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/fabric-types",
     "crates/fabric-protocol",
+    "crates/fabric-identity",
+    "crates/fabric-audit",
     "crates/fabric-claim-router",
     "crates/fabric-streams",
     "crates/fabric-py",
@@ -26,9 +29,14 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 ed25519-dalek = { version = "2.1", default-features = false, features = ["std", "fast"] }
 hex = "0.4"
+sha2 = "0.10"
+rand = "0.8"
 
 # Internal crates
+fabric-types = { path = "crates/fabric-types" }
 fabric-protocol = { path = "crates/fabric-protocol" }
+fabric-identity = { path = "crates/fabric-identity" }
+fabric-audit = { path = "crates/fabric-audit" }
 fabric-claim-router = { path = "crates/fabric-claim-router" }
 fabric-streams = { path = "crates/fabric-streams" }
 

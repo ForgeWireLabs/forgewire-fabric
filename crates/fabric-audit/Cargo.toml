@@ -1,0 +1,23 @@
+[package]
+name = "fabric-audit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Hash-chained audit log for ForgeWire Fabric — byte-compatible with the Python oracle."
+
+[dependencies]
+fabric-types = { path = "../fabric-types" }
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+sha2 = "0.10"
+
+[dev-dependencies]
+serde_json.workspace = true
+fabric-protocol.workspace = true
+hex.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true
