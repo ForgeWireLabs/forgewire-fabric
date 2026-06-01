@@ -1,0 +1,14 @@
+[package]
+name = "fabric-policy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Deterministic dispatch and completion policy evaluation for ForgeWire Fabric."
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

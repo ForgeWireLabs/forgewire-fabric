@@ -1,0 +1,34 @@
+[package]
+name = "fabric-hub"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Native Rust hub daemon for ForgeWire Fabric — v2 API parity."
+
+[[bin]]
+name = "forgewire-hub"
+path = "src/main.rs"
+
+[dependencies]
+fabric-types = { path = "../fabric-types" }
+fabric-protocol = { path = "../fabric-protocol" }
+fabric-identity = { path = "../fabric-identity" }
+fabric-audit = { path = "../fabric-audit" }
+fabric-store = { path = "../fabric-store" }
+fabric-store-sqlite = { path = "../fabric-store-sqlite" }
+fabric-policy = { path = "../fabric-policy" }
+fabric-claim-router = { path = "../fabric-claim-router" }
+fabric-streams = { path = "../fabric-streams" }
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["json"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[lints]
+workspace = true
