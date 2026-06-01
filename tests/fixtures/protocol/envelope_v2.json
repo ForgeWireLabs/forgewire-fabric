@@ -1,0 +1,142 @@
+{
+  "_description": "Golden fixtures for ForgeWire v2 dispatch envelope canonicalization, signing, and verification. Every digest and signature was produced by the Python oracle at oracle/v2.7.0-baseline. Rust tests must reproduce all canonical_hex and signature values byte-for-byte.",
+  "_oracle_tag": "oracle/v2.7.0-baseline",
+  "_seed_hex": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+  "test_keypair": {
+    "secret_key_hex": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+    "public_key_hex": "ff57575dc7af8bfc4d0837cc1ce2017b686a88145dc5579a958e3462fe9a908e",
+    "note": "Fixed seed — NOT a real key. For fixture cross-language parity only."
+  },
+  "canonical_formula": "json.dumps(envelope, sort_keys=True, separators=(',', ':')).encode('utf-8')",
+  "cases": [
+    {
+      "id": "minimal_valid",
+      "description": "Minimal valid v2 dispatch envelope — happy path sign + verify.",
+      "envelope": {
+        "op": "dispatch",
+        "dispatcher_id": "test-dispatcher-001",
+        "title": "Test task",
+        "prompt": "Do the thing.",
+        "scope_globs": [
+          "core/services/**"
+        ],
+        "base_commit": "abc1234",
+        "branch": "agent/test/task-1",
+        "timestamp": 1748649600,
+        "nonce": "fixture-nonce-0001"
+      },
+      "canonical_hex": "7b22626173655f636f6d6d6974223a2261626331323334222c226272616e6368223a226167656e742f746573742f7461736b2d31222c22646973706174636865725f6964223a22746573742d646973706174636865722d303031222c226e6f6e6365223a22666978747572652d6e6f6e63652d30303031222c226f70223a226469737061746368222c2270726f6d7074223a22446f20746865207468696e672e222c2273636f70655f676c6f6273223a5b22636f72652f73657276696365732f2a2a225d2c2274696d657374616d70223a313734383634393630302c227469746c65223a2254657374207461736b227d",
+      "canonical_utf8": "{\"base_commit\":\"abc1234\",\"branch\":\"agent/test/task-1\",\"dispatcher_id\":\"test-dispatcher-001\",\"nonce\":\"fixture-nonce-0001\",\"op\":\"dispatch\",\"prompt\":\"Do the thing.\",\"scope_globs\":[\"core/services/**\"],\"timestamp\":1748649600,\"title\":\"Test task\"}",
+      "signature_hex": "7c855244b83869cc3e7bce8c4d784faf967944dfa78b55b1698a5ddd62f2f29f2c9299f1165a67c7b3d01b3a8dae5fe061296fb4f22bdeb80ba90e0a4a28af0e",
+      "verify_with_correct_key": true,
+      "verify_with_wrong_key": false
+    },
+    {
+      "id": "unicode_fields",
+      "description": "Unicode in title, prompt, scope_globs — must survive canonical round-trip.",
+      "envelope": {
+        "op": "dispatch",
+        "dispatcher_id": "test-dispatcher-001",
+        "title": "Tâche — données «spéciales» éàü",
+        "prompt": "Emoji: 🔥 and plane-1: 𐿿",
+        "scope_globs": [
+          "modules/漢字/**"
+        ],
+        "base_commit": "abc1234",
+        "branch": "agent/test/unicode",
+        "timestamp": 1748649601,
+        "nonce": "fixture-nonce-unicode"
+      },
+      "canonical_hex": "7b22626173655f636f6d6d6974223a2261626331323334222c226272616e6368223a226167656e742f746573742f756e69636f6465222c22646973706174636865725f6964223a22746573742d646973706174636865722d303031222c226e6f6e6365223a22666978747572652d6e6f6e63652d756e69636f6465222c226f70223a226469737061746368222c2270726f6d7074223a22456d6f6a693a205c75643833645c756464323520616e6420706c616e652d313a205c75643830335c7564666666222c2273636f70655f676c6f6273223a5b226d6f64756c65732f5c75366632325c75356235372f2a2a225d2c2274696d657374616d70223a313734383634393630312c227469746c65223a22545c7530306532636865205c753230313420646f6e6e5c75303065396573205c753030616273705c75303065396369616c65735c7530306262205c75303065395c75303065305c7530306663227d",
+      "canonical_utf8": "{\"base_commit\":\"abc1234\",\"branch\":\"agent/test/unicode\",\"dispatcher_id\":\"test-dispatcher-001\",\"nonce\":\"fixture-nonce-unicode\",\"op\":\"dispatch\",\"prompt\":\"Emoji: \\ud83d\\udd25 and plane-1: \\ud803\\udfff\",\"scope_globs\":[\"modules/\\u6f22\\u5b57/**\"],\"timestamp\":1748649601,\"title\":\"T\\u00e2che \\u2014 donn\\u00e9es \\u00absp\\u00e9ciales\\u00bb \\u00e9\\u00e0\\u00fc\"}",
+      "signature_hex": "43f066b949bc9d97c1017fc9ba14370c6bc0b4d5506dc9a211a7d55f25109cb031450687da58e06e00495abb87158555cbc94ae7a31abc8aa0b7729a43693e07",
+      "verify_with_correct_key": true
+    },
+    {
+      "id": "tamper_rejection",
+      "description": "Canonical bytes with one bit flipped — signature must not verify.",
+      "envelope": {
+        "op": "dispatch",
+        "dispatcher_id": "test-dispatcher-001",
+        "title": "Test task",
+        "prompt": "Do the thing.",
+        "scope_globs": [
+          "core/services/**"
+        ],
+        "base_commit": "abc1234",
+        "branch": "agent/test/task-1",
+        "timestamp": 1748649600,
+        "nonce": "fixture-nonce-0001"
+      },
+      "canonical_hex": "7b22626173655f636f6d6d6974223a2261626331323334222c226272616e6368223a226167656e742f746573742f7461736b2d31222c22646973706174636865725f6964223a22746573742d646973706174636865722d303031222c226e6f6e6365223a22666978747572652d6e6f6e63652d30303031222c226f70223a226469737061746368222c2270726f6d7074223a22446f20746865207468696e672e222c2273636f70655f676c6f6273223a5b22636f72652f73657276696365732f2a2a225d2c2274696d657374616d70223a313734383634393630302c227469746c65223a2254657374207461736b227d",
+      "signature_hex": "7c855244b83869cc3e7bce8c4d784faf967944dfa78b55b1698a5ddd62f2f29f2c9299f1165a67c7b3d01b3a8dae5fe061296fb4f22bdeb80ba90e0a4a28af0e",
+      "tampered_canonical_hex": "7b22626173655f636f6d6c6974223a2261626331323334222c226272616e6368223a226167656e742f746573742f7461736b2d31222c22646973706174636865725f6964223a22746573742d646973706174636865722d303031222c226e6f6e6365223a22666978747572652d6e6f6e63652d30303031222c226f70223a226469737061746368222c2270726f6d7074223a22446f20746865207468696e672e222c2273636f70655f676c6f6273223a5b22636f72652f73657276696365732f2a2a225d2c2274696d657374616d70223a313734383634393630302c227469746c65223a2254657374207461736b227d",
+      "tampered_verifies": false
+    },
+    {
+      "id": "wrong_key",
+      "description": "Signature produced by a different key — must not verify with test public key.",
+      "envelope": {
+        "op": "dispatch",
+        "dispatcher_id": "test-dispatcher-001",
+        "title": "Test task",
+        "prompt": "Do the thing.",
+        "scope_globs": [
+          "core/services/**"
+        ],
+        "base_commit": "abc1234",
+        "branch": "agent/test/task-1",
+        "timestamp": 1748649600,
+        "nonce": "fixture-nonce-0001"
+      },
+      "canonical_hex": "7b22626173655f636f6d6d6974223a2261626331323334222c226272616e6368223a226167656e742f746573742f7461736b2d31222c22646973706174636865725f6964223a22746573742d646973706174636865722d303031222c226e6f6e6365223a22666978747572652d6e6f6e63652d30303031222c226f70223a226469737061746368222c2270726f6d7074223a22446f20746865207468696e672e222c2273636f70655f676c6f6273223a5b22636f72652f73657276696365732f2a2a225d2c2274696d657374616d70223a313734383634393630302c227469746c65223a2254657374207461736b227d",
+      "wrong_signature_hex": "08efbc803b44d028a5195979967c51ae30c4da389de45a084388202144067822dc0fd7e25e370c9d26ee9d9f17fee878889e12d26d7dd8d65c4132d0cbbb7402",
+      "verifies_with_test_key": false
+    },
+    {
+      "id": "timestamp_skew_ok",
+      "description": "Timestamp within ±300s window — accepted.",
+      "timestamp": 1748649600,
+      "skew_seconds": 300,
+      "verdict": "accept"
+    },
+    {
+      "id": "timestamp_skew_reject_future",
+      "description": "Timestamp 301s in the future — rejected.",
+      "delta_seconds": 301,
+      "verdict": "reject",
+      "detail": "timestamp out of skew window"
+    },
+    {
+      "id": "timestamp_skew_reject_past",
+      "description": "Timestamp 301s in the past — rejected.",
+      "delta_seconds": -301,
+      "verdict": "reject",
+      "detail": "timestamp out of skew window"
+    },
+    {
+      "id": "nonce_replay",
+      "description": "Same nonce submitted twice — second attempt rejected.",
+      "nonce": "fixture-nonce-replay-001",
+      "first_verdict": "accept",
+      "second_verdict": "reject",
+      "detail": "nonce already consumed"
+    },
+    {
+      "id": "sort_key_stability",
+      "description": "Envelope with keys that sort differently from insertion order.",
+      "envelope": {
+        "z_last": 1,
+        "a_first": 2,
+        "m_middle": 3
+      },
+      "canonical_hex": "7b22615f6669727374223a322c226d5f6d6964646c65223a332c227a5f6c617374223a317d",
+      "canonical_utf8": "{\"a_first\":2,\"m_middle\":3,\"z_last\":1}",
+      "expected_key_order": [
+        "a_first",
+        "m_middle",
+        "z_last"
+      ]
+    }
+  ]
+}

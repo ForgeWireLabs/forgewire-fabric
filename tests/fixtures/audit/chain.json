@@ -1,0 +1,169 @@
+{
+  "_description": "Golden audit-chain fixtures for the ForgeWire hash-chained audit log. The literal b'|' separator bytes between prev_hash, kind, and payload are part of the compatibility contract. Every digest was computed by the Python oracle at oracle/v2.7.0-baseline and must be reproduced byte-for-byte by the Rust fabric-audit crate.",
+  "_oracle_tag": "oracle/v2.7.0-baseline",
+  "formula": {
+    "description": "sha256(ascii(prev) || b'|' || utf8(kind) || b'|' || audit_canonical_json(payload))",
+    "audit_canonical_json": "json.dumps(payload, sort_keys=True, separators=(',', ':'), default=str).encode('utf-8')",
+    "genesis_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "separator_byte_hex": "7c",
+    "separator_char": "|"
+  },
+  "separator_isolation_proof": {
+    "description": "Proves separator bytes prevent field-boundary collisions.",
+    "attempt_without_separators_hex": "bbe921613c2844faae6c6ce93f8bde95af78ae017c817bce5a291d0897ceec3f",
+    "result_with_separators_hex": "e17b8ab56a2bd0703649f4760a17ca68a0aa894b446e0afc5bff1cd7ab0a217a",
+    "are_equal": false
+  },
+  "valid_chain": {
+    "events": [
+      {
+        "seq": 1,
+        "kind": "dispatch",
+        "payload": {
+          "task_id": 1,
+          "title": "Test task",
+          "branch": "agent/test/task-1",
+          "base_commit": "abc1234",
+          "scope_globs": [
+            "core/services/**"
+          ],
+          "sealed_brief_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "dispatcher_id": "test-dispatcher-001",
+          "signed": true,
+          "approval_id": null,
+          "tenant": null,
+          "workspace_root": null,
+          "required_tools": [],
+          "required_tags": [],
+          "secrets_needed": [],
+          "network_egress": null,
+          "timeout_minutes": 60,
+          "priority": 100,
+          "todo_id": null
+        },
+        "prev_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "event_id_hash": "2b8d03bc41f598d8a2b08da411bd49c027d57b15a10c22cbf2b2216f37ba062d",
+        "canonical_payload_hex": "7b22617070726f76616c5f6964223a6e756c6c2c22626173655f636f6d6d6974223a2261626331323334222c226272616e6368223a226167656e742f746573742f7461736b2d31222c22646973706174636865725f6964223a22746573742d646973706174636865722d303031222c226e6574776f726b5f656772657373223a6e756c6c2c227072696f72697479223a3130302c2272657175697265645f74616773223a5b5d2c2272657175697265645f746f6f6c73223a5b5d2c2273636f70655f676c6f6273223a5b22636f72652f73657276696365732f2a2a225d2c227365616c65645f62726965665f68617368223a2261616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22736563726574735f6e6565646564223a5b5d2c227369676e6564223a747275652c227461736b5f6964223a312c2274656e616e74223a6e756c6c2c2274696d656f75745f6d696e75746573223a36302c227469746c65223a2254657374207461736b222c22746f646f5f6964223a6e756c6c2c22776f726b73706163655f726f6f74223a6e756c6c7d"
+      },
+      {
+        "seq": 2,
+        "kind": "claim",
+        "payload": {
+          "task_id": 1,
+          "worker_id": "runner-abc-001",
+          "claimed_at": "2025-05-31 00:01:00",
+          "secrets_dispatched": []
+        },
+        "prev_hash": "2b8d03bc41f598d8a2b08da411bd49c027d57b15a10c22cbf2b2216f37ba062d",
+        "event_id_hash": "1994ae9686bd4a1c66d456b5cec0fc3420c4c5df590bd7516ca1c66ced330553",
+        "canonical_payload_hex": "7b22636c61696d65645f6174223a22323032352d30352d33312030303a30313a3030222c22736563726574735f64697370617463686564223a5b5d2c227461736b5f6964223a312c22776f726b65725f6964223a2272756e6e65722d6162632d303031227d"
+      },
+      {
+        "seq": 3,
+        "kind": "result",
+        "payload": {
+          "task_id": 1,
+          "worker_id": "runner-abc-001",
+          "status": "done",
+          "head_commit": "def5678",
+          "commits": [
+            "def5678"
+          ],
+          "files_touched": [
+            "core/services/foo.py"
+          ],
+          "test_summary": "5 pass / 0 fail",
+          "error": null,
+          "reported_at": "2025-05-31 00:10:00"
+        },
+        "prev_hash": "1994ae9686bd4a1c66d456b5cec0fc3420c4c5df590bd7516ca1c66ced330553",
+        "event_id_hash": "2970228037303b38b61097a97de53ab4201e68749fc07b9207060e5ed41ed897",
+        "canonical_payload_hex": "7b22636f6d6d697473223a5b2264656635363738225d2c226572726f72223a6e756c6c2c2266696c65735f746f7563686564223a5b22636f72652f73657276696365732f666f6f2e7079225d2c22686561645f636f6d6d6974223a2264656635363738222c227265706f727465645f6174223a22323032352d30352d33312030303a31303a3030222c22737461747573223a22646f6e65222c227461736b5f6964223a312c22746573745f73756d6d617279223a22352070617373202f2030206661696c222c22776f726b65725f6964223a2272756e6e65722d6162632d303031227d"
+      }
+    ],
+    "chain_tail": "2970228037303b38b61097a97de53ab4201e68749fc07b9207060e5ed41ed897",
+    "verified": true
+  },
+  "tamper_rejection": {
+    "description": "Payload byte changed — hash must differ from valid chain.",
+    "original_event_id_hash": "2b8d03bc41f598d8a2b08da411bd49c027d57b15a10c22cbf2b2216f37ba062d",
+    "tampered_payload": {
+      "task_id": 1,
+      "title": "Test task (tampered)",
+      "branch": "agent/test/task-1",
+      "base_commit": "abc1234",
+      "scope_globs": [
+        "core/services/**"
+      ],
+      "sealed_brief_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "dispatcher_id": "test-dispatcher-001",
+      "signed": true,
+      "approval_id": null,
+      "tenant": null,
+      "workspace_root": null,
+      "required_tools": [],
+      "required_tags": [],
+      "secrets_needed": [],
+      "network_egress": null,
+      "timeout_minutes": 60,
+      "priority": 100,
+      "todo_id": null
+    },
+    "tampered_event_id_hash": "4ee64e6ae955ab58824812d305e5895b9f0abf117698590b88f8e1e2bba4ade0",
+    "hashes_equal": false
+  },
+  "missing_event": {
+    "description": "Event 2 omitted — event 3 computed from event 1's hash. Must not match valid hash_3.",
+    "valid_hash_3": "2970228037303b38b61097a97de53ab4201e68749fc07b9207060e5ed41ed897",
+    "gap_hash_3": "fdeaf7f2010984ad1ce99a3f0d529c0077497508aa5e03a5ac3180f0863bd95b",
+    "hashes_equal": false
+  },
+  "reordered_events": {
+    "description": "Events 1 and 2 swapped — must produce different hashes throughout.",
+    "valid_hash_1": "2b8d03bc41f598d8a2b08da411bd49c027d57b15a10c22cbf2b2216f37ba062d",
+    "valid_hash_2": "1994ae9686bd4a1c66d456b5cec0fc3420c4c5df590bd7516ca1c66ced330553",
+    "reordered_hash_2_first": "ebaedfe3cf1fa18f5dd960af43535cb96d69ce46fc3b87b4e21f4760bca7a443",
+    "reordered_hash_1_second": "ca3a95effe60e2450e594295ef14533b6f680e36fa33327250bae6c129a0d681"
+  },
+  "secret_name_only_logging": {
+    "description": "Secrets log names only — values must never appear in audit payloads.",
+    "kind": "claim",
+    "payload": {
+      "task_id": 2,
+      "worker_id": "runner-abc-001",
+      "claimed_at": "2025-05-31 00:02:00",
+      "secrets_dispatched": [
+        "GITHUB_TOKEN",
+        "OPENAI_API_KEY"
+      ]
+    },
+    "event_id_hash": "aed6d02b0b7f739e4f6c2a0b39ada306257581806f7a776590fc246605d062e6",
+    "allowed_fields": [
+      "secrets_dispatched"
+    ],
+    "forbidden_field_pattern": "value|secret_value|plaintext|token"
+  },
+  "expected_tail_conflict": {
+    "description": "Two concurrent writers compute from the same prev_hash. The store's linearizable append must accept exactly one and reject or retry the other. The two hashes are different so the winner is deterministic from the payload.",
+    "prev_hash": "2b8d03bc41f598d8a2b08da411bd49c027d57b15a10c22cbf2b2216f37ba062d",
+    "writer_a": {
+      "kind": "result",
+      "payload": {
+        "task_id": 1,
+        "worker_id": "runner-a",
+        "status": "done"
+      },
+      "event_id_hash": "2456b14214fbfa9084cf38798f708bd511b8d664346b61b17de8b1cdeeb345c9"
+    },
+    "writer_b": {
+      "kind": "claim",
+      "payload": {
+        "task_id": 1,
+        "worker_id": "runner-b",
+        "claimed_at": "2025-05-31 00:00:30"
+      },
+      "event_id_hash": "f78cc5a470351431faefcb57efd4a7db15e04add4404782811cc61ba0a611a9c"
+    },
+    "hashes_equal": false
+  }
+}

@@ -35,9 +35,15 @@ voters:
   # NOT local to the running driver; the local case is auto-detected by
   # IP match against Get-NetIPAddress, so the same yaml works on every
   # driver host without per-host edits.
+  #
+  # NOTE: node1 and witness run on the OptiPlex (DESKTOP-38GVF8D). Their
+  # Raft advertisement addresses use 127.0.0.1 so they never break when
+  # the hotspot assigns a new IP. External consumers (backup, chaos) use
+  # the OptiPlex's current IP (10.43.106.95 as of 2026-06-01; update here
+  # when the hotspot renumbers — also update ~/.ssh/config Host forgewire).
   - label: node1
     node_id: node1-optiplex
-    host: 10.120.81.95
+    host: 10.43.106.95
     port: 4001
     raft_port: 4002
     role: voter
@@ -45,19 +51,9 @@ voters:
     tags: [primary, optiplex]
     service: ForgeWireRqliteNode1
     ssh_alias: forgewire-optiplex
-  - label: witness
-    node_id: node3-witness
-    host: 10.120.81.95
-    port: 4011
-    raft_port: 4012
-    role: voter
-    priority: 2
-    tags: [witness, optiplex]
-    service: ForgeWireRqliteNode3
-    ssh_alias: forgewire-optiplex
   - label: node2
     node_id: node2-dell
-    host: 10.120.81.56
+    host: 10.43.106.56
     port: 4001
     raft_port: 4002
     role: voter
@@ -131,8 +127,8 @@ chaos:
     # remote voter host (deduped by hostname) needs one alias here.
     aliases:
       - alias: forgewire-optiplex
-        hostname: 10.120.81.95
+        hostname: 10.43.106.95
         user: jerem
       - alias: forgewire-dell
-        hostname: 10.120.81.56
+        hostname: 10.43.106.56
         user: jerem

@@ -1,0 +1,42 @@
+{
+  "_description": "Synthetic rqlite behavioral fixtures derived from the Python _rqlite_db.py implementation and the rqlite HTTP API contract. These are not captured from a live rqlite deployment (none at oracle capture). They describe required behavior that fabric-store-rqlite must implement.",
+  "_oracle_tag": "oracle/v2.7.0-baseline",
+  "scenarios": [
+    {
+      "id": "claim_cas",
+      "description": "Atomic claim: UPDATE tasks SET status='claimed', worker_id=? WHERE id=? AND status='queued'. Single statement, no transaction. Returns rowcount=1 on success, 0 on race.",
+      "sql": "UPDATE tasks SET status = 'claimed', worker_id = ?, claimed_at = ? WHERE id = ? AND status = 'queued'",
+      "on_rowcount_0": "another runner claimed first — retry with next candidate",
+      "on_rowcount_1": "claim succeeded"
+    },
+    {
+      "id": "audit_append_cas",
+      "description": "Linearizable audit append: read tail, compute hash, INSERT with UNIQUE constraint on event_id_hash. Conflict = another writer appended first — retry from new tail.",
+      "read_sql": "SELECT event_id_hash FROM audit_event ORDER BY seq DESC LIMIT 1",
+      "insert_sql": "INSERT INTO audit_event (event_id_hash, prev_event_id_hash, kind, task_id, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      "conflict_behavior": "UNIQUE constraint on event_id_hash catches concurrent appends. Retry: re-read tail, recompute hash, re-insert."
+    },
+    {
+      "id": "redirect_follow",
+      "description": "rqlite non-leader node returns HTTP 301/302 redirect to leader. Client must follow up to 3 times before treating as error.",
+      "status_codes": [
+        301,
+        302
+      ],
+      "max_redirects": 3,
+      "on_exceeded": "raise rqlite connection error"
+    },
+    {
+      "id": "quorum_loss",
+      "description": "rqlite cluster loses quorum (>= half nodes down). Writes return 503 Service Unavailable. Hub must surface audit-failure-profile=required if audit is required.",
+      "write_status_code": 503,
+      "required_hub_behavior": "if audit_profile=required, reject new dispatches; if best_effort, log degraded and continue"
+    },
+    {
+      "id": "explicit_utc_timestamp",
+      "description": "All timestamps must be explicit UTC strings, not datetime('now'). rqlite may run on nodes in different timezones.",
+      "correct": "datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')",
+      "incorrect": "datetime('now')"
+    }
+  ]
+}

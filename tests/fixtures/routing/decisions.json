@@ -1,0 +1,456 @@
+{
+  "_description": "Routing accept/reject decision fixtures for the ForgeWire claim-routing path. The Rust fabric-router crate must reproduce all verdicts and reasons. Cases marked gate='pre-router' are enforced by the hub before calling the router and must be replicated in the native hub as well.",
+  "_oracle_tag": "oracle/v2.7.0-baseline",
+  "routing_gates_in_order": [
+    "1. tenant gate (task.tenant must match runner.tenant if both non-null)",
+    "2. workspace gate (task.workspace_root must match runner.workspace_root if both non-null)",
+    "3. scope prefix affinity (each task glob's static prefix must overlap a runner prefix; empty runner prefixes accept all)",
+    "4. required tools (all task required_tools must be in runner.tools, case-insensitive)",
+    "5. required tags (all task required_tags must be in runner.tags, case-insensitive)",
+    "6. base-commit precondition (if task.require_base_commit, runner.last_known_commit must equal task.base_commit)"
+  ],
+  "pre_router_gates": [
+    "drain_requested: runner with drain_requested=True is excluded before routing",
+    "concurrency cap: runner with active_tasks >= max_concurrent is excluded before routing",
+    "task kind: agent tasks go only to agent runners; command tasks go only to command runners",
+    "offline state: runner state not in (online, degraded) is excluded"
+  ],
+  "cases": [
+    {
+      "id": "tenant_match",
+      "description": "Task pins tenant A; runner is tenant A — accept.",
+      "task": {
+        "tenant": "tenant-a",
+        "scope_globs": [
+          "core/**"
+        ],
+        "required_tools": [],
+        "required_tags": [],
+        "require_base_commit": false,
+        "base_commit": ""
+      },
+      "runner": {
+        "tenant": "tenant-a",
+        "scope_prefixes": [
+          "core/"
+        ],
+        "tools": [],
+        "tags": [],
+        "last_known_commit": null
+      },
+      "verdict": "accept"
+    },
+    {
+      "id": "tenant_mismatch",
+      "description": "Task pins tenant A; runner is tenant B — reject.",
+      "task": {
+        "tenant": "tenant-a",
+        "scope_globs": [
+          "core/**"
+        ],
+        "required_tools": [],
+        "required_tags": [],
+        "require_base_commit": false,
+        "base_commit": ""
+      },
+      "runner": {
+        "tenant": "tenant-b",
+        "scope_prefixes": [
+          "core/"
+        ],
+        "tools": [],
+        "tags": [],
+        "last_known_commit": null
+      },
+      "verdict": "reject",
+      "reason": "tenant mismatch"
+    },
+    {
+      "id": "tenant_task_none_runner_set",
+      "description": "Task has no tenant; runner has a tenant — accept (task is unscoped).",
+      "task": {
+        "tenant": null,
+        "scope_globs": [
+          "core/**"
+        ],
+        "required_tools": [],
+        "required_tags": [],
+        "require_base_commit": false,
+        "base_commit": ""
+      },
+      "runner": {
+        "tenant": "tenant-a",
+        "scope_prefixes": [
+          "core/"
+        ],
+        "tools": [],
+        "tags": [],
+        "last_known_commit": null
+      },
+      "verdict": "accept"
+    },
+    {
+      "id": "workspace_match",
+      "description": "Both task and runner pin the same workspace root — accept.",
+      "task": {
+        "tenant": null,
+        "workspace_root": "/home/user/project",
+        "scope_globs": [
+          "src/**"
+        ],
+        "required_tools": [],
+        "required_tags": [],
+        "require_base_commit": false,
+        "base_commit": ""
+      },
+      "runner": {
+        "tenant": null,
+        "workspace_root": "/home/user/project",
+        "scope_prefixes": [
+          "src/"
+        ],
+        "tools": [],
+        "tags": [],
+        "last_known_commit": null
+      },
+      "verdict": "accept"
+    },
+    {
+      "id": "workspace_mismatch",
+      "description": "Task and runner pin different workspace roots — reject.",
+      "task": {
+        "tenant": null,
+        "workspace_root": "/home/user/project-a",
+        "scope_globs": [
+          "src/**"
+        ],
+        "required_tools": [],
+        "required_tags": [],
+        "require_base_commit": false,
+        "base_commit": ""
+      },
+      "runner": {
+        "tenant": null,
+        "workspace_root": "/home/user/project-b",
+        "scope_prefixes": [
+          "src/"
+        ],
+        "tools": [],
+        "tags": [],
+        "last_known_commit": null
+      },
+      "verdict": "reject",
+      "reason": "workspace_root mismatch"
+    },
+    {
+      "id": "scope_prefix_overlap",
+      "description": "Task glob core/services/** overlaps runner prefix core/ — accept.",
+      "task": {
+        "tenant": null,
+        "scope_globs": [
+          "core/services/**"
+        ],
+        "required_tools": [],
+        "required_tags": [],
+        "require_base_commit": false,
+        "base_commit": ""
+      },
+      "runner": {
+        "tenant": null,
+        "scope_prefixes": [
+          "core/"
+        ],
+        "tools": [],
+        "tags": [],
+        "last_known_commit": null
+      },
+      "verdict": "accept"
+    },
+    {
+      "id": "scope_prefix_no_overlap",
+      "description": "Task glob shell/** does not overlap runner prefix core/ — reject.",
+      "task": {
+        "tenant": null,
+        "scope_globs": [
+          "shell/**"
+        ],
+        "required_tools": [],
+        "required_tags": [],
+        "require_base_commit": false,
+        "base_commit": ""
+      },
+      "runner": {
+        "tenant": null,
+        "scope_prefixes": [
+          "core/"
+        ],
+        "tools": [],
+        "tags": [],
+        "last_known_commit": null
+      },
+      "verdict": "reject",
+      "reason": "scope prefix affinity miss"
+    },
+    {
+      "id": "scope_prefix_empty_runner",
+      "description": "Runner has empty scope_prefixes — accepts any task glob.",
+      "task": {
+        "tenant": null,
+        "scope_globs": [
+          "shell/gtk/**"
+        ],
+        "required_tools": [],
+        "required_tags": [],
+        "require_base_commit": false,
+        "base_commit": ""
+      },
+      "runner": {
+        "tenant": null,
+        "scope_prefixes": [],
+        "tools": [],
+        "tags": [],
+        "last_known_commit": null
+      },
+      "verdict": "accept"
+    },
+    {
+      "id": "tools_satisfied",
+      "description": "Task requires ['rust', 'python']; runner has both — accept.",
+      "task": {
+        "tenant": null,
+        "scope_globs": [
+          "**"
+        ],
+        "required_tools": [
+          "rust",
+          "python"
+        ],
+        "required_tags": [],
+        "require_base_commit": false,
+        "base_commit": ""
+      },
+      "runner": {
+        "tenant": null,
+        "scope_prefixes": [],
+        "tools": [
+          "rust",
+          "python",
+          "node"
+        ],
+        "tags": [],
+        "last_known_commit": null
+      },
+      "verdict": "accept"
+    },
+    {
+      "id": "tools_missing",
+      "description": "Task requires ['rust']; runner only has ['python'] — reject.",
+      "task": {
+        "tenant": null,
+        "scope_globs": [
+          "**"
+        ],
+        "required_tools": [
+          "rust"
+        ],
+        "required_tags": [],
+        "require_base_commit": false,
+        "base_commit": ""
+      },
+      "runner": {
+        "tenant": null,
+        "scope_prefixes": [],
+        "tools": [
+          "python"
+        ],
+        "tags": [],
+        "last_known_commit": null
+      },
+      "verdict": "reject",
+      "reason": "required tool 'rust' not available"
+    },
+    {
+      "id": "tags_satisfied",
+      "description": "Task requires tag 'gpu'; runner has 'gpu' — accept.",
+      "task": {
+        "tenant": null,
+        "scope_globs": [
+          "**"
+        ],
+        "required_tools": [],
+        "required_tags": [
+          "gpu"
+        ],
+        "require_base_commit": false,
+        "base_commit": ""
+      },
+      "runner": {
+        "tenant": null,
+        "scope_prefixes": [],
+        "tools": [],
+        "tags": [
+          "gpu",
+          "cuda"
+        ],
+        "last_known_commit": null
+      },
+      "verdict": "accept"
+    },
+    {
+      "id": "tags_missing",
+      "description": "Task requires tag 'tpm'; runner has none — reject.",
+      "task": {
+        "tenant": null,
+        "scope_globs": [
+          "**"
+        ],
+        "required_tools": [],
+        "required_tags": [
+          "tpm"
+        ],
+        "require_base_commit": false,
+        "base_commit": ""
+      },
+      "runner": {
+        "tenant": null,
+        "scope_prefixes": [],
+        "tools": [],
+        "tags": [],
+        "last_known_commit": null
+      },
+      "verdict": "reject",
+      "reason": "required tag 'tpm' not available"
+    },
+    {
+      "id": "base_commit_match",
+      "description": "Task require_base_commit=True; runner HEAD matches — accept.",
+      "task": {
+        "tenant": null,
+        "scope_globs": [
+          "**"
+        ],
+        "required_tools": [],
+        "required_tags": [],
+        "require_base_commit": true,
+        "base_commit": "abc1234"
+      },
+      "runner": {
+        "tenant": null,
+        "scope_prefixes": [],
+        "tools": [],
+        "tags": [],
+        "last_known_commit": "abc1234"
+      },
+      "verdict": "accept"
+    },
+    {
+      "id": "base_commit_mismatch",
+      "description": "Task require_base_commit=True; runner HEAD differs — reject.",
+      "task": {
+        "tenant": null,
+        "scope_globs": [
+          "**"
+        ],
+        "required_tools": [],
+        "required_tags": [],
+        "require_base_commit": true,
+        "base_commit": "abc1234"
+      },
+      "runner": {
+        "tenant": null,
+        "scope_prefixes": [],
+        "tools": [],
+        "tags": [],
+        "last_known_commit": "zzz9999"
+      },
+      "verdict": "reject",
+      "reason": "base commit precondition not met"
+    },
+    {
+      "id": "base_commit_not_required",
+      "description": "Task require_base_commit=False; runner HEAD differs — accept (no gate).",
+      "task": {
+        "tenant": null,
+        "scope_globs": [
+          "**"
+        ],
+        "required_tools": [],
+        "required_tags": [],
+        "require_base_commit": false,
+        "base_commit": "abc1234"
+      },
+      "runner": {
+        "tenant": null,
+        "scope_prefixes": [],
+        "tools": [],
+        "tags": [],
+        "last_known_commit": "zzz9999"
+      },
+      "verdict": "accept"
+    },
+    {
+      "id": "drain_requested",
+      "description": "Runner has drain_requested=True — must not be selected for new tasks.",
+      "task": {
+        "tenant": null,
+        "scope_globs": [
+          "**"
+        ],
+        "required_tools": [],
+        "required_tags": [],
+        "require_base_commit": false,
+        "base_commit": ""
+      },
+      "runner": {
+        "tenant": null,
+        "scope_prefixes": [],
+        "tools": [],
+        "tags": [],
+        "last_known_commit": null,
+        "drain_requested": true
+      },
+      "verdict": "reject",
+      "reason": "runner is draining",
+      "gate": "pre-router (hub checks drain_requested before routing)"
+    },
+    {
+      "id": "kind_agent_to_agent_runner",
+      "description": "Task kind='agent' dispatched to agent runner — accept.",
+      "task_kind": "agent",
+      "runner_kind": "agent",
+      "verdict": "accept"
+    },
+    {
+      "id": "kind_command_to_command_runner",
+      "description": "Task kind='command' dispatched to command runner — accept.",
+      "task_kind": "command",
+      "runner_kind": "command",
+      "verdict": "accept"
+    },
+    {
+      "id": "kind_agent_to_command_runner",
+      "description": "Task kind='agent' must NOT go to command runner — reject.",
+      "task_kind": "agent",
+      "runner_kind": "command",
+      "verdict": "reject",
+      "reason": "task kind/runner kind mismatch",
+      "gate": "hub job-queue separation (cluster.jobs.<kind> channel)"
+    },
+    {
+      "id": "concurrency_at_cap",
+      "description": "Runner max_concurrent=1 and already has 1 active task — reject.",
+      "runner_max_concurrent": 1,
+      "runner_active_tasks": 1,
+      "verdict": "reject",
+      "reason": "runner at concurrency cap",
+      "gate": "pre-router (hub checks active task count before routing)"
+    },
+    {
+      "id": "concurrency_under_cap",
+      "description": "Runner max_concurrent=2 and has 1 active task — accept.",
+      "runner_max_concurrent": 2,
+      "runner_active_tasks": 1,
+      "verdict": "accept"
+    }
+  ]
+}
