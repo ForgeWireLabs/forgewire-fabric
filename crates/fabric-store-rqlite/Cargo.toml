@@ -1,0 +1,24 @@
+[package]
+name = "fabric-store-rqlite"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "rqlite HA backend for the ForgeWire Fabric store contract."
+
+[dependencies]
+fabric-store = { path = "../fabric-store" }
+fabric-types = { path = "../fabric-types" }
+fabric-audit = { path = "../fabric-audit" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio = { version = "1", features = ["sync", "time"] }
+tracing = "0.1"
+async-trait = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+
+[lints]
+workspace = true

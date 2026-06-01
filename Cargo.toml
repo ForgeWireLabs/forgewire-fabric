@@ -13,6 +13,7 @@ members = [
     "crates/fabric-audit",
     "crates/fabric-store",
     "crates/fabric-store-sqlite",
+    "crates/fabric-store-rqlite",
     "crates/fabric-policy",
     "crates/fabric-hub",
     "crates/fabric-client",
@@ -45,6 +46,7 @@ fabric-identity = { path = "crates/fabric-identity" }
 fabric-audit = { path = "crates/fabric-audit" }
 fabric-store = { path = "crates/fabric-store" }
 fabric-store-sqlite = { path = "crates/fabric-store-sqlite" }
+fabric-store-rqlite = { path = "crates/fabric-store-rqlite" }
 fabric-policy = { path = "crates/fabric-policy" }
 fabric-hub = { path = "crates/fabric-hub" }
 fabric-client = { path = "crates/fabric-client" }
