@@ -26,8 +26,8 @@ param(
     [string]$DbPath = "C:\ProgramData\forgewire\hub.sqlite3",
     [string]$DataDir = "C:\ProgramData\forgewire",
     [string]$ServiceName = "ForgeWireHub",
-    [ValidateSet("sqlite","rqlite")][string]$Backend = "sqlite",
-    [string]$RqliteHost = "",
+    [ValidateSet("sqlite","rqlite")][string]$Backend = "rqlite",
+    [string]$RqliteHost = "127.0.0.1",
     [int]$RqlitePort = 4001,
     # rqlite read consistency for hub SELECTs. "strong" issues a Raft
     # round-trip per read; required for audit-chain integrity

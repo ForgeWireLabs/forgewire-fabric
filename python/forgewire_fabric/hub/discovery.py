@@ -1,8 +1,7 @@
-"""Optional mDNS / Zeroconf helpers for hub advertisement & dispatcher discovery.
+"""mDNS / Zeroconf hub advertisement and auto-discovery.
 
-The ``zeroconf`` package is an optional dependency. When it is unavailable we
-degrade gracefully -- the hub simply skips advertisement and the dispatcher
-falls back to ``BLACKBOARD_URL`` (or the configured default).
+``zeroconf`` is a required dependency as of forgewire-fabric 0.14.0.
+The hub auto-advertises on startup; runners and the VSIX auto-discover.
 
 Service type: ``_forgewire-hub._tcp.local.`` -- distinct from the legacy
 ``_forgewire-runner._tcp.local`` brainstormed in todo 23 because the hub is
@@ -166,3 +165,26 @@ def discover_hubs(timeout: float = 3.0) -> list[dict[str, Any]]:
     finally:
         zc.close()
     return found
+
+
+def discover_hub_url(timeout: float = 4.0) -> str | None:
+    """Return the URL of the best hub on the LAN, or None.
+
+    Picks the hub with the highest protocol_version. Falls back to
+    FORGEWIRE_HUB_URL env var if no hub is discovered via mDNS.
+    """
+
+    import os
+
+    hubs = discover_hubs(timeout=timeout)
+    if hubs:
+        best = sorted(hubs, key=lambda h: h.get("protocol_version", 0), reverse=True)[0]
+        return f"http://{best['host']}:{best['port']}"
+
+    env = os.environ.get("FORGEWIRE_HUB_URL", "").strip()
+    if env:
+        LOGGER.info("no mDNS hub found; using FORGEWIRE_HUB_URL=%s", env)
+        return env
+
+    LOGGER.warning("no hub discovered via mDNS and FORGEWIRE_HUB_URL not set")
+    return None

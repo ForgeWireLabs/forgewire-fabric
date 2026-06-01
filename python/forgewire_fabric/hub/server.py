@@ -155,17 +155,11 @@ class BlackboardConfig:
     # equivalent to permit-all but still emits structured
     # :class:`PolicyDecision` records on every dispatch/completion.
     policy_path: Path | None = None
-    # Phase 2 (rqlite migration): "sqlite" keeps the legacy single-node
-    # WAL backend (default for backward compat); "rqlite" routes all
-    # statements to the rqlite cluster over HTTP. The two backends share
-    # the same Blackboard call surface; the only divergence is in the
-    # state-snapshot endpoint, which uses VACUUM INTO under sqlite and
-    # rqlite's /db/backup under rqlite. Under "rqlite" the /state/snapshot
-    # and /state/import endpoints are PARITY-ONLY exit hatches -- routine
-    # DR is handled by the cluster itself (see
-    # docs/operations/dr-rqlite-backups.md and
-    # docs/operations/state-endpoints-parity.md).
-    backend: str = "sqlite"
+    # rqlite is the default and recommended backend. "sqlite" is preserved
+    # as a legacy single-node fallback but is deprecated and will be removed
+    # when the Rust store contract (M2.7.3) replaces the Python Blackboard.
+    # New installs via install-fabric.ps1 always use rqlite.
+    backend: str = "rqlite"
     rqlite_host: str = "127.0.0.1"
     rqlite_port: int = 4001
     rqlite_consistency: str = "strong"
@@ -2983,7 +2977,22 @@ def create_app(config: BlackboardConfig) -> FastAPI:
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         await _bump_threadpool()
         await _install_loop_watchdog()
+
+        # Auto-advertise on LAN via mDNS so runners and the VSIX can
+        # discover the hub without hardcoded IPs.
+        from forgewire_fabric.hub.discovery import advertise_hub
+        _mdns_handle = advertise_hub(
+            port=config.port,
+            protocol_version=PROTOCOL_VERSION,
+            token_preview=config.token[-8:] if config.token else "",
+        )
+        if _mdns_handle:
+            LOGGER.info("mDNS hub advertisement active")
+
         yield
+
+        if _mdns_handle:
+            _mdns_handle.close()
 
     app = FastAPI(
         title="ForgeWire Fabric Hub",
@@ -3146,10 +3155,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--backend",
         choices=("sqlite", "rqlite"),
-        default=os.environ.get("FORGEWIRE_HUB_BACKEND", "sqlite"),
+        default=os.environ.get("FORGEWIRE_HUB_BACKEND", "rqlite"),
         help=(
-            "State backend. 'sqlite' = legacy single-node WAL (default). "
-            "'rqlite' = Raft-replicated cluster via HTTP. Schema is identical."
+            "State backend. 'rqlite' = Raft-replicated cluster (default, recommended). "
+            "'sqlite' = legacy single-node WAL (deprecated, will be removed in M2.7.3)."
         ),
     )
     parser.add_argument(

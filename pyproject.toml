@@ -41,16 +41,16 @@ dependencies = [
     "click>=8.1",
     "sse-starlette>=2.0",
     "mcp>=1.0",
+    "zeroconf>=0.131",
 ]
 
 [project.optional-dependencies]
-mdns = ["zeroconf>=0.131"]
 runtime = ["forgewire-runtime>=0.1"]
 test = [
     "pytest>=8.0",
     "pytest-asyncio>=1.0",
 ]
-all = ["forgewire-fabric[mdns,runtime,test]"]
+all = ["forgewire-fabric[runtime,test]"]
 
 [project.urls]
 Homepage = "https://github.com/DigitalHallucinations/forgewire-fabric"
