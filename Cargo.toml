@@ -11,6 +11,8 @@ members = [
     "crates/fabric-protocol",
     "crates/fabric-identity",
     "crates/fabric-audit",
+    "crates/fabric-store",
+    "crates/fabric-store-sqlite",
     "crates/fabric-client",
     "crates/fabric-runner",
     "crates/fabric-claim-router",
@@ -39,6 +41,8 @@ fabric-types = { path = "crates/fabric-types" }
 fabric-protocol = { path = "crates/fabric-protocol" }
 fabric-identity = { path = "crates/fabric-identity" }
 fabric-audit = { path = "crates/fabric-audit" }
+fabric-store = { path = "crates/fabric-store" }
+fabric-store-sqlite = { path = "crates/fabric-store-sqlite" }
 fabric-client = { path = "crates/fabric-client" }
 fabric-runner = { path = "crates/fabric-runner" }
 fabric-claim-router = { path = "crates/fabric-claim-router" }
