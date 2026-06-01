@@ -11,11 +11,7 @@ import time
 import urllib.error
 import urllib.request
 
-import pytest
-
 BASE = os.environ.get("BLACKBOARD_URL", "http://127.0.0.1:8799")
-if "BLACKBOARD_TOKEN" not in os.environ:
-    pytest.skip("BLACKBOARD_TOKEN is required for live smoke execution", allow_module_level=True)
 TOKEN = os.environ["BLACKBOARD_TOKEN"]
 
 

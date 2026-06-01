@@ -18,16 +18,6 @@ It focuses on:
 - federated transport
 - VS Code and agent workflow integration
 
-## Relationship to Python Fabric (`fabric`)
-
-ForgeWire Fabric is not a wrapper, fork, plugin, or compatibility layer for the Python
-[`fabric`](https://pypi.org/project/fabric/) SSH library. Python Fabric installs as
-`fabric`, imports as `fabric`, and exposes the `fab` CLI for SSH-oriented remote command
-execution. This project installs as `forgewire-fabric`, imports as `forgewire_fabric`,
-and exposes the `forgewire-fabric` CLI for signed hub/runner task dispatch. The shared
-word “Fabric” describes a compute-fabric subsystem; it does not indicate Python package
-lineage or an implementation dependency.
-
 ## What this is not
 
 ForgeWire Fabric is not the full ForgeWire/PhrenForge platform.
@@ -36,7 +26,7 @@ It does not provide the full desktop shell, persona ecosystem, memory system, lo
 
 ## Project lineage
 
-ForgeWire Fabric began as the remote dispatch layer inside the larger ForgeWire platform, formerly PhrenForge. It remains independently consumable and publicly mirrored as a standalone project. Canonical development now occurs in the ForgeWire repository's `forgewire-fabric/` subtree; the separate public-facing repository is synchronized from that subtree for releases and independent adoption.
+ForgeWire Fabric began as the remote dispatch layer inside the larger ForgeWire platform, formerly PhrenForge. It was extracted into a standalone project so developers can use the remote runner fabric independently while still allowing the parent platform to integrate with it.
 
 ## What problem Fabric solves
 
@@ -44,7 +34,7 @@ Most teams with trusted machines (laptops, workstations, and homelab nodes) stil
 
 ## What is included in this repo
 
-The canonical ForgeWire source tree contains this implementation under `forgewire-fabric/`. When synchronized into the public-facing repository, this directory exposes the same standalone package:
+This repository contains the standalone Fabric implementation:
 
 - Hub server (FastAPI)
 - Runner agent
