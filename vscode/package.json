@@ -2,7 +2,7 @@
   "name": "forgewire-fabric",
   "displayName": "ForgeWire Fabric",
   "description": "Dispatch tasks to a ForgeWire Fabric compute mesh: signed envelopes, scope-bound capability tokens, live stream output. Run a hub or runner from inside VS Code on Windows, macOS, or Linux.",
-  "version": "0.1.18",
+  "version": "0.1.19",
   "publisher": "DigitalHallucinations",
   "license": "Apache-2.0",
   "icon": "media/icon.png",
@@ -47,29 +47,43 @@
           "default": [],
           "items": {
             "type": "object",
-            "required": ["url"],
+            "required": [
+              "url"
+            ],
             "properties": {
-              "url": { "type": "string", "description": "Candidate hub URL." },
-              "label": { "type": "string", "description": "Friendly label for the sidebar." },
-              "priority": { "type": "number", "default": 100, "description": "Lower = preferred. Probed in ascending order." }
+              "url": {
+                "type": "string",
+                "description": "Candidate hub URL."
+              },
+              "label": {
+                "type": "string",
+                "description": "Friendly label for the sidebar."
+              },
+              "priority": {
+                "type": "number",
+                "default": 100,
+                "description": "Lower = preferred. Probed in ascending order."
+              }
             }
           },
-          "markdownDescription": "Ordered list of hub candidates for failover. The extension probes each candidate in priority order and uses the first reachable one as the active hub. Example:\n```\n[\n  { \"url\": \"http://10.120.81.95:8765\", \"label\": \"OptiPlex (always-on)\", \"priority\": 1 },\n  { \"url\": \"http://10.120.81.50:8765\", \"label\": \"Dell\", \"priority\": 2 }\n]\n```"
+          "markdownDescription": "Ordered list of hub candidates for failover. The extension probes each candidate in priority order and uses the first reachable one as the active hub. Example:\n```\n[\n  { \"url\": \"http://hub-host:8765\", \"label\": \"OptiPlex (always-on)\", \"priority\": 1 },\n  { \"url\": \"http://hub-host-2:8765\", \"label\": \"Dell\", \"priority\": 2 }\n]\n```"
         },
         "forgewireFabric.hubPin": {
           "type": "string",
           "default": "",
-          "description": "Manual override: when set, the extension dispatches to this URL only and does not probe candidates. Use the *Pin to Hub…* command to set this. Clear with *Unpin Hub*."
+          "description": "Manual override: when set, the extension dispatches to this URL only and does not probe candidates. Use the *Pin to Hub\u00e2\u20ac\u00a6* command to set this. Clear with *Unpin Hub*."
         },
         "forgewireFabric.hubName": {
           "type": "string",
           "default": "",
-          "description": "Friendly display name for the hub (shown in the sidebar and status bar). Purely cosmetic — no effect on hub identity or auth."
+          "description": "Friendly display name for the hub (shown in the sidebar and status bar). Purely cosmetic \u00e2\u20ac\u201d no effect on hub identity or auth."
         },
         "forgewireFabric.runnerAliases": {
           "type": "object",
           "default": {},
-          "additionalProperties": { "type": "string" },
+          "additionalProperties": {
+            "type": "string"
+          },
           "description": "Map of runner_id -> friendly alias. Used as the runner label in the sidebar."
         },
         "forgewireFabric.hubToken": {
@@ -145,7 +159,10 @@
         },
         "forgewireFabric.dr.chaos.principal": {
           "type": "string",
-          "enum": ["SYSTEM", "user"],
+          "enum": [
+            "SYSTEM",
+            "user"
+          ],
           "default": "SYSTEM",
           "markdownDescription": "Windows principal the chaos scheduled task runs as. **SYSTEM** is recommended (no UAC prompts, full service-control rights). Choose **user** only if you cannot provision SSH keys for SYSTEM and need the task to inherit your user's `%USERPROFILE%\\.ssh` for cross-host drills."
         },
@@ -265,25 +282,25 @@
       },
       {
         "command": "forgewireFabric.openSettings",
-        "title": "Open Settings…",
+        "title": "Open Settings\u00e2\u20ac\u00a6",
         "category": "ForgeWire Fabric",
         "icon": "$(gear)"
       },
       {
         "command": "forgewireFabric.renameHub",
-        "title": "Rename Hub…",
+        "title": "Rename Hub\u00e2\u20ac\u00a6",
         "category": "ForgeWire Fabric",
         "icon": "$(edit)"
       },
       {
         "command": "forgewireFabric.renameHost",
-        "title": "Rename Host…",
+        "title": "Rename Host\u00e2\u20ac\u00a6",
         "category": "ForgeWire Fabric",
         "icon": "$(edit)"
       },
       {
         "command": "forgewireFabric.renameRunner",
-        "title": "Rename Runner Alias…",
+        "title": "Rename Runner Alias\u00e2\u20ac\u00a6",
         "category": "ForgeWire Fabric",
         "icon": "$(edit)"
       },
@@ -318,7 +335,7 @@
       },
       {
         "command": "forgewireFabric.pinHub",
-        "title": "Pin to Hub…",
+        "title": "Pin to Hub\u00e2\u20ac\u00a6",
         "category": "ForgeWire Fabric",
         "icon": "$(pin)"
       },
@@ -330,19 +347,19 @@
       },
       {
         "command": "forgewireFabric.promoteHub",
-        "title": "Promote This Node to Hub…",
+        "title": "Promote This Node to Hub\u00e2\u20ac\u00a6",
         "category": "ForgeWire Fabric",
         "icon": "$(arrow-up)"
       },
       {
         "command": "forgewireFabric.demoteHub",
-        "title": "Demote Active Hub…",
+        "title": "Demote Active Hub\u00e2\u20ac\u00a6",
         "category": "ForgeWire Fabric",
         "icon": "$(arrow-down)"
       },
       {
         "command": "forgewireFabric.editHubCandidates",
-        "title": "Edit Hub Candidates…",
+        "title": "Edit Hub Candidates\u00e2\u20ac\u00a6",
         "category": "ForgeWire Fabric",
         "icon": "$(list-tree)"
       },
@@ -399,7 +416,7 @@
       ]
     },
     "views": {
-    "forgewireFabric": [
+      "forgewireFabric": [
         {
           "id": "forgewireFabric.hub",
           "name": "Hub",

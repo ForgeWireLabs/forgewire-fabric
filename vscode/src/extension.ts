@@ -1326,7 +1326,7 @@ async function pinHub(): Promise<void> {
   if (url === "Other URL\u2026") {
     const typed = await vscode.window.showInputBox({
       title: "Pin to hub URL",
-      placeHolder: "http://10.120.81.95:8765",
+      placeHolder: "http://hub-host:8765",
       validateInput: (v) => (/^https?:\/\//i.test(v.trim()) ? null : "Must start with http:// or https://"),
     });
     if (!typed) return;
@@ -1557,7 +1557,7 @@ function settingsHtml(init: Record<string, unknown>): string {
 
 <h2>Connection</h2>
 <label for="hubUrl">Hub URL</label>
-<div class="hint">e.g. <code>http://10.120.81.95:8765</code></div>
+<div class="hint">e.g. <code>http://hub-host:8765</code></div>
 <input type="text" id="hubUrl" />
 
 <label for="hubToken">Hub token</label>
