@@ -1,0 +1,56 @@
+# ForgeWire rqlite cluster topology — EXAMPLE / TEMPLATE
+# Copy to config/cluster.yaml and fill in real values.
+# cluster.yaml is gitignored; never commit it.
+
+cluster_id: forgewire-prod-1
+hub_protocol_version: 3
+
+voters:
+  - label: node1
+    node_id: node1-primary
+    host: 192.0.2.10
+    port: 4001
+    raft_port: 4002
+    role: voter
+    priority: 1
+    tags: [primary]
+    service: ForgeWireRqliteNode1
+    ssh_alias: forgewire-node1
+
+  - label: node2
+    node_id: node2-secondary
+    host: 192.0.2.11
+    port: 4001
+    raft_port: 4002
+    role: voter
+    priority: 2
+    tags: [secondary]
+    service: ForgeWireRqliteNode2
+    ssh_alias: forgewire-node2
+
+preferred_node: node1
+
+backups:
+  root: 'C:\ProgramData\forgewire\rqlite-backups'
+  cadence_minutes: 5
+  retention_hours: 24
+  min_bytes: 1024
+  timeout_seconds: 60
+
+chaos:
+  enabled: false
+  cadence_minutes: 1440
+  drills: 'kill-leader,lose-quorum'
+  driver_node: node1
+  log_root: 'C:\ProgramData\forgewire\rqlite-chaos'
+  retention_days: 30
+  ssh:
+    provision_for_system: false
+    key_source: '~\.ssh\id_ed25519_forgewire'
+    aliases:
+      - alias: forgewire-node1
+        hostname: 192.0.2.10
+        user: operator
+      - alias: forgewire-node2
+        hostname: 192.0.2.11
+        user: operator

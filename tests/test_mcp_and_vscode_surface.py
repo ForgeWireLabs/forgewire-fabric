@@ -15,7 +15,7 @@ def test_mcp_runner_uses_configured_hub_url(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(cli_mod.sys, "platform", "win32")
 
     cli_mod._write_vscode_user_mcp(
-        hub_url="http://10.120.81.95:8765",
+        hub_url="http://192.0.2.10:8765",
         install_runner=True,
         workspace_root="C:\\Projects\\forgewire",
     )
@@ -23,8 +23,8 @@ def test_mcp_runner_uses_configured_hub_url(tmp_path, monkeypatch) -> None:
     mcp_path = appdata / "Code" / "User" / "mcp.json"
     payload = json.loads(mcp_path.read_text(encoding="utf-8"))
     servers = payload["servers"]
-    assert servers["forgewire-dispatcher"]["env"]["FORGEWIRE_HUB_URL"] == "http://10.120.81.95:8765"
-    assert servers["forgewire-runner"]["env"]["FORGEWIRE_HUB_URL"] == "http://10.120.81.95:8765"
+    assert servers["forgewire-dispatcher"]["env"]["FORGEWIRE_HUB_URL"] == "http://192.0.2.10:8765"
+    assert servers["forgewire-runner"]["env"]["FORGEWIRE_HUB_URL"] == "http://192.0.2.10:8765"
 
 
 def test_runner_mcp_registration_is_backgrounded() -> None:
@@ -44,3 +44,4 @@ def test_dispatchers_view_collapsed_into_hosts() -> None:
     providers = (REPO_ROOT / "vscode" / "src" / "treeProviders.ts").read_text(encoding="utf-8")
     assert "kind: \"dispatcher\"" in providers
     assert "hosts:dispatcher:" in providers
+

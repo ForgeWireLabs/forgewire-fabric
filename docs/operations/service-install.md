@@ -54,7 +54,7 @@ nssm restart ForgeWireHub
 
 ```powershell
 pwsh -File scripts\install\nssm-install-runner.ps1 `
-    -HubUrl "http://10.43.106.95:8765" `
+    -HubUrl "http://192.0.2.10:8765" `
     -Token "<bearer token>" `
     -WorkspaceRoot "C:\Work\repo" `
     -Tags "windows,gpu:nvidia" `
@@ -83,9 +83,9 @@ Invoke-RestMethod http://127.0.0.1:8765/healthz | ConvertTo-Json
 
 ---
 
-## Remote deploy — Precision → OptiPlex (DESKTOP-38GVF8D)
+## Remote deploy — Precision → OptiPlex (FORGEWIRE-HUB)
 
-From DESKTOP-228U8GL, the SSH host alias `forgewire` gives access to the hub host.
+From FORGEWIRE-BUILD, the SSH host alias `forgewire` gives access to the hub host.
 SSH config lives at `~/.ssh/config`; key is `~/.ssh/id_ed25519_forgewire`.
 
 ### Hub
@@ -233,7 +233,7 @@ pwsh -File scripts\install\nssm-install-hub.ps1 `
 pwsh -File scripts\install\nssm-install-runner.ps1 `
     -UsePython `
     -PythonExe "C:\Python311\python.exe" `
-    -HubUrl "http://10.43.106.95:8765" `
+    -HubUrl "http://192.0.2.10:8765" `
     -Token "<token>" `
     -WorkspaceRoot "C:\Work\repo"
 ```
@@ -243,3 +243,4 @@ To switch an existing Python NSSM service to Rust (requires admin):
 ```powershell
 pwsh -File scripts\install\switch-to-rust-services.ps1
 ```
+

@@ -39,7 +39,7 @@
 
 .EXAMPLE
     pwsh -File nssm-install-rqlite.ps1
-    pwsh -File nssm-install-rqlite.ps1 -JoinAddress 10.43.106.95:4002
+    pwsh -File nssm-install-rqlite.ps1 -JoinAddress 192.0.2.10:4002
 #>
 [CmdletBinding()]
 param(
@@ -223,3 +223,4 @@ try {
 } finally {
     $PSNativeCommandUseErrorActionPreference = $prevNative
 }
+

@@ -60,7 +60,7 @@
     # Reinstall with explicit rqlite node:
     pwsh -File nssm-install-hub.ps1 `
         -Token (Get-Content hub.token -Raw) `
-        -RqliteHost 10.43.106.95
+        -RqliteHost 192.0.2.10
 
     # SQLite fallback (single-node only):
     pwsh -File nssm-install-hub.ps1 `
@@ -211,3 +211,4 @@ if (-not $NoWatchdog) {
             -ServiceName $ServiceName -HealthzUrl "http://127.0.0.1:$Port/healthz"
     }
 }
+

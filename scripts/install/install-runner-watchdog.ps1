@@ -25,7 +25,7 @@
     NSSM service to restart on failure. Default: ForgeWireRunner.
 
 .PARAMETER HubUrl
-    Hub base URL. Default: http://10.120.81.95:8765 (override per host
+    Hub base URL. Default: http://192.0.2.10:8765 (override per host
     if the cluster moves).
 
 .PARAMETER TokenFile
@@ -62,12 +62,12 @@
 
 .EXAMPLE
     pwsh -File install-runner-watchdog.ps1
-    pwsh -File install-runner-watchdog.ps1 -HubUrl http://10.120.81.95:8765 -StalenessSeconds 90
+    pwsh -File install-runner-watchdog.ps1 -HubUrl http://192.0.2.10:8765 -StalenessSeconds 90
 #>
 [CmdletBinding()]
 param(
     [string]$ServiceName       = "ForgeWireRunner",
-    [string]$HubUrl            = "http://10.120.81.95:8765",
+    [string]$HubUrl            = "http://192.0.2.10:8765",
     [string]$TokenFile         = "C:\ProgramData\forgewire\hub.token",
     [string]$RunnerHostname    = "",
     [int]   $IntervalMinutes   = 1,
@@ -318,3 +318,4 @@ Write-Host "  Probe:     every $IntervalMinutes min, threshold=$FailureThreshold
 Write-Host "  Service:   $ServiceName"
 Write-Host "  Log:       $LogPath"
 Write-Host "  State:     $StateFile"
+

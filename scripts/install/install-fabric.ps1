@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     One-command ForgeWire Fabric installer. Installs rqlite, hub, runner, watchdogs, VSIX.
 
@@ -44,7 +44,7 @@
 .PARAMETER RqliteJoinAddr
     rqlite raft address of an existing cluster member to join (host:raftPort).
     Required when joining a multi-node cluster where bootstrap is already done.
-    Example: 10.43.106.95:4002
+    Example: 192.0.2.10:4002
 
 .PARAMETER Tags
     Comma-separated runner tags (e.g. "kind:command,gpu:nvidia").
@@ -62,13 +62,13 @@
     # Joining node - discovers hub via mDNS, joins rqlite cluster:
     pwsh -File install-fabric.ps1 -WorkspaceRoot C:\Projects\forgewire `
         -Token (Get-Content \\hub-node\c$\ProgramData\forgewire\hub.token -Raw) `
-        -RqliteJoinAddr 10.43.106.95:4002
+        -RqliteJoinAddr 192.0.2.10:4002
 
     # Explicit hub URL (skip mDNS):
     pwsh -File install-fabric.ps1 -WorkspaceRoot C:\Projects\forgewire `
-        -HubUrl http://10.43.106.95:8765 `
+        -HubUrl http://192.0.2.10:8765 `
         -Token (Get-Content hub.token -Raw) `
-        -RqliteJoinAddr 10.43.106.95:4002
+        -RqliteJoinAddr 192.0.2.10:4002
 #>
 [CmdletBinding()]
 param(
@@ -175,7 +175,7 @@ if (-not $HubUrl -and -not $ForceHub) {
     $subnet = if ($localIp) { ($localIp -replace '\.\d+$', '') } else { "10.43.106" }
 
     # Quick probe of known addresses first (fast path)
-    foreach ($candidate in @("10.43.106.95", "10.43.106.56", "127.0.0.1", "${subnet}.1")) {
+    foreach ($candidate in @("192.0.2.10", "192.0.2.11", "127.0.0.1", "${subnet}.1")) {
         try {
             $resp = Invoke-WebRequest -Uri "http://${candidate}:${HubPort}/healthz" `
                 -UseBasicParsing -TimeoutSec 2 -ErrorAction SilentlyContinue
@@ -459,3 +459,4 @@ try {
 } catch {
     Write-Warning "  FAIL hub healthz unreachable: $($_.Exception.Message)"
 }
+

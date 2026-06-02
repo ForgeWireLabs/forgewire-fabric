@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory = $true)][string]$VsixPath,
     [string]$RemoteHost = 'forgewire',
     [string]$RemoteUserHome = 'C:\Users\jerem',
-    [string]$RemoteCodeCli = 'C:\Users\jerem\AppData\Local\Programs\Microsoft VS Code\bin\code.cmd'
+    [string]$RemoteCodeCli = 'C:\Users\operator\AppData\Local\Programs\Microsoft VS Code\bin\code.cmd'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -26,3 +26,4 @@ Write-Host "Installing on ${RemoteHost}: $cmd"
 if ($LASTEXITCODE -ne 0) { throw "remote install failed with exit $LASTEXITCODE" }
 
 & ssh $RemoteHost "`"$RemoteCodeCli`" --list-extensions --show-versions" | Select-String forgewire
+

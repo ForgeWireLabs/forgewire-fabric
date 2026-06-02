@@ -110,9 +110,9 @@ async def _post(
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--hub-url", default="http://10.120.81.95:8765")
+    ap.add_argument("--hub-url", default="http://192.0.2.10:8765")
     ap.add_argument(
-        "--token-path", type=Path, default=Path(r"C:\Users\jerem\.forgewire\hub.token")
+        "--token-path", type=Path, default=Path(r"C:\Users\operator\.forgewire\hub.token")
     )
     ap.add_argument("--approval-id", required=True)
     ap.add_argument("--kind", required=True, choices=["agent", "command"])
@@ -154,3 +154,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

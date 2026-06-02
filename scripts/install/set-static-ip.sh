@@ -9,8 +9,8 @@
 # Run as root (or via sudo). Re-run is safe; the new profile replaces the old.
 #
 # Usage:
-#   sudo ./set-static-ip.sh --ipv4 10.120.81.50/24 --gateway 10.120.81.86 \
-#        [--dns 10.120.81.86,1.1.1.1] [--iface eth0]
+#   sudo ./set-static-ip.sh --ipv4 192.0.2.50/24 --gateway 192.0.2.1 \
+#        [--dns 192.0.2.1,1.1.1.1] [--iface eth0]
 #
 # To revert to DHCP (NetworkManager):
 #   sudo nmcli connection modify forgewire-static ipv4.method auto
@@ -111,3 +111,4 @@ fi
 
 echo "error: neither NetworkManager nor systemd-networkd is available" >&2
 exit 1
+

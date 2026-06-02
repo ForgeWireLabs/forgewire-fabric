@@ -15,13 +15,13 @@
     static address (most home APs are fine; many hotspots are not).
 
 .PARAMETER IPv4
-    The static IPv4 address to assign, e.g. 10.120.81.50.
+    The static IPv4 address to assign, e.g. 192.0.2.50.
 
 .PARAMETER PrefixLength
     Subnet prefix length, e.g. 24 for /24. Defaults to 24.
 
 .PARAMETER Gateway
-    The default gateway to set, e.g. 10.120.81.86.
+    The default gateway to set, e.g. 192.0.2.1.
 
 .PARAMETER Dns
     One or more DNS server IPs. Defaults to (Gateway, 1.1.1.1).
@@ -34,8 +34,8 @@
     Standard. Shows the actions without applying.
 
 .EXAMPLE
-    # Pin the OptiPlex to 10.120.81.50/24 via the hotspot gateway.
-    pwsh -File set-static-ip.ps1 -IPv4 10.120.81.50 -Gateway 10.120.81.86
+    # Pin the OptiPlex to 192.0.2.50/24 via the hotspot gateway.
+    pwsh -File set-static-ip.ps1 -IPv4 192.0.2.50 -Gateway 192.0.2.1
 
 .NOTES
     Re-run safely. To revert to DHCP:
@@ -111,3 +111,4 @@ if ($PSCmdlet.ShouldProcess($InterfaceAlias, "Set static IPv4 $IPv4/$PrefixLengt
 
     Write-Host "Static IP applied. Verify with: Test-Connection $Gateway -Count 2" -ForegroundColor Green
 }
+

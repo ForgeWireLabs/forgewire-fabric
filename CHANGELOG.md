@@ -25,7 +25,7 @@ package. The VSIX (`vscode/`) is versioned independently.
   - `FORGEWIRE_HUB_STREAM_PROFILE` env var selects the profile at startup (default: `strict`).
   - `/healthz` now reports `stream_profile`, `stream_buffered_tasks`, `stream_buffered_lines`.
   - 17 new `fabric-streams` tests (counter + profile + buffer, including concurrency test).
-  - OptiPlex hub (`forgewire-hub` 0.5.0, DESKTOP-38GVF8D:8765) updated and verified live.
+  - OptiPlex hub (`forgewire-hub` 0.5.0, FORGEWIRE-HUB:8765) updated and verified live.
 
 ### Internal
 
@@ -60,7 +60,7 @@ package. The VSIX (`vscode/`) is versioned independently.
   - CLI `forgewire-fabric secrets {put,rotate,list,delete}` group.
 - **Live smoke script** `scripts/live_smoke_secrets.py` covering put → rotate
   → list-redaction → dispatch-with-secret → submit-with-redaction → cleanup.
-  Validated against the OptiPlex 7050 hub (10.120.81.95:8765) on 2026-05-13.
+  Validated against the OptiPlex 7050 hub (192.0.2.10:8765) on 2026-05-13.
 
 ### Internal
 
@@ -135,3 +135,4 @@ Pre-changelog releases — see `git log` for full history. Notable milestones:
 - `M2.6.2` — `bd7215d` ruff floor added
 - Earlier: dispatcher host-role registration, host-role summaries,
   machine-label promotion, rqlite cluster path, runner v2 protocol.
+

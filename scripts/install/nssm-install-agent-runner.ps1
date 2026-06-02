@@ -16,7 +16,7 @@
 .EXAMPLE
     pwsh -File nssm-install-agent-runner.ps1 `
         -PythonExe C:\Python311\python.exe `
-        -HubUrl http://10.120.81.95:8765 `
+        -HubUrl http://192.0.2.10:8765 `
         -Token (Get-Content $env:USERPROFILE\.forgewire\hub.token -Raw)
 #>
 [CmdletBinding()]
@@ -234,3 +234,4 @@ Write-Host "Workspace:      $WorkspaceRoot"
 Write-Host "Identity:       $IdentityFile"
 Write-Host "Token file:     $TokenFile (SYSTEM/Administrators only)"
 Write-Host "Logs:           $LogDir"
+

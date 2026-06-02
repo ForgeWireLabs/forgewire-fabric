@@ -62,8 +62,8 @@ from forgewire_fabric.dispatcher.identity import (  # noqa: E402
 )
 
 HARNESS_VERSION = "0.1.0"
-DEFAULT_HUB_URL = "http://10.120.81.95:8765"
-DEFAULT_TOKEN_PATH = Path(r"C:\Users\jerem\.forgewire\hub.token")
+DEFAULT_HUB_URL = "http://192.0.2.10:8765"
+DEFAULT_TOKEN_PATH = Path(r"C:\Users\operator\.forgewire\hub.token")
 TERMINAL_STATUSES = {"done", "failed", "cancelled", "timed_out"}
 APPROVAL_RESOLVED_STATUSES = {"approved", "denied", "expired", "consumed"}
 
@@ -659,3 +659,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

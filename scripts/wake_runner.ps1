@@ -25,7 +25,7 @@
 [CmdletBinding()]
 param(
     [string]$RemoteHost = "phrenforge",
-    [string]$RemoteRepo = "C:\Users\jerem\Projects\PhrenForge",
+    [string]$RemoteRepo = "C:\Users\operator\Projects\PhrenForge",
     [string]$WakeMessage = "drain the queue"
 )
 
@@ -45,3 +45,4 @@ if ($exit -ne 0) {
 } else {
     Write-Host "Wake dispatched. The runner will now loop until the queue is empty."
 }
+

@@ -1,7 +1,7 @@
 """Live-cluster smoke tests for :mod:`forgewire_fabric.hub._rqlite_db`.
 
 Runs against the real 3-voter rqlite cluster bootstrapped in Phase 1.
-Requires ``RQLITE_HOST`` (default ``10.120.81.95``) and ``RQLITE_PORT``
+Requires ``RQLITE_HOST`` (default ``192.0.2.10``) and ``RQLITE_PORT``
 (default ``4001``) reachable on the LAN. Tests are skipped automatically
 when the cluster is unreachable so this file is safe to keep in the
 default test pass.
@@ -21,7 +21,7 @@ import pytest
 
 from forgewire_fabric.hub import _rqlite_db as rdb
 
-RQLITE_HOST = os.environ.get("RQLITE_HOST", "10.120.81.95")
+RQLITE_HOST = os.environ.get("RQLITE_HOST", "192.0.2.10")
 RQLITE_PORT = int(os.environ.get("RQLITE_PORT", "4001"))
 
 
@@ -188,7 +188,7 @@ def test_replication_visible_on_follower(temp_table):
     Raft replication path end-to-end through the adapter.
     """
     leader = rdb.connect(RQLITE_HOST, RQLITE_PORT, timeout=10.0)
-    follower_host = os.environ.get("RQLITE_FOLLOWER_HOST", "10.120.81.56")
+    follower_host = os.environ.get("RQLITE_FOLLOWER_HOST", "192.0.2.11")
     follower_port = int(os.environ.get("RQLITE_FOLLOWER_PORT", "4001"))
     try:
         with httpx.Client(
@@ -215,3 +215,4 @@ def test_replication_visible_on_follower(temp_table):
             follower.close()
     finally:
         leader.close()
+

@@ -1,0 +1,5 @@
+# .mirrorignore — paths excluded from the public mirror sync
+config/cluster.yaml
+tests/fixtures/live_healthz_capture.json
+scripts/dr/**
+REMOTE.md

@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Idempotently install BOTH ForgeWire runner flavors on this Windows host.
 
@@ -34,7 +34,7 @@
     Absolute path to the Python interpreter the runner service should use.
 
 .PARAMETER HubUrl
-    Hub base URL, e.g. http://10.120.81.95:8765.
+    Hub base URL, e.g. http://192.0.2.10:8765.
 
 .PARAMETER Token
     Bearer token. Trimmed and written to $DataDir\hub.token.
@@ -58,7 +58,7 @@
 .EXAMPLE
     pwsh -File install-host.ps1 `
         -PythonExe C:\Projects\forgewire-fabric\.venv\Scripts\python.exe `
-        -HubUrl http://10.120.81.95:8765 `
+        -HubUrl http://192.0.2.10:8765 `
         -Token (Get-Content $HOME\.forgewire\hub.token -Raw) `
         -WorkspaceRoot C:\Projects\fw-runner-workspace
 #>
@@ -220,3 +220,4 @@ if (-not $NoAgentMcp) {
     Write-Host "                   Wake with scripts\wake_runner.ps1 or open the"
     Write-Host "                   'forgewire-runner' chat mode in VS Code."
 }
+

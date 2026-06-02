@@ -40,8 +40,8 @@ from forgewire_fabric.runner.identity import (  # noqa: E402
 from forgewire_fabric.runner.runner_capabilities import sign_payload  # noqa: E402
 
 
-DEFAULT_HUB_URL = "http://10.120.81.95:8765"
-DEFAULT_TOKEN_PATH = Path(r"C:\Users\jerem\.forgewire\hub.token")
+DEFAULT_HUB_URL = "http://192.0.2.10:8765"
+DEFAULT_TOKEN_PATH = Path(r"C:\Users\operator\.forgewire\hub.token")
 BASE_COMMIT = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 TERMINAL_STATUSES = {"done", "failed", "cancelled", "timed_out"}
 

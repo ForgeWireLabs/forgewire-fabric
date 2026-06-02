@@ -156,7 +156,7 @@ Object keys sorted lexicographically. No whitespace. UTF-8 encoded. The Rust `fa
 
 ## Live-smoke status at oracle capture
 
-Live `/healthz` captured 2026-05-31 from OptiPlex hub (`DESKTOP-38GVF8D`, `10.43.106.95:8765`):
+Live `/healthz` captured 2026-05-31 from OptiPlex hub (`FORGEWIRE-HUB`, `192.0.2.10:8765`):
 
 ```json
 {
@@ -210,3 +210,4 @@ All three Rust crates have Python fallbacks controlled by `FORGEWIRE_FORCE_PYTHO
 | 0 | Python oracle freeze | ✅ Tag `oracle/v2.7.0-baseline` at `978098a`; fixture corpus created; live-smoke pending |
 
 Next gate: live `/healthz` + OpenAPI capture, then M2.7.1 begins.
+

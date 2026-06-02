@@ -39,20 +39,20 @@
 .EXAMPLE
     # Standard Rust runner install:
     pwsh -File nssm-install-runner.ps1 `
-        -HubUrl http://10.43.106.95:8765 `
+        -HubUrl http://192.0.2.10:8765 `
         -Token (Get-Content hub.token -Raw) `
         -WorkspaceRoot C:\Projects\forgewire
 
     # Command runner with kind:command tag:
     pwsh -File nssm-install-runner.ps1 `
-        -HubUrl http://10.43.106.95:8765 `
+        -HubUrl http://192.0.2.10:8765 `
         -Token (Get-Content hub.token -Raw) `
         -WorkspaceRoot C:\Projects\forgewire `
         -Tags "kind:command"
 
     # Python fallback (migration window only):
     pwsh -File nssm-install-runner.ps1 `
-        -HubUrl http://10.43.106.95:8765 `
+        -HubUrl http://192.0.2.10:8765 `
         -Token (Get-Content hub.token -Raw) `
         -WorkspaceRoot C:\Projects\forgewire `
         -UsePython
@@ -216,3 +216,4 @@ if (-not $NoHubWatchdog -and $HubSshHost -and $HubSshUser -and $HubSshKeyFile) {
             -SshHost $HubSshHost -SshUser $HubSshUser -SshKeyFile $sshDest
     }
 }
+

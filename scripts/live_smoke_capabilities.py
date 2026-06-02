@@ -22,8 +22,8 @@ from pathlib import Path
 import httpx
 
 
-HUB_URL = "http://10.120.81.95:8765"
-TOKEN = Path(r"C:\Users\jerem\.forgewire\hub.token").read_text(encoding="utf-8").strip()
+HUB_URL = "http://192.0.2.10:8765"
+TOKEN = Path(r"C:\Users\operator\.forgewire\hub.token").read_text(encoding="utf-8").strip()
 HEADERS = {"Authorization": f"Bearer {TOKEN}"}
 
 
@@ -108,3 +108,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

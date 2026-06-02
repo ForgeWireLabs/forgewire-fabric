@@ -18,15 +18,15 @@ or removing a voter is one config edit + a `git pull` on each host.
 ```yaml
 voters:
   - label: node1
-    host: 10.120.81.95
+    host: 192.0.2.10
     port: 4001
     priority: 1
   - label: witness
-    host: 10.120.81.95
+    host: 192.0.2.10
     port: 4011
     priority: 2
   - label: node2
-    host: 10.120.81.56
+    host: 192.0.2.11
     port: 4001
     priority: 3
 
@@ -112,7 +112,7 @@ pwsh -File scripts\dr\backup_rqlite.ps1
 
 # Run with an explicit, ordered chain.
 pwsh -File scripts\dr\backup_rqlite.ps1 `
-    -Nodes "node1=10.120.81.95:4001,node2=10.120.81.56:4001"
+    -Nodes "node1=192.0.2.10:4001,node2=192.0.2.11:4001"
 
 # Trigger the scheduled task on demand.
 Start-ScheduledTask -TaskName ForgeWireRqliteBackup
@@ -168,3 +168,4 @@ captures only the operator-set names but is always current.
   live edits). Grant the hub service account write access to the
   directory, or point `FORGEWIRE_HUB_LABELS_SNAPSHOT` at a writable
   path.
+

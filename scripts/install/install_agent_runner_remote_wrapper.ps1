@@ -6,7 +6,7 @@ filesystem (never sent across the wire) and invokes the agent-runner installer.
 param(
     [string]$Installer = "$env:USERPROFILE\nssm-install-agent-runner.ps1",
     [string]$PythonExe = "C:\Projects\forgewire-fabric\.venv\Scripts\python.exe",
-    [string]$HubUrl    = "http://10.120.81.95:8765",
+    [string]$HubUrl    = "http://192.0.2.10:8765",
     [string]$TokenFile = "$env:USERPROFILE\.forgewire\hub.token"
 )
 $ErrorActionPreference = 'Stop'
@@ -17,3 +17,4 @@ $token = (Get-Content -Raw -Path $TokenFile).Trim()
 & powershell -NoProfile -ExecutionPolicy Bypass -File $Installer `
     -PythonExe $PythonExe -HubUrl $HubUrl -Token $token
 exit $LASTEXITCODE
+

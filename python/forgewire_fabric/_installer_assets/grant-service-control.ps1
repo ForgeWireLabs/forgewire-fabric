@@ -36,7 +36,7 @@
 
 .EXAMPLE
     pwsh -File grant-service-control.ps1 `
-        -Services ForgeWireRunner -Account 'DESKTOP-228U8GL\jerem'
+        -Services ForgeWireRunner -Account 'FORGEWIRE-BUILD\jerem'
 
 .NOTES
     Reversible. To revoke, edit the SDDL again and remove the
@@ -128,3 +128,4 @@ Write-Host "Done. From a normal (non-elevated) shell, $Account can now:" -Foregr
 foreach ($svc in $Services) {
     Write-Host "  Restart-Service $svc"
 }
+

@@ -66,8 +66,8 @@ cargo build --release
 
 ## Remote deploy (Precision → OptiPlex)
 
-From DESKTOP-228U8GL, the SSH host alias `forgewire` (key `~/.ssh/id_ed25519_forgewire`,
-user `jerem`, host `10.43.106.95`) gives access to the hub host.
+From FORGEWIRE-BUILD, the SSH host alias `forgewire` (key `~/.ssh/id_ed25519_forgewire`,
+user `jerem`, host `192.0.2.10`) gives access to the hub host.
 
 ```powershell
 # 1. Build
@@ -112,3 +112,4 @@ ssh forgewire "powershell -Command `"
 ## License
 
 Apache-2.0.
+

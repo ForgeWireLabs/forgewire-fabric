@@ -40,3 +40,8 @@ logs/
 
 # Build artifacts and scratch
 tmp/
+
+# Environment-specific / private — must never appear in the public mirror
+config/cluster.yaml
+tests/fixtures/live_healthz_capture.json
+REMOTE.md

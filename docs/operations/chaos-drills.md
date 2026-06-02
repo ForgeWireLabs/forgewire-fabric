@@ -8,9 +8,9 @@ substantive cluster changes) and archive the resulting JSONL log.
 
 | Node | Host | API | Role |
 |---|---|---|---|
-| node1-optiplex | 10.120.81.95 | :4001 | voter |
-| node3-witness  | 10.120.81.95 | :4011 | voter (witness on same host) |
-| node2-dell     | 10.120.81.56 | :4001 | voter |
+| node1-optiplex | 192.0.2.10 | :4001 | voter |
+| node3-witness  | 192.0.2.10 | :4011 | voter (witness on same host) |
+| node2-dell     | 192.0.2.11 | :4001 | voter |
 
 Leader is whichever Raft elected last. node3-witness is a full voter
 sharing the OptiPlex host — quorum is 2 of 3.
@@ -98,8 +98,8 @@ served from the survivor; quorum and writes recover at 2/3.
 > without operator impact.
 
 1. `New-NetFirewallRule -DisplayName ForgeWireChaosBlockOptiPlex
-   -Direction Outbound -Action Block -RemoteAddress 10.120.81.95`.
-2. From Dell, observe `/nodes` at `http://10.120.81.56:4001` — Node1
+   -Direction Outbound -Action Block -RemoteAddress 192.0.2.10`.
+2. From Dell, observe `/nodes` at `http://192.0.2.11:4001` — Node1
    and Node3 should go `reachable: false` after a few seconds.
 3. Remove the firewall rule.
 4. Wait for the cluster to reform. Expect a leader visible on all
@@ -141,3 +141,4 @@ Chaos logs live at `cfg.chaos.log_root` (default
 `C:\ProgramData\forgewire\rqlite-chaos\chaos.<UTC>.jsonl`) and are
 pruned past `cfg.chaos.retention_days` (default 30). Ship them to the
 central log store if available.
+
