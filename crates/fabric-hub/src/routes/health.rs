@@ -10,6 +10,7 @@ use crate::state::HubState;
 
 pub async fn healthz(State(state): State<Arc<HubState>>) -> Json<Value> {
     let uptime = state.started_at.elapsed().as_secs_f64();
+    let buf = &state.stream_buffer;
     Json(json!({
         "status": "ok",
         "version": state.package_version,
@@ -22,5 +23,8 @@ pub async fn healthz(State(state): State<Arc<HubState>>) -> Json<Value> {
         "uptime_seconds": uptime,
         "host": state.host,
         "port": state.port,
+        "stream_profile": buf.profile().as_str(),
+        "stream_buffered_tasks": buf.buffered_task_count(),
+        "stream_buffered_lines": buf.buffered_line_count(),
     }))
 }

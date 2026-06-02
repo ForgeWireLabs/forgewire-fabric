@@ -15,6 +15,12 @@
 //!     FORGEWIRE_HUB_TOKEN_FILE       — bearer token file
 //!     FORGEWIRE_HUB_HOST             — bind host (default: 127.0.0.1)
 //!     FORGEWIRE_HUB_PORT             — bind port (default: 8765)
+//!
+//! Stream durability profile:
+//!     FORGEWIRE_HUB_STREAM_PROFILE   — "strict" | "balanced" | "throughput" (default: strict)
+//!       strict     — every line written to store before HTTP response (default, strongest)
+//!       balanced   — buffer 50 lines, flush to store as a batch
+//!       throughput — buffer 200 lines, flush to store as a batch (operator opt-in only)
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -28,6 +34,7 @@ use fabric_hub::routes::{approvals, audit, cluster, dispatchers, health, labels,
 use fabric_hub::state::HubState;
 use fabric_policy::{DispatchGate, FabricPolicy};
 use fabric_store::{FabricStore, SchemaStore};
+use fabric_streams::{DurabilityProfile, StreamBuffer};
 use tracing::info;
 
 const PROTOCOL_VERSION: i64 = 3;
@@ -93,6 +100,11 @@ async fn main() {
 
     let store: Arc<dyn FabricStore> = Arc::new(rqlite);
 
+    let stream_profile = DurabilityProfile::from_str(
+        &std::env::var("FORGEWIRE_HUB_STREAM_PROFILE").unwrap_or_default()
+    );
+    info!("stream_profile={}", stream_profile.as_str());
+
     let state = Arc::new(HubState {
         store,
         token,
@@ -108,6 +120,7 @@ async fn main() {
         package_version: PACKAGE_VERSION.into(),
         sidecar_integrity: "trusted_bearer".into(),
         backend: format!("rqlite:{rqlite_host}:{rqlite_port}"),
+        stream_buffer: Arc::new(StreamBuffer::new(stream_profile)),
     });
 
     // Public routes (no auth)

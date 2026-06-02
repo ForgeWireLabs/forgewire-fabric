@@ -9,6 +9,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use fabric_store::{NoteStore, ProgressStore, ResultStore, StreamStore, SubmitResultParams, TaskStore};
+use fabric_streams::{DurabilityProfile, PendingEntry};
 
 use crate::state::HubState;
 use crate::utils::{audit_append, utc_now};
@@ -69,6 +70,43 @@ pub struct StreamQuery {
 
 fn default_stream_limit() -> i64 { 500 }
 
+// ── helpers ──────────────────────────────────────────────────────────────────
+
+/// Flush a batch of buffered entries to the store, grouped by worker_id.
+/// Uses a single timestamp (flush time) for all entries in the group.
+async fn flush_batch(
+    state: &HubState,
+    task_id: i64,
+    batch: Vec<PendingEntry>,
+) -> Result<usize, (StatusCode, String)> {
+    if batch.is_empty() {
+        return Ok(0);
+    }
+    let now = utc_now();
+    // Group by worker_id — in practice always one runner per task.
+    let mut groups: Vec<(String, Vec<(String, String)>)> = Vec::new();
+    for entry in batch {
+        if let Some(g) = groups.iter_mut().find(|(wid, _)| wid == &entry.worker_id) {
+            g.1.push((entry.channel, entry.line));
+        } else {
+            groups.push((entry.worker_id, vec![(entry.channel, entry.line)]));
+        }
+    }
+    let mut total = 0usize;
+    for (worker_id, entries) in groups {
+        let written = state.store
+            .append_stream_bulk(task_id, &worker_id, &entries, &now)
+            .await
+            .map_err(|e| match e {
+                fabric_store::StoreError::NotFound(_) => (StatusCode::NOT_FOUND, "task not found".into()),
+                fabric_store::StoreError::PermissionDenied(m) => (StatusCode::FORBIDDEN, m),
+                other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+            })?;
+        total += written.len();
+    }
+    Ok(total)
+}
+
 // ---- POST /tasks/{task_id}/start -------------------------------------------
 
 pub async fn mark_running(
@@ -122,13 +160,37 @@ pub async fn append_stream(
     if !valid_channels.contains(&payload.channel.as_str()) {
         return Err((StatusCode::BAD_REQUEST, format!("invalid stream channel: {}", payload.channel)));
     }
-    let line = state.store.append_stream(task_id, &payload.worker_id, &payload.channel, &payload.line, &utc_now())
-        .await.map_err(|e| match e {
-            fabric_store::StoreError::NotFound(_) => (StatusCode::NOT_FOUND, "task not found".into()),
-            fabric_store::StoreError::PermissionDenied(m) => (StatusCode::FORBIDDEN, m),
-            other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
-        })?;
-    Ok(Json(serde_json::to_value(line).unwrap_or(Value::Null)))
+
+    match state.stream_buffer.profile() {
+        DurabilityProfile::Strict => {
+            // Bypass the buffer entirely — write to store and return the StreamLine.
+            let line = state.store
+                .append_stream(task_id, &payload.worker_id, &payload.channel, &payload.line, &utc_now())
+                .await
+                .map_err(|e| match e {
+                    fabric_store::StoreError::NotFound(_) => (StatusCode::NOT_FOUND, "task not found".into()),
+                    fabric_store::StoreError::PermissionDenied(m) => (StatusCode::FORBIDDEN, m),
+                    other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+                })?;
+            Ok(Json(serde_json::to_value(line).unwrap_or(Value::Null)))
+        }
+        _ => {
+            // Balanced / Throughput: accumulate in buffer.
+            let maybe_batch = state.stream_buffer.push(
+                task_id,
+                payload.worker_id,
+                payload.channel,
+                payload.line,
+                utc_now(),
+            );
+            if let Some(batch) = maybe_batch {
+                let count = flush_batch(&state, task_id, batch).await?;
+                Ok(Json(json!({"task_id": task_id, "count": count, "buffered": false})))
+            } else {
+                Ok(Json(json!({"task_id": task_id, "buffered": true})))
+            }
+        }
+    }
 }
 
 // ---- POST /tasks/{task_id}/stream/bulk -------------------------------------
@@ -141,19 +203,46 @@ pub async fn append_stream_bulk(
     if payload.entries.is_empty() {
         return Ok(Json(json!({"task_id": task_id, "count": 0})));
     }
-    let entries: Vec<(String, String)> = payload.entries.into_iter()
-        .map(|e| (e.channel, e.line))
-        .collect();
-    let lines = state.store.append_stream_bulk(task_id, &payload.worker_id, &entries, &utc_now())
-        .await.map_err(|e| match e {
-            fabric_store::StoreError::NotFound(_) => (StatusCode::NOT_FOUND, "task not found".into()),
-            fabric_store::StoreError::PermissionDenied(m) => (StatusCode::FORBIDDEN, m),
-            other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
-        })?;
-    let count = lines.len();
-    let first_seq = lines.first().map(|l| l.seq);
-    let last_seq = lines.last().map(|l| l.seq);
-    Ok(Json(json!({"task_id": task_id, "count": count, "first_seq": first_seq, "last_seq": last_seq})))
+
+    match state.stream_buffer.profile() {
+        DurabilityProfile::Strict => {
+            let entries: Vec<(String, String)> = payload.entries.into_iter()
+                .map(|e| (e.channel, e.line))
+                .collect();
+            let lines = state.store
+                .append_stream_bulk(task_id, &payload.worker_id, &entries, &utc_now())
+                .await
+                .map_err(|e| match e {
+                    fabric_store::StoreError::NotFound(_) => (StatusCode::NOT_FOUND, "task not found".into()),
+                    fabric_store::StoreError::PermissionDenied(m) => (StatusCode::FORBIDDEN, m),
+                    other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+                })?;
+            let count = lines.len();
+            let first_seq = lines.first().map(|l| l.seq);
+            let last_seq = lines.last().map(|l| l.seq);
+            Ok(Json(json!({"task_id": task_id, "count": count, "first_seq": first_seq, "last_seq": last_seq})))
+        }
+        _ => {
+            let now = utc_now();
+            let pending: Vec<PendingEntry> = payload.entries.into_iter()
+                .map(|e| PendingEntry {
+                    task_id,
+                    worker_id: payload.worker_id.clone(),
+                    channel: e.channel,
+                    line: e.line,
+                    ts: now.clone(),
+                })
+                .collect();
+            let n_in = pending.len();
+            let maybe_batch = state.stream_buffer.push_bulk(task_id, pending);
+            if let Some(batch) = maybe_batch {
+                let count = flush_batch(&state, task_id, batch).await?;
+                Ok(Json(json!({"task_id": task_id, "count": count, "buffered": false})))
+            } else {
+                Ok(Json(json!({"task_id": task_id, "count": n_in, "buffered": true})))
+            }
+        }
+    }
 }
 
 // ---- GET /tasks/{task_id}/stream -------------------------------------------
@@ -180,7 +269,15 @@ pub async fn submit_result(
         return Err((StatusCode::BAD_REQUEST, format!("invalid terminal status: {}", payload.status)));
     }
 
-    // Capture fields for audit before moving into SubmitResultParams
+    // Force-flush any buffered stream lines before marking the task terminal.
+    // This ensures no lines are lost regardless of the durability profile.
+    let pending = state.stream_buffer.flush_task(task_id);
+    if !pending.is_empty() {
+        flush_batch(&state, task_id, pending).await?;
+    }
+    state.stream_buffer.forget(task_id);
+
+    // Capture fields for audit before moving into SubmitResultParams.
     let worker_id = payload.worker_id.clone();
     let status = payload.status.clone();
     let head_commit = payload.head_commit.clone();
@@ -205,7 +302,6 @@ pub async fn submit_result(
         other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
     })?;
 
-    // Audit result
     let audit_payload = json!({
         "task_id": task_id,
         "worker_id": worker_id,

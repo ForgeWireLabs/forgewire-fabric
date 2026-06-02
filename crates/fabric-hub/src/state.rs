@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use fabric_policy::DispatchGate;
 use fabric_store::FabricStore;
+use fabric_streams::StreamBuffer;
 
 pub struct HubState {
     pub store: Arc<dyn FabricStore>,
@@ -19,4 +20,6 @@ pub struct HubState {
     pub sidecar_integrity: String,
     /// "sqlite" | "rqlite"
     pub backend: String,
+    /// Bounded write buffer for task stream lines.
+    pub stream_buffer: Arc<StreamBuffer>,
 }
