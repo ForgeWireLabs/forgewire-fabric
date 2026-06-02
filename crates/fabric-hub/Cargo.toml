@@ -16,6 +16,7 @@ fabric-identity = { path = "../fabric-identity" }
 fabric-audit = { path = "../fabric-audit" }
 fabric-store = { path = "../fabric-store" }
 fabric-store-sqlite = { path = "../fabric-store-sqlite" }
+fabric-store-rqlite = { path = "../fabric-store-rqlite" }
 fabric-policy = { path = "../fabric-policy" }
 fabric-claim-router = { path = "../fabric-claim-router" }
 fabric-streams = { path = "../fabric-streams" }

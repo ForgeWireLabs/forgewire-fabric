@@ -84,6 +84,11 @@ pub fn generate(id: &str, purpose: KeyPurpose) -> IdentityFile {
 
 /// Load and validate an identity file from disk.
 ///
+/// Supports both the native Rust format (`id`, `public_key_hex`, `secret_key_hex`)
+/// and the Python/legacy format (`runner_id` or `dispatcher_id`, `public_key`,
+/// `private_key`). The Python format is normalised on load; the file on disk is
+/// NOT rewritten (migration is explicit via `save`).
+///
 /// Returns a diagnostic error if the file is missing, corrupted, or the
 /// public key doesn't match the secret key. Never silently regenerates.
 pub fn load(path: &Path) -> Result<IdentityFile, IdentityError> {
@@ -91,7 +96,38 @@ pub fn load(path: &Path) -> Result<IdentityFile, IdentityError> {
         return Err(IdentityError::NotFound(path.display().to_string()));
     }
     let data = std::fs::read_to_string(path)?;
-    let identity: IdentityFile = serde_json::from_str(&data)?;
+    // First try native Rust format
+    if let Ok(identity) = serde_json::from_str::<IdentityFile>(&data) {
+        validate(&identity)?;
+        return Ok(identity);
+    }
+    // Fall back to Python/legacy format
+    let raw: serde_json::Value = serde_json::from_str(&data)?;
+    let id = raw.get("runner_id")
+        .or_else(|| raw.get("dispatcher_id"))
+        .or_else(|| raw.get("id"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| serde_json::from_str::<IdentityFile>("").unwrap_err())?
+        .to_owned();
+    let public_key_hex = raw.get("public_key")
+        .or_else(|| raw.get("public_key_hex"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| serde_json::from_str::<IdentityFile>("").unwrap_err())?
+        .to_owned();
+    let secret_key_hex = raw.get("private_key")
+        .or_else(|| raw.get("secret_key_hex")
+        .or_else(|| raw.get("secret_key")))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| serde_json::from_str::<IdentityFile>("").unwrap_err())?
+        .to_owned();
+    let identity = IdentityFile {
+        id,
+        purpose: KeyPurpose::Runner, // Python format doesn't carry purpose; default Runner
+        public_key_hex,
+        secret_key_hex,
+        hostname: raw.get("hostname").and_then(|v| v.as_str()).map(|s| s.to_owned()),
+        created_at: raw.get("created_at").and_then(|v| v.as_str()).map(|s| s.to_owned()),
+    };
     validate(&identity)?;
     Ok(identity)
 }

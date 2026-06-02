@@ -267,6 +267,11 @@ impl SchemaStore for RqliteStore {
             ("tasks", "network_egress", "TEXT"),
             ("tasks", "dispatcher_id", "TEXT"),
             ("runners", "capabilities", "TEXT NOT NULL DEFAULT '{}'"),
+            ("runners", "claim_failures_total", "INTEGER NOT NULL DEFAULT 0"),
+            ("runners", "claim_failures_consecutive", "INTEGER NOT NULL DEFAULT 0"),
+            ("runners", "last_claim_error", "TEXT"),
+            ("runners", "last_claim_error_at", "TEXT"),
+            ("runners", "heartbeat_failures_total", "INTEGER NOT NULL DEFAULT 0"),
         ];
 
         for (table, column, col_type) in &additive {
@@ -409,83 +414,801 @@ fn row_to_audit_event(row: &Value) -> AuditEventRow {
     }
 }
 
-// -- Stub implementations (same pattern as fabric-store-sqlite) ---------------
+// -- Row conversion helpers --------------------------------------------------
 
-#[async_trait] impl TaskStore for RqliteStore {
-    async fn create_task(&self, _p: CreateTaskParams, _now: &str) -> StoreResult<TaskRow> { todo!() }
-    async fn get_task(&self, _id: i64) -> StoreResult<TaskRow> { todo!() }
-    async fn list_tasks(&self, _s: Option<&str>, _l: i64) -> StoreResult<Vec<TaskRow>> { todo!() }
-    async fn claim_task(&self, _id: i64, _w: &str, _now: &str) -> StoreResult<ClaimResult> { todo!() }
-    async fn mark_running(&self, _id: i64, _now: &str) -> StoreResult<TaskRow> { todo!() }
-    async fn cancel_task(&self, _id: i64, _now: &str) -> StoreResult<TaskRow> { todo!() }
-    async fn count_tasks(&self) -> StoreResult<i64> { todo!() }
+fn str_val(row: &Value, col: &str) -> String {
+    row[col].as_str().unwrap_or("").to_owned()
 }
-#[async_trait] impl ResultStore for RqliteStore {
-    async fn submit_result(&self, _p: SubmitResultParams, _now: &str) -> StoreResult<TaskRow> { todo!() }
+fn opt_str(row: &Value, col: &str) -> Option<String> {
+    row[col].as_str().map(|s| s.to_owned())
 }
-#[async_trait] impl RunnerStore for RqliteStore {
-    async fn upsert_runner(&self, _d: Value) -> StoreResult<RunnerRow> { todo!() }
-    async fn get_runner(&self, _id: &str) -> StoreResult<RunnerRow> { todo!() }
-    async fn list_runners(&self) -> StoreResult<Vec<RunnerRow>> { todo!() }
-    async fn runner_public_key(&self, _id: &str) -> StoreResult<Option<String>> { todo!() }
-    async fn heartbeat_runner(&self, _id: &str, _d: Value, _now: &str) -> StoreResult<RunnerRow> { todo!() }
-    async fn request_drain(&self, _id: &str) -> StoreResult<RunnerRow> { todo!() }
-    async fn request_undrain(&self, _id: &str) -> StoreResult<RunnerRow> { todo!() }
-    async fn delete_runner(&self, _id: &str) -> StoreResult<RunnerRow> { todo!() }
+fn bool_val(row: &Value, col: &str) -> bool {
+    row[col].as_i64().map(|v| v != 0).unwrap_or(false)
 }
-#[async_trait] impl DispatcherStore for RqliteStore {
-    async fn upsert_dispatcher(&self, _d: Value) -> StoreResult<DispatcherRow> { todo!() }
-    async fn get_dispatcher(&self, _id: &str) -> StoreResult<DispatcherRow> { todo!() }
-    async fn list_dispatchers(&self) -> StoreResult<Vec<DispatcherRow>> { todo!() }
-    async fn dispatcher_public_key(&self, _id: &str) -> StoreResult<Option<String>> { todo!() }
-    async fn delete_dispatcher(&self, _id: &str) -> StoreResult<DispatcherRow> { todo!() }
+fn json_val(row: &Value, col: &str) -> Value {
+    if let Some(s) = row[col].as_str() {
+        serde_json::from_str(s).unwrap_or(Value::Null)
+    } else {
+        row[col].clone()
+    }
 }
-#[async_trait] impl NonceStore for RqliteStore {
-    async fn consume_dispatcher_nonce(&self, _id: &str, _n: &str, _now: &str) -> StoreResult<()> { todo!() }
-    async fn consume_runner_nonce(&self, _id: &str, _n: &str, _now: &str) -> StoreResult<()> { todo!() }
+fn json_arr(row: &Value, col: &str) -> Value {
+    if let Some(s) = row[col].as_str() {
+        serde_json::from_str(s).unwrap_or(json!([]))
+    } else {
+        json!([])
+    }
 }
-#[async_trait] impl StreamStore for RqliteStore {
-    async fn append_stream(&self, _tid: i64, _wid: &str, _ch: &str, _l: &str, _now: &str) -> StoreResult<StreamLine> { todo!() }
-    async fn append_stream_bulk(&self, _tid: i64, _wid: &str, _e: &[(String, String)], _now: &str) -> StoreResult<Vec<StreamLine>> { todo!() }
-    async fn streams_since(&self, _tid: i64, _a: i64, _l: i64) -> StoreResult<Vec<StreamLine>> { todo!() }
+fn json_obj(row: &Value, col: &str) -> Value {
+    if let Some(s) = row[col].as_str() {
+        serde_json::from_str(s).unwrap_or(json!({}))
+    } else {
+        json!({})
+    }
 }
-#[async_trait] impl ProgressStore for RqliteStore {
-    async fn append_progress(&self, _tid: i64, _wid: &str, _m: &str, _f: Option<Vec<String>>, _now: &str) -> StoreResult<ProgressEntry> { todo!() }
-    async fn progress_since(&self, _tid: i64, _a: i64) -> StoreResult<Vec<ProgressEntry>> { todo!() }
+
+fn row_to_task(row: &Value) -> TaskRow {
+    TaskRow {
+        id: row["id"].as_i64().unwrap_or(0),
+        title: str_val(row, "title"),
+        prompt: str_val(row, "prompt"),
+        scope_globs: json_arr(row, "scope_globs"),
+        base_commit: str_val(row, "base_commit"),
+        branch: str_val(row, "branch"),
+        status: str_val(row, "status"),
+        kind: str_val(row, "kind"),
+        worker_id: opt_str(row, "worker_id"),
+        created_at: str_val(row, "created_at"),
+        claimed_at: opt_str(row, "claimed_at"),
+        started_at: opt_str(row, "started_at"),
+        completed_at: opt_str(row, "completed_at"),
+        cancel_requested: bool_val(row, "cancel_requested"),
+        metadata: json_obj(row, "metadata"),
+        todo_id: opt_str(row, "todo_id"),
+        timeout_minutes: row["timeout_minutes"].as_i64().unwrap_or(60),
+        priority: row["priority"].as_i64().unwrap_or(100),
+        required_tools: if row["required_tools"].is_null() { None } else { Some(json_arr(row, "required_tools")) },
+        required_tags: if row["required_tags"].is_null() { None } else { Some(json_arr(row, "required_tags")) },
+        tenant: opt_str(row, "tenant"),
+        workspace_root: opt_str(row, "workspace_root"),
+        require_base_commit: bool_val(row, "require_base_commit"),
+        required_capabilities: if row["required_capabilities"].is_null() { None } else { Some(json_arr(row, "required_capabilities")) },
+        secrets_needed: if row["secrets_needed"].is_null() { None } else { Some(json_arr(row, "secrets_needed")) },
+        network_egress: if row["network_egress"].is_null() { None } else { Some(json_val(row, "network_egress")) },
+        dispatcher_id: opt_str(row, "dispatcher_id"),
+    }
 }
-#[async_trait] impl ApprovalStore for RqliteStore {
-    async fn create_or_get_pending_approval(&self, _eh: &str, _d: Value, _tl: &str, _b: Option<&str>, _sg: Vec<String>, _di: Option<&str>, _now: &str) -> StoreResult<(String, bool)> { todo!() }
-    async fn consume_approval(&self, _id: &str, _eh: &str) -> StoreResult<bool> { todo!() }
-    async fn resolve_approval(&self, _id: &str, _s: &str, _a: Option<&str>, _r: Option<&str>, _now: &str) -> StoreResult<ApprovalRow> { todo!() }
-    async fn list_approvals(&self, _s: Option<&str>, _l: i64) -> StoreResult<Vec<ApprovalRow>> { todo!() }
-    async fn get_approval(&self, _id: &str) -> StoreResult<Option<ApprovalRow>> { todo!() }
+
+fn row_to_runner(row: &Value) -> RunnerRow {
+    RunnerRow {
+        runner_id: str_val(row, "runner_id"),
+        public_key: str_val(row, "public_key"),
+        hostname: str_val(row, "hostname"),
+        os: str_val(row, "os"),
+        arch: str_val(row, "arch"),
+        state: str_val(row, "state"),
+        runner_version: str_val(row, "runner_version"),
+        protocol_version: row["protocol_version"].as_i64().unwrap_or(2),
+        max_concurrent: row["max_concurrent"].as_i64().unwrap_or(1),
+        tools: json_arr(row, "tools"),
+        tags: json_arr(row, "tags"),
+        scope_prefixes: json_arr(row, "scope_prefixes"),
+        tenant: opt_str(row, "tenant"),
+        workspace_root: opt_str(row, "workspace_root"),
+        capabilities: json_obj(row, "capabilities"),
+        metadata: json_obj(row, "metadata"),
+        drain_requested: bool_val(row, "drain_requested"),
+        last_heartbeat: str_val(row, "last_heartbeat"),
+        first_seen: str_val(row, "first_seen"),
+        last_nonce: opt_str(row, "last_nonce"),
+    }
 }
-#[async_trait] impl SecretStore for RqliteStore {
-    async fn put_secret(&self, _n: &str, _v: &str, _now: &str) -> StoreResult<SecretMetadata> { todo!() }
-    async fn rotate_secret(&self, _n: &str, _v: &str, _now: &str) -> StoreResult<SecretMetadata> { todo!() }
-    async fn list_secrets(&self) -> StoreResult<Vec<SecretMetadata>> { todo!() }
-    async fn resolve_secrets(&self, _n: &[String]) -> StoreResult<std::collections::HashMap<String, String>> { todo!() }
-    async fn delete_secret(&self, _n: &str) -> StoreResult<bool> { todo!() }
+
+fn row_to_dispatcher(row: &Value) -> DispatcherRow {
+    DispatcherRow {
+        dispatcher_id: str_val(row, "dispatcher_id"),
+        public_key: str_val(row, "public_key"),
+        label: str_val(row, "label"),
+        hostname: opt_str(row, "hostname"),
+        metadata: json_obj(row, "metadata"),
+        first_seen: str_val(row, "first_seen"),
+        last_seen: str_val(row, "last_seen"),
+    }
 }
-#[async_trait] impl LabelStore for RqliteStore {
-    async fn get_labels(&self) -> StoreResult<Value> { todo!() }
-    async fn set_hub_name(&self, _n: &str, _b: Option<&str>, _now: &str) -> StoreResult<()> { todo!() }
-    async fn set_runner_alias(&self, _id: &str, _a: &str, _b: Option<&str>, _now: &str) -> StoreResult<()> { todo!() }
-    async fn set_host_alias(&self, _h: &str, _a: &str, _b: Option<&str>, _now: &str) -> StoreResult<()> { todo!() }
+
+fn row_to_stream_line(row: &Value) -> StreamLine {
+    StreamLine {
+        id: row["id"].as_i64().unwrap_or(0),
+        task_id: row["task_id"].as_i64().unwrap_or(0),
+        seq: row["seq"].as_i64().unwrap_or(0),
+        channel: str_val(row, "channel"),
+        line: str_val(row, "line"),
+        created_at: str_val(row, "created_at"),
+    }
 }
-#[async_trait] impl HostRoleStore for RqliteStore {
-    async fn set_host_role(&self, _h: &str, _r: &str, _e: bool, _s: Option<&str>, _m: Value, _now: &str) -> StoreResult<HostRoleRow> { todo!() }
-    async fn get_host_role(&self, _h: &str, _r: &str) -> StoreResult<Option<HostRoleRow>> { todo!() }
-    async fn list_host_roles(&self) -> StoreResult<Vec<HostRoleRow>> { todo!() }
+
+fn row_to_progress(row: &Value) -> ProgressEntry {
+    ProgressEntry {
+        id: row["id"].as_i64().unwrap_or(0),
+        task_id: row["task_id"].as_i64().unwrap_or(0),
+        seq: row["seq"].as_i64().unwrap_or(0),
+        message: str_val(row, "message"),
+        files_touched: json_arr(row, "files_touched"),
+        created_at: str_val(row, "created_at"),
+    }
+}
+
+fn row_to_approval(row: &Value) -> ApprovalRow {
+    ApprovalRow {
+        approval_id: str_val(row, "approval_id"),
+        envelope_hash: str_val(row, "envelope_hash"),
+        status: str_val(row, "status"),
+        decision_json: json_obj(row, "decision_json"),
+        task_label: opt_str(row, "task_label"),
+        branch: opt_str(row, "branch"),
+        scope_globs_json: json_arr(row, "scope_globs_json"),
+        dispatcher_id: opt_str(row, "dispatcher_id"),
+        approver: opt_str(row, "approver"),
+        reason: opt_str(row, "reason"),
+        created_at: str_val(row, "created_at"),
+        resolved_at: opt_str(row, "resolved_at"),
+    }
+}
+
+fn row_to_secret_metadata(row: &Value) -> SecretMetadata {
+    SecretMetadata {
+        name: str_val(row, "name"),
+        version: row["version"].as_i64().unwrap_or(1),
+        created_at: str_val(row, "created_at"),
+        last_rotated_at: opt_str(row, "last_rotated_at"),
+    }
+}
+
+fn row_to_host_role(row: &Value) -> HostRoleRow {
+    HostRoleRow {
+        hostname: str_val(row, "hostname"),
+        role: str_val(row, "role"),
+        enabled: bool_val(row, "enabled"),
+        status: opt_str(row, "status"),
+        metadata: json_obj(row, "metadata"),
+        updated_at: str_val(row, "updated_at"),
+    }
+}
+
+/// Generate a random 32-hex-char ID.
+fn generate_id() -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos().hash(&mut h);
+    std::thread::current().id().hash(&mut h);
+    let a = h.finish();
+    let mut h2 = DefaultHasher::new();
+    a.hash(&mut h2);
+    99u64.hash(&mut h2);
+    let b = h2.finish();
+    format!("{a:016x}{b:016x}")
+}
+
+// -- Tasks -------------------------------------------------------------------
+
+#[async_trait]
+impl TaskStore for RqliteStore {
+    async fn create_task(&self, p: CreateTaskParams, now: &str) -> StoreResult<TaskRow> {
+        let scope_json = serde_json::to_string(&p.scope_globs).unwrap_or_else(|_| "[]".into());
+        let meta_json = serde_json::to_string(&p.metadata).unwrap_or_else(|_| "{}".into());
+        let tools_json = p.required_tools.as_ref().map(|v| serde_json::to_string(v).unwrap_or_else(|_| "[]".into()));
+        let tags_json = p.required_tags.as_ref().map(|v| serde_json::to_string(v).unwrap_or_else(|_| "[]".into()));
+        let caps_json = p.required_capabilities.as_ref().map(|v| serde_json::to_string(v).unwrap_or_else(|_| "[]".into()));
+        let secrets_json = p.secrets_needed.as_ref().map(|v| serde_json::to_string(v).unwrap_or_else(|_| "[]".into()));
+        let egress_json = p.network_egress.as_ref().map(|v| serde_json::to_string(v).unwrap_or_else(|_| "null".into()));
+        let require_bc: i64 = if p.require_base_commit { 1 } else { 0 };
+
+        self.execute_one(
+            "INSERT INTO tasks (todo_id,title,prompt,scope_globs,base_commit,branch,timeout_minutes,priority,metadata,required_tools,required_tags,tenant,workspace_root,require_base_commit,dispatcher_id,required_capabilities,secrets_needed,network_egress,kind,created_at,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'queued')",
+            &[json!(p.todo_id), json!(p.title), json!(p.prompt), json!(scope_json), json!(p.base_commit), json!(p.branch), json!(p.timeout_minutes), json!(p.priority), json!(meta_json), json!(tools_json), json!(tags_json), json!(p.tenant), json!(p.workspace_root), json!(require_bc), json!(p.dispatcher_id), json!(caps_json), json!(secrets_json), json!(egress_json), json!(p.kind), json!(now)],
+        ).await?;
+
+        // Get the inserted ID via last_insert_rowid
+        let id: Option<i64> = self.query_scalar("SELECT last_insert_rowid()", &[]).await?;
+        let id = id.ok_or_else(|| StoreError::Backend("no last_insert_rowid".into()))?;
+        self.get_task(id).await
+    }
+
+    async fn get_task(&self, id: i64) -> StoreResult<TaskRow> {
+        let rows = self.query("SELECT * FROM tasks WHERE id = ?", &[json!(id)]).await?;
+        rows.into_iter().next()
+            .map(|r| row_to_task(&r))
+            .ok_or_else(|| StoreError::NotFound(format!("task {id}")))
+    }
+
+    async fn list_tasks(&self, status: Option<&str>, limit: i64) -> StoreResult<Vec<TaskRow>> {
+        let rows = if let Some(s) = status {
+            self.query("SELECT * FROM tasks WHERE status = ? ORDER BY priority DESC, id ASC LIMIT ?", &[json!(s), json!(limit)]).await?
+        } else {
+            self.query("SELECT * FROM tasks ORDER BY priority DESC, id ASC LIMIT ?", &[json!(limit)]).await?
+        };
+        Ok(rows.iter().map(row_to_task).collect())
+    }
+
+    async fn claim_task(&self, task_id: i64, worker_id: &str, now: &str) -> StoreResult<ClaimResult> {
+        let rows_changed = self.execute_one(
+            "UPDATE tasks SET status='claimed', worker_id=?, claimed_at=? WHERE id=? AND status='queued' AND cancel_requested=0",
+            &[json!(worker_id), json!(now), json!(task_id)],
+        ).await?;
+        if rows_changed == 0 {
+            return Ok(ClaimResult::AlreadyClaimed);
+        }
+        Ok(ClaimResult::Claimed(self.get_task(task_id).await?))
+    }
+
+    async fn mark_running(&self, task_id: i64, now: &str) -> StoreResult<TaskRow> {
+        self.execute_one(
+            "UPDATE tasks SET status='running', started_at=COALESCE(started_at,?) WHERE id=? AND status IN ('claimed','running')",
+            &[json!(now), json!(task_id)],
+        ).await?;
+        self.get_task(task_id).await
+    }
+
+    async fn cancel_task(&self, task_id: i64, now: &str) -> StoreResult<TaskRow> {
+        self.execute_one("UPDATE tasks SET cancel_requested=1 WHERE id=?", &[json!(task_id)]).await?;
+        self.execute_one(
+            "UPDATE tasks SET status='cancelled', completed_at=? WHERE id=? AND status='queued'",
+            &[json!(now), json!(task_id)],
+        ).await?;
+        self.get_task(task_id).await
+    }
+
+    async fn count_tasks(&self) -> StoreResult<i64> {
+        let n: Option<i64> = self.query_scalar("SELECT COUNT(*) FROM tasks", &[]).await?;
+        Ok(n.unwrap_or(0))
+    }
+}
+
+// -- Results -----------------------------------------------------------------
+
+#[async_trait]
+impl ResultStore for RqliteStore {
+    async fn submit_result(&self, p: SubmitResultParams, now: &str) -> StoreResult<TaskRow> {
+        let commits_json = serde_json::to_string(&p.commits).unwrap_or_else(|_| "[]".into());
+        let files_json = serde_json::to_string(&p.files_touched).unwrap_or_else(|_| "[]".into());
+
+        let rows_changed = self.execute_one(
+            "UPDATE tasks SET status=?, completed_at=? WHERE id=? AND worker_id=?",
+            &[json!(p.status), json!(now), json!(p.task_id), json!(p.worker_id)],
+        ).await?;
+
+        if rows_changed == 0 {
+            let rows = self.query("SELECT worker_id FROM tasks WHERE id=?", &[json!(p.task_id)]).await?;
+            return match rows.first() {
+                None => Err(StoreError::NotFound(format!("task {}", p.task_id))),
+                Some(r) => Err(StoreError::PermissionDenied(format!(
+                    "worker {} cannot report result for task owned by {}", p.worker_id, str_val(r, "worker_id")
+                ))),
+            };
+        }
+
+        self.execute_one(
+            "INSERT OR REPLACE INTO results (task_id,status,branch,head_commit,commits_json,files_touched,test_summary,log_tail,error,reported_at) SELECT ?,?,branch,?,?,?,?,?,?,? FROM tasks WHERE id=?",
+            &[json!(p.task_id), json!(p.status), json!(p.head_commit), json!(commits_json), json!(files_json), json!(p.test_summary), json!(p.log_tail), json!(p.error), json!(now), json!(p.task_id)],
+        ).await?;
+
+        self.get_task(p.task_id).await
+    }
+}
+
+// -- Runners -----------------------------------------------------------------
+
+#[async_trait]
+impl RunnerStore for RqliteStore {
+    async fn upsert_runner(&self, data: Value) -> StoreResult<RunnerRow> {
+        let runner_id = data["runner_id"].as_str().ok_or_else(|| StoreError::Backend("missing runner_id".into()))?.to_owned();
+        let public_key = data["public_key"].as_str().unwrap_or("").to_owned();
+        let now = utc_now();
+
+        // Prune ghost runners from same hostname
+        if let Some(hostname) = data["hostname"].as_str() {
+            if !hostname.is_empty() {
+                let cutoff = utc_offset(-120);
+                self.execute_one(
+                    "DELETE FROM runners WHERE hostname=? AND runner_id!=? AND last_heartbeat<?",
+                    &[json!(hostname), json!(runner_id), json!(cutoff)],
+                ).await?;
+            }
+        }
+
+        // Check existing key binding
+        let existing_key_rows = self.query("SELECT public_key FROM runners WHERE runner_id=?", &[json!(runner_id)]).await?;
+        if let Some(r) = existing_key_rows.first() {
+            if str_val(r, "public_key") != public_key {
+                return Err(StoreError::PermissionDenied("runner_id is already bound to a different public_key".into()));
+            }
+            let tools = serde_json::to_string(&data["tools"]).unwrap_or_else(|_| "[]".into());
+            let tags = serde_json::to_string(&data["tags"]).unwrap_or_else(|_| "[]".into());
+            let scope_prefixes = serde_json::to_string(&data["scope_prefixes"]).unwrap_or_else(|_| "[]".into());
+            let metadata = serde_json::to_string(data.get("metadata").unwrap_or(&json!({}))).unwrap_or_else(|_| "{}".into());
+            let capabilities = serde_json::to_string(data.get("capabilities").unwrap_or(&json!({}))).unwrap_or_else(|_| "{}".into());
+            self.execute_one(
+                "UPDATE runners SET hostname=?,os=?,arch=?,cpu_model=?,cpu_count=?,ram_mb=?,gpu=?,tools=?,tags=?,scope_prefixes=?,tenant=?,workspace_root=?,runner_version=?,protocol_version=?,max_concurrent=?,state='online',drain_requested=0,metadata=?,capabilities=?,last_heartbeat=?,claim_failures_consecutive=0,last_claim_error=NULL WHERE runner_id=?",
+                &[json!(data["hostname"]), json!(data["os"]), json!(data["arch"]), json!(data["cpu_model"]), json!(data["cpu_count"]), json!(data["ram_mb"]), json!(data["gpu"]), json!(tools), json!(tags), json!(scope_prefixes), json!(data["tenant"]), json!(data["workspace_root"]), json!(data["runner_version"]), json!(data["protocol_version"]), json!(data["max_concurrent"]), json!(metadata), json!(capabilities), json!(now), json!(runner_id)],
+            ).await?;
+        } else {
+            let tools = serde_json::to_string(&data["tools"]).unwrap_or_else(|_| "[]".into());
+            let tags = serde_json::to_string(&data["tags"]).unwrap_or_else(|_| "[]".into());
+            let scope_prefixes = serde_json::to_string(&data["scope_prefixes"]).unwrap_or_else(|_| "[]".into());
+            let metadata = serde_json::to_string(data.get("metadata").unwrap_or(&json!({}))).unwrap_or_else(|_| "{}".into());
+            let capabilities = serde_json::to_string(data.get("capabilities").unwrap_or(&json!({}))).unwrap_or_else(|_| "{}".into());
+            self.execute_one(
+                "INSERT INTO runners (runner_id,public_key,hostname,os,arch,cpu_model,cpu_count,ram_mb,gpu,tools,tags,scope_prefixes,tenant,workspace_root,runner_version,protocol_version,max_concurrent,state,drain_requested,metadata,first_seen,last_heartbeat,capabilities) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'online',0,?,?,?,?)",
+                &[json!(runner_id), json!(public_key), json!(data["hostname"]), json!(data["os"]), json!(data["arch"]), json!(data["cpu_model"]), json!(data["cpu_count"]), json!(data["ram_mb"]), json!(data["gpu"]), json!(tools), json!(tags), json!(scope_prefixes), json!(data["tenant"]), json!(data["workspace_root"]), json!(data["runner_version"]), json!(data["protocol_version"]), json!(data["max_concurrent"]), json!(metadata), json!(now), json!(now), json!(capabilities)],
+            ).await?;
+        }
+
+        self.get_runner(&runner_id).await
+    }
+
+    async fn get_runner(&self, runner_id: &str) -> StoreResult<RunnerRow> {
+        let rows = self.query("SELECT * FROM runners WHERE runner_id=?", &[json!(runner_id)]).await?;
+        rows.into_iter().next()
+            .map(|r| row_to_runner(&r))
+            .ok_or_else(|| StoreError::NotFound(format!("runner {runner_id}")))
+    }
+
+    async fn list_runners(&self) -> StoreResult<Vec<RunnerRow>> {
+        let rows = self.query("SELECT * FROM runners ORDER BY hostname, runner_id", &[]).await?;
+        Ok(rows.iter().map(row_to_runner).collect())
+    }
+
+    async fn runner_public_key(&self, runner_id: &str) -> StoreResult<Option<String>> {
+        let key: Option<String> = self.query_scalar("SELECT public_key FROM runners WHERE runner_id=?", &[json!(runner_id)]).await?;
+        Ok(key)
+    }
+
+    async fn heartbeat_runner(&self, runner_id: &str, data: Value, now: &str) -> StoreResult<RunnerRow> {
+        let nonce = data["nonce"].as_str().unwrap_or("").to_owned();
+        let rows_changed = self.execute_one(
+            "UPDATE runners SET last_heartbeat=?,cpu_load_pct=?,ram_free_mb=?,battery_pct=?,on_battery=?,last_known_commit=COALESCE(?,last_known_commit),last_nonce=?,claim_failures_total=COALESCE(?,claim_failures_total),claim_failures_consecutive=COALESCE(?,claim_failures_consecutive),last_claim_error=?,heartbeat_failures_total=COALESCE(?,heartbeat_failures_total),state=CASE WHEN drain_requested=1 THEN 'draining' ELSE 'online' END WHERE runner_id=? AND (last_nonce IS NULL OR last_nonce!=?)",
+            &[json!(now), json!(data["cpu_load_pct"]), json!(data["ram_free_mb"]), json!(data["battery_pct"]), json!(data["on_battery"].as_bool().map(|b| if b { 1 } else { 0 })), json!(data["last_known_commit"]), json!(nonce), json!(data["claim_failures_total"]), json!(data["claim_failures_consecutive"]), json!(data["last_claim_error"]), json!(data["heartbeat_failures_total"]), json!(runner_id), json!(nonce)],
+        ).await?;
+        if rows_changed == 0 {
+            let exists = self.query("SELECT 1 FROM runners WHERE runner_id=?", &[json!(runner_id)]).await?;
+            return if exists.is_empty() {
+                Err(StoreError::NotFound(format!("runner {runner_id}")))
+            } else {
+                Err(StoreError::PermissionDenied("nonce replay rejected".into()))
+            };
+        }
+        self.get_runner(runner_id).await
+    }
+
+    async fn request_drain(&self, runner_id: &str) -> StoreResult<RunnerRow> {
+        let n = self.execute_one("UPDATE runners SET drain_requested=1,state='draining' WHERE runner_id=?", &[json!(runner_id)]).await?;
+        if n == 0 { return Err(StoreError::NotFound(format!("runner {runner_id}"))); }
+        self.get_runner(runner_id).await
+    }
+
+    async fn request_undrain(&self, runner_id: &str) -> StoreResult<RunnerRow> {
+        let n = self.execute_one("UPDATE runners SET drain_requested=0,state=CASE WHEN state='draining' THEN 'online' ELSE state END WHERE runner_id=?", &[json!(runner_id)]).await?;
+        if n == 0 { return Err(StoreError::NotFound(format!("runner {runner_id}"))); }
+        self.get_runner(runner_id).await
+    }
+
+    async fn delete_runner(&self, runner_id: &str) -> StoreResult<RunnerRow> {
+        let row = self.get_runner(runner_id).await?;
+        self.execute_one("DELETE FROM runners WHERE runner_id=?", &[json!(runner_id)]).await?;
+        Ok(row)
+    }
+}
+
+// -- Dispatchers -------------------------------------------------------------
+
+#[async_trait]
+impl DispatcherStore for RqliteStore {
+    async fn upsert_dispatcher(&self, data: Value) -> StoreResult<DispatcherRow> {
+        let dispatcher_id = data["dispatcher_id"].as_str().ok_or_else(|| StoreError::Backend("missing dispatcher_id".into()))?.to_owned();
+        let public_key = data["public_key"].as_str().unwrap_or("").to_owned();
+        let now = utc_now();
+        let metadata = serde_json::to_string(data.get("metadata").unwrap_or(&json!({}))).unwrap_or_else(|_| "{}".into());
+
+        let existing = self.query("SELECT public_key FROM dispatchers WHERE dispatcher_id=?", &[json!(dispatcher_id)]).await?;
+        if let Some(r) = existing.first() {
+            if str_val(r, "public_key") != public_key {
+                return Err(StoreError::PermissionDenied("dispatcher_id is already bound to a different public_key".into()));
+            }
+            self.execute_one(
+                "UPDATE dispatchers SET label=?,hostname=?,metadata=?,last_seen=? WHERE dispatcher_id=?",
+                &[json!(data["label"]), json!(data["hostname"]), json!(metadata), json!(now), json!(dispatcher_id)],
+            ).await?;
+        } else {
+            self.execute_one(
+                "INSERT INTO dispatchers (dispatcher_id,public_key,label,hostname,metadata,first_seen,last_seen) VALUES (?,?,?,?,?,?,?)",
+                &[json!(dispatcher_id), json!(public_key), json!(data["label"]), json!(data["hostname"]), json!(metadata), json!(now), json!(now)],
+            ).await?;
+        }
+        self.get_dispatcher(&dispatcher_id).await
+    }
+
+    async fn get_dispatcher(&self, dispatcher_id: &str) -> StoreResult<DispatcherRow> {
+        let rows = self.query("SELECT * FROM dispatchers WHERE dispatcher_id=?", &[json!(dispatcher_id)]).await?;
+        rows.into_iter().next()
+            .map(|r| row_to_dispatcher(&r))
+            .ok_or_else(|| StoreError::NotFound(format!("dispatcher {dispatcher_id}")))
+    }
+
+    async fn list_dispatchers(&self) -> StoreResult<Vec<DispatcherRow>> {
+        let rows = self.query("SELECT * FROM dispatchers ORDER BY label, dispatcher_id", &[]).await?;
+        Ok(rows.iter().map(row_to_dispatcher).collect())
+    }
+
+    async fn dispatcher_public_key(&self, dispatcher_id: &str) -> StoreResult<Option<String>> {
+        let key: Option<String> = self.query_scalar("SELECT public_key FROM dispatchers WHERE dispatcher_id=?", &[json!(dispatcher_id)]).await?;
+        Ok(key)
+    }
+
+    async fn delete_dispatcher(&self, dispatcher_id: &str) -> StoreResult<DispatcherRow> {
+        let row = self.get_dispatcher(dispatcher_id).await?;
+        let hostname = row.hostname.clone();
+        self.execute_one("DELETE FROM dispatchers WHERE dispatcher_id=?", &[json!(dispatcher_id)]).await?;
+        if let Some(h) = hostname {
+            let n: Option<i64> = self.query_scalar("SELECT COUNT(*) FROM dispatchers WHERE hostname=?", &[json!(h)]).await?;
+            if n.unwrap_or(0) == 0 {
+                self.execute_one("DELETE FROM host_roles WHERE hostname=? AND role='dispatch'", &[json!(h)]).await?;
+            }
+        }
+        Ok(row)
+    }
+}
+
+// -- Nonces ------------------------------------------------------------------
+
+#[async_trait]
+impl NonceStore for RqliteStore {
+    async fn consume_dispatcher_nonce(&self, dispatcher_id: &str, nonce: &str, now: &str) -> StoreResult<()> {
+        let n = self.execute_one(
+            "UPDATE dispatchers SET last_nonce=?,last_seen=? WHERE dispatcher_id=? AND (last_nonce IS NULL OR last_nonce!=?)",
+            &[json!(nonce), json!(now), json!(dispatcher_id), json!(nonce)],
+        ).await?;
+        if n == 0 {
+            let exists = self.query("SELECT 1 FROM dispatchers WHERE dispatcher_id=?", &[json!(dispatcher_id)]).await?;
+            return if exists.is_empty() {
+                Err(StoreError::NotFound(format!("dispatcher {dispatcher_id}")))
+            } else {
+                Err(StoreError::PermissionDenied("nonce replay rejected".into()))
+            };
+        }
+        Ok(())
+    }
+
+    async fn consume_runner_nonce(&self, runner_id: &str, nonce: &str, now: &str) -> StoreResult<()> {
+        let n = self.execute_one(
+            "UPDATE runners SET last_nonce=?,last_heartbeat=? WHERE runner_id=? AND (last_nonce IS NULL OR last_nonce!=?)",
+            &[json!(nonce), json!(now), json!(runner_id), json!(nonce)],
+        ).await?;
+        if n == 0 {
+            let exists = self.query("SELECT 1 FROM runners WHERE runner_id=?", &[json!(runner_id)]).await?;
+            return if exists.is_empty() {
+                Err(StoreError::NotFound(format!("runner {runner_id}")))
+            } else {
+                Err(StoreError::PermissionDenied("nonce replay rejected".into()))
+            };
+        }
+        Ok(())
+    }
+}
+
+// -- Streams -----------------------------------------------------------------
+
+#[async_trait]
+impl StreamStore for RqliteStore {
+    async fn append_stream(&self, task_id: i64, worker_id: &str, channel: &str, line: &str, now: &str) -> StoreResult<StreamLine> {
+        let owner_rows = self.query("SELECT worker_id FROM tasks WHERE id=?", &[json!(task_id)]).await?;
+        let owner = owner_rows.first().ok_or_else(|| StoreError::NotFound(format!("task {task_id}")))?;
+        if opt_str(owner, "worker_id").as_deref() != Some(worker_id) {
+            return Err(StoreError::PermissionDenied("worker mismatch on stream append".into()));
+        }
+        let max_seq: Option<i64> = self.query_scalar("SELECT COALESCE(MAX(seq),0) FROM task_streams WHERE task_id=?", &[json!(task_id)]).await?;
+        let next_seq = max_seq.unwrap_or(0) + 1;
+        self.execute_one(
+            "INSERT INTO task_streams (task_id,seq,channel,line,created_at) VALUES (?,?,?,?,?)",
+            &[json!(task_id), json!(next_seq), json!(channel), json!(line), json!(now)],
+        ).await?;
+        let id: Option<i64> = self.query_scalar("SELECT last_insert_rowid()", &[]).await?;
+        Ok(StreamLine { id: id.unwrap_or(0), task_id, seq: next_seq, channel: channel.to_owned(), line: line.to_owned(), created_at: now.to_owned() })
+    }
+
+    async fn append_stream_bulk(&self, task_id: i64, worker_id: &str, entries: &[(String, String)], now: &str) -> StoreResult<Vec<StreamLine>> {
+        if entries.is_empty() { return Ok(vec![]); }
+        let owner_rows = self.query("SELECT worker_id FROM tasks WHERE id=?", &[json!(task_id)]).await?;
+        let owner = owner_rows.first().ok_or_else(|| StoreError::NotFound(format!("task {task_id}")))?;
+        if opt_str(owner, "worker_id").as_deref() != Some(worker_id) {
+            return Err(StoreError::PermissionDenied("worker mismatch on stream bulk append".into()));
+        }
+        let max_seq: Option<i64> = self.query_scalar("SELECT COALESCE(MAX(seq),0) FROM task_streams WHERE task_id=?", &[json!(task_id)]).await?;
+        let mut seq = max_seq.unwrap_or(0);
+        let mut result = Vec::with_capacity(entries.len());
+        for (channel, line) in entries {
+            seq += 1;
+            self.execute_one(
+                "INSERT INTO task_streams (task_id,seq,channel,line,created_at) VALUES (?,?,?,?,?)",
+                &[json!(task_id), json!(seq), json!(channel), json!(line), json!(now)],
+            ).await?;
+            let id: Option<i64> = self.query_scalar("SELECT last_insert_rowid()", &[]).await?;
+            result.push(StreamLine { id: id.unwrap_or(0), task_id, seq, channel: channel.clone(), line: line.clone(), created_at: now.to_owned() });
+        }
+        Ok(result)
+    }
+
+    async fn streams_since(&self, task_id: i64, after_seq: i64, limit: i64) -> StoreResult<Vec<StreamLine>> {
+        let rows = self.query("SELECT id,task_id,seq,channel,line,created_at FROM task_streams WHERE task_id=? AND seq>? ORDER BY seq ASC LIMIT ?", &[json!(task_id), json!(after_seq), json!(limit)]).await?;
+        Ok(rows.iter().map(row_to_stream_line).collect())
+    }
+}
+
+// -- Progress ----------------------------------------------------------------
+
+#[async_trait]
+impl ProgressStore for RqliteStore {
+    async fn append_progress(&self, task_id: i64, worker_id: &str, message: &str, files: Option<Vec<String>>, now: &str) -> StoreResult<ProgressEntry> {
+        let files_json = serde_json::to_string(&files.unwrap_or_default()).unwrap_or_else(|_| "[]".into());
+        let owner_rows = self.query("SELECT worker_id FROM tasks WHERE id=?", &[json!(task_id)]).await?;
+        let owner = owner_rows.first().ok_or_else(|| StoreError::NotFound(format!("task {task_id}")))?;
+        if opt_str(owner, "worker_id").as_deref() != Some(worker_id) {
+            return Err(StoreError::PermissionDenied("worker mismatch on progress".into()));
+        }
+        let max_seq: Option<i64> = self.query_scalar("SELECT COALESCE(MAX(seq),0) FROM progress WHERE task_id=?", &[json!(task_id)]).await?;
+        let next_seq = max_seq.unwrap_or(0) + 1;
+        self.execute_one(
+            "INSERT INTO progress (task_id,seq,message,files_touched,created_at) VALUES (?,?,?,?,?)",
+            &[json!(task_id), json!(next_seq), json!(message), json!(files_json), json!(now)],
+        ).await?;
+        let id: Option<i64> = self.query_scalar("SELECT last_insert_rowid()", &[]).await?;
+        Ok(ProgressEntry { id: id.unwrap_or(0), task_id, seq: next_seq, message: message.to_owned(), files_touched: json!([]), created_at: now.to_owned() })
+    }
+
+    async fn progress_since(&self, task_id: i64, after_seq: i64) -> StoreResult<Vec<ProgressEntry>> {
+        let rows = self.query("SELECT id,task_id,seq,message,files_touched,created_at FROM progress WHERE task_id=? AND seq>? ORDER BY seq ASC", &[json!(task_id), json!(after_seq)]).await?;
+        Ok(rows.iter().map(row_to_progress).collect())
+    }
+}
+
+// -- Approvals ---------------------------------------------------------------
+
+#[async_trait]
+impl ApprovalStore for RqliteStore {
+    async fn create_or_get_pending_approval(&self, envelope_hash: &str, decision: Value, task_label: &str, branch: Option<&str>, scope_globs: Vec<String>, dispatcher_id: Option<&str>, now: &str) -> StoreResult<(String, bool)> {
+        let rows = self.query("SELECT approval_id FROM approvals WHERE envelope_hash=? AND status='pending' LIMIT 1", &[json!(envelope_hash)]).await?;
+        if let Some(r) = rows.first() {
+            return Ok((str_val(r, "approval_id"), false));
+        }
+        let approval_id = generate_id();
+        let decision_json = serde_json::to_string(&decision).unwrap_or_else(|_| "{}".into());
+        let scope_json = serde_json::to_string(&scope_globs).unwrap_or_else(|_| "[]".into());
+        self.execute_one(
+            "INSERT INTO approvals (approval_id,envelope_hash,decision_json,task_label,branch,scope_globs_json,dispatcher_id,status,created_at) VALUES (?,?,?,?,?,?,?,'pending',?)",
+            &[json!(approval_id), json!(envelope_hash), json!(decision_json), json!(task_label), json!(branch), json!(scope_json), json!(dispatcher_id), json!(now)],
+        ).await?;
+        Ok((approval_id, true))
+    }
+
+    async fn consume_approval(&self, approval_id: &str, envelope_hash: &str) -> StoreResult<bool> {
+        let n = self.execute_one(
+            "UPDATE approvals SET status='consumed' WHERE approval_id=? AND envelope_hash=? AND status='approved'",
+            &[json!(approval_id), json!(envelope_hash)],
+        ).await?;
+        Ok(n > 0)
+    }
+
+    async fn resolve_approval(&self, approval_id: &str, status: &str, approver: Option<&str>, reason: Option<&str>, now: &str) -> StoreResult<ApprovalRow> {
+        let n = self.execute_one(
+            "UPDATE approvals SET status=?,approver=?,reason=?,resolved_at=? WHERE approval_id=? AND status='pending'",
+            &[json!(status), json!(approver), json!(reason), json!(now), json!(approval_id)],
+        ).await?;
+        if n == 0 {
+            let rows = self.query("SELECT * FROM approvals WHERE approval_id=?", &[json!(approval_id)]).await?;
+            return match rows.first() {
+                None => Err(StoreError::NotFound(format!("approval {approval_id}"))),
+                Some(r) => Err(StoreError::Conflict(format!("approval already resolved: status={}", str_val(r, "status")))),
+            };
+        }
+        let rows = self.query("SELECT * FROM approvals WHERE approval_id=?", &[json!(approval_id)]).await?;
+        rows.into_iter().next()
+            .map(|r| row_to_approval(&r))
+            .ok_or_else(|| StoreError::NotFound(format!("approval {approval_id}")))
+    }
+
+    async fn list_approvals(&self, status: Option<&str>, limit: i64) -> StoreResult<Vec<ApprovalRow>> {
+        let rows = if let Some(s) = status {
+            self.query("SELECT * FROM approvals WHERE status=? ORDER BY created_at DESC LIMIT ?", &[json!(s), json!(limit)]).await?
+        } else {
+            self.query("SELECT * FROM approvals ORDER BY created_at DESC LIMIT ?", &[json!(limit)]).await?
+        };
+        Ok(rows.iter().map(row_to_approval).collect())
+    }
+
+    async fn get_approval(&self, approval_id: &str) -> StoreResult<Option<ApprovalRow>> {
+        let rows = self.query("SELECT * FROM approvals WHERE approval_id=?", &[json!(approval_id)]).await?;
+        Ok(rows.first().map(row_to_approval))
+    }
+}
+
+// -- Secrets -----------------------------------------------------------------
+
+#[async_trait]
+impl SecretStore for RqliteStore {
+    async fn put_secret(&self, name: &str, encrypted_value: &str, now: &str) -> StoreResult<SecretMetadata> {
+        self.execute_one(
+            "INSERT INTO secrets (name,encrypted_value,version,created_at) VALUES (?,?,1,?) ON CONFLICT(name) DO UPDATE SET encrypted_value=?,created_at=?",
+            &[json!(name), json!(encrypted_value), json!(now), json!(encrypted_value), json!(now)],
+        ).await?;
+        let rows = self.query("SELECT name,version,created_at,last_rotated_at FROM secrets WHERE name=?", &[json!(name)]).await?;
+        rows.into_iter().next().map(|r| row_to_secret_metadata(&r)).ok_or_else(|| StoreError::Backend("secret not found after insert".into()))
+    }
+
+    async fn rotate_secret(&self, name: &str, encrypted_value: &str, now: &str) -> StoreResult<SecretMetadata> {
+        let n = self.execute_one(
+            "UPDATE secrets SET encrypted_value=?,version=version+1,last_rotated_at=? WHERE name=?",
+            &[json!(encrypted_value), json!(now), json!(name)],
+        ).await?;
+        if n == 0 { return Err(StoreError::NotFound(format!("secret {name}"))); }
+        let rows = self.query("SELECT name,version,created_at,last_rotated_at FROM secrets WHERE name=?", &[json!(name)]).await?;
+        rows.into_iter().next().map(|r| row_to_secret_metadata(&r)).ok_or_else(|| StoreError::Backend("secret not found after update".into()))
+    }
+
+    async fn list_secrets(&self) -> StoreResult<Vec<SecretMetadata>> {
+        let rows = self.query("SELECT name,version,created_at,last_rotated_at FROM secrets ORDER BY name", &[]).await?;
+        Ok(rows.iter().map(row_to_secret_metadata).collect())
+    }
+
+    async fn resolve_secrets(&self, names: &[String]) -> StoreResult<std::collections::HashMap<String, String>> {
+        if names.is_empty() { return Ok(std::collections::HashMap::new()); }
+        let mut out = std::collections::HashMap::new();
+        for name in names {
+            if let Some(val) = self.query_scalar::<String>("SELECT encrypted_value FROM secrets WHERE name=?", &[json!(name)]).await? {
+                out.insert(name.clone(), val);
+            }
+        }
+        Ok(out)
+    }
+
+    async fn delete_secret(&self, name: &str) -> StoreResult<bool> {
+        let n = self.execute_one("DELETE FROM secrets WHERE name=?", &[json!(name)]).await?;
+        Ok(n > 0)
+    }
+}
+
+// -- Labels ------------------------------------------------------------------
+
+#[async_trait]
+impl LabelStore for RqliteStore {
+    async fn get_labels(&self) -> StoreResult<Value> {
+        let rows = self.query("SELECT key, value_json FROM labels", &[]).await?;
+        let mut hub_name = String::new();
+        let mut runner_aliases = serde_json::Map::new();
+        let mut host_aliases = serde_json::Map::new();
+        for row in &rows {
+            let k = str_val(row, "key");
+            let raw = str_val(row, "value_json");
+            let s = serde_json::from_str::<Value>(&raw)
+                .ok()
+                .and_then(|v| v.as_str().map(|s| s.to_owned()))
+                .unwrap_or(raw);
+            if k == "hub_name" {
+                hub_name = s;
+            } else if let Some(rid) = k.strip_prefix("runner_alias:") {
+                runner_aliases.insert(rid.to_owned(), json!(s));
+            } else if let Some(h) = k.strip_prefix("host_alias:") {
+                host_aliases.insert(h.to_owned(), json!(s));
+            }
+        }
+        Ok(json!({"hub_name": hub_name, "runner_aliases": runner_aliases, "host_aliases": host_aliases}))
+    }
+
+    async fn set_hub_name(&self, name: &str, by: Option<&str>, now: &str) -> StoreResult<()> {
+        self.upsert_label("hub_name", name, by, now).await
+    }
+    async fn set_runner_alias(&self, runner_id: &str, alias: &str, by: Option<&str>, now: &str) -> StoreResult<()> {
+        self.upsert_label(&format!("runner_alias:{runner_id}"), alias, by, now).await
+    }
+    async fn set_host_alias(&self, hostname: &str, alias: &str, by: Option<&str>, now: &str) -> StoreResult<()> {
+        self.upsert_label(&format!("host_alias:{hostname}"), alias, by, now).await
+    }
+}
+
+impl RqliteStore {
+    async fn upsert_label(&self, key: &str, value: &str, updated_by: Option<&str>, now: &str) -> StoreResult<()> {
+        let value_json = serde_json::to_string(&Value::String(value.to_owned())).unwrap_or_else(|_| format!("\"{}\"", value));
+        if value.is_empty() {
+            self.execute_one("DELETE FROM labels WHERE key=?", &[json!(key)]).await?;
+        } else {
+            self.execute_one(
+                "INSERT INTO labels (key,value_json,updated_by,updated_at) VALUES (?,?,?,?) ON CONFLICT(key) DO UPDATE SET value_json=?,updated_by=?,updated_at=?",
+                &[json!(key), json!(value_json), json!(updated_by), json!(now), json!(value_json), json!(updated_by), json!(now)],
+            ).await?;
+        }
+        Ok(())
+    }
+}
+
+// -- Host roles --------------------------------------------------------------
+
+#[async_trait]
+impl HostRoleStore for RqliteStore {
+    async fn set_host_role(&self, hostname: &str, role: &str, enabled: bool, status: Option<&str>, metadata: Value, now: &str) -> StoreResult<HostRoleRow> {
+        let meta_json = serde_json::to_string(&metadata).unwrap_or_else(|_| "{}".into());
+        let enabled_int: i64 = if enabled { 1 } else { 0 };
+        self.execute_one(
+            "INSERT INTO host_roles (hostname,role,enabled,status,metadata,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(hostname,role) DO UPDATE SET enabled=?,status=?,metadata=?,updated_at=?",
+            &[json!(hostname), json!(role), json!(enabled_int), json!(status), json!(meta_json), json!(now), json!(enabled_int), json!(status), json!(meta_json), json!(now)],
+        ).await?;
+        let rows = self.query("SELECT * FROM host_roles WHERE hostname=? AND role=?", &[json!(hostname), json!(role)]).await?;
+        rows.into_iter().next()
+            .map(|r| row_to_host_role(&r))
+            .ok_or_else(|| StoreError::Backend("host_role not found after upsert".into()))
+    }
+
+    async fn get_host_role(&self, hostname: &str, role: &str) -> StoreResult<Option<HostRoleRow>> {
+        let rows = self.query("SELECT * FROM host_roles WHERE hostname=? AND role=?", &[json!(hostname), json!(role)]).await?;
+        Ok(rows.first().map(row_to_host_role))
+    }
+
+    async fn list_host_roles(&self) -> StoreResult<Vec<HostRoleRow>> {
+        let rows = self.query("SELECT * FROM host_roles ORDER BY hostname, role", &[]).await?;
+        Ok(rows.iter().map(row_to_host_role).collect())
+    }
+}
+
+// -- Notes -------------------------------------------------------------------
+
+#[async_trait]
+impl NoteStore for RqliteStore {
+    async fn post_note(&self, task_id: i64, author: &str, body: &str, now: &str) -> StoreResult<NoteRow> {
+        // rqlite doesn't support INSERT...SELECT...RETURNING in the same way;
+        // check task exists first, then insert.
+        let exists = self.query("SELECT id FROM tasks WHERE id=?", &[json!(task_id)]).await?;
+        if exists.is_empty() {
+            return Err(StoreError::NotFound(format!("task {task_id}")));
+        }
+        self.execute_one(
+            "INSERT INTO notes (task_id, author, body, created_at) VALUES (?,?,?,?)",
+            &[json!(task_id), json!(author), json!(body), json!(now)],
+        ).await?;
+        let id: Option<i64> = self.query_scalar("SELECT last_insert_rowid()", &[]).await?;
+        Ok(NoteRow { id: id.unwrap_or(0), task_id, author: author.to_owned(), body: body.to_owned(), created_at: now.to_owned() })
+    }
+
+    async fn read_notes(&self, task_id: i64, after_id: i64) -> StoreResult<Vec<NoteRow>> {
+        let rows = self.query(
+            "SELECT id,task_id,author,body,created_at FROM notes WHERE task_id=? AND id>? ORDER BY id ASC",
+            &[json!(task_id), json!(after_id)],
+        ).await?;
+        Ok(rows.iter().map(|r| NoteRow {
+            id: r["id"].as_i64().unwrap_or(0),
+            task_id: r["task_id"].as_i64().unwrap_or(0),
+            author: str_val(r, "author"),
+            body: str_val(r, "body"),
+            created_at: str_val(r, "created_at"),
+        }).collect())
+    }
 }
 
 impl FabricStore for RqliteStore {}
+
+fn utc_offset(offset_secs: i64) -> String {
+    let d = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    epoch_secs_to_iso(d.as_secs() as i64 + offset_secs)
+}
 
 fn utc_now() -> String {
     let d = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    let total_secs = d.as_secs();
+    epoch_secs_to_iso(d.as_secs() as i64)
+}
+
+fn epoch_secs_to_iso(total_secs: i64) -> String {
+    let total_secs = total_secs as u64;
     let secs = total_secs % 60;
     let mins = (total_secs / 60) % 60;
     let hours = (total_secs / 3600) % 24;

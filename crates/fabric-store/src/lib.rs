@@ -363,6 +363,23 @@ pub trait SchemaStore: Send + Sync {
     async fn run_additive_migrations(&self) -> StoreResult<()>;
 }
 
+// -- Note store (bidirectional task back-channel) ----------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NoteRow {
+    pub id: i64,
+    pub task_id: i64,
+    pub author: String,
+    pub body: String,
+    pub created_at: String,
+}
+
+#[async_trait]
+pub trait NoteStore: Send + Sync {
+    async fn post_note(&self, task_id: i64, author: &str, body: &str, now: &str) -> StoreResult<NoteRow>;
+    async fn read_notes(&self, task_id: i64, after_id: i64) -> StoreResult<Vec<NoteRow>>;
+}
+
 // -- Composite trait ---------------------------------------------------------
 
 /// The full store contract. A backend implements all sub-traits.
@@ -380,6 +397,7 @@ pub trait FabricStore:
     + SecretStore
     + LabelStore
     + HostRoleStore
+    + NoteStore
     + SchemaStore
     + Send
     + Sync

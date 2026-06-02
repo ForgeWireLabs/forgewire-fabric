@@ -170,8 +170,11 @@ export class HubProvider implements vscode.TreeDataProvider<HubNode> {
         {
           key: "version",
           label: "Hub version",
-          description: h.version,
+          description: `${h.version}${(h as any).rust_hub ? " ⚡" : ""}`,
           icon: "versions",
+          tooltip: (h as any).rust_hub
+            ? `Native Rust hub · backend: ${(h as any).backend ?? "rqlite"} · sidecar_integrity: ${(h as any).sidecar_integrity ?? "unknown"}`
+            : `Python hub`,
         },
         {
           key: "protocol",

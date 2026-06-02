@@ -16,6 +16,7 @@ pub async fn healthz(State(state): State<Arc<HubState>>) -> Json<Value> {
         "package_version": state.package_version,
         "protocol_version": state.protocol_version,
         "rust_hub": true,
+        "backend": state.backend,
         "sidecar_integrity": state.sidecar_integrity,
         "started_at": state.started_at_unix,
         "uptime_seconds": uptime,

@@ -4,10 +4,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use fabric_policy::DispatchGate;
-use fabric_store_sqlite::SqliteStore;
+use fabric_store::FabricStore;
 
 pub struct HubState {
-    pub store: Arc<SqliteStore>,
+    pub store: Arc<dyn FabricStore>,
     pub token: String,
     pub started_at: Instant,
     pub started_at_unix: f64,
@@ -17,4 +17,6 @@ pub struct HubState {
     pub protocol_version: i64,
     pub package_version: String,
     pub sidecar_integrity: String,
+    /// "sqlite" | "rqlite"
+    pub backend: String,
 }
