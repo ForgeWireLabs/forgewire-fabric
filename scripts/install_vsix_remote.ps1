@@ -27,3 +27,4 @@ if ($LASTEXITCODE -ne 0) { throw "remote install failed with exit $LASTEXITCODE"
 
 & ssh $RemoteHost "`"$RemoteCodeCli`" --list-extensions --show-versions" | Select-String forgewire
 
+

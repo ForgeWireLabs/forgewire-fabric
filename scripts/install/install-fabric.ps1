@@ -172,7 +172,7 @@ if (-not $HubUrl -and -not $ForceHub) {
     # Try hub candidates on common addresses
     $localIp = (Get-NetIPAddress -AddressFamily IPv4 -PrefixOrigin Dhcp -ErrorAction SilentlyContinue |
         Select-Object -First 1).IPAddress
-    $subnet = if ($localIp) { ($localIp -replace '\.\d+$', '') } else { "10.43.106" }
+    $subnet = if ($localIp) { ($localIp -replace '\.\d+$', '') } else { "192.0.2" }
 
     # Quick probe of known addresses first (fast path)
     foreach ($candidate in @("192.0.2.10", "192.0.2.11", "127.0.0.1", "${subnet}.1")) {
@@ -459,4 +459,5 @@ try {
 } catch {
     Write-Warning "  FAIL hub healthz unreachable: $($_.Exception.Message)"
 }
+
 
