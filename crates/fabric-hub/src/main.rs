@@ -1,8 +1,7 @@
 //! ForgeWire Fabric native hub daemon entry point.
 //!
-//! Backend selection (default: rqlite):
-//!     FORGEWIRE_HUB_BACKEND=rqlite   — rqlite HA cluster (DEFAULT)
-//!     FORGEWIRE_HUB_BACKEND=sqlite   — local SQLite (single-node fallback)
+//! Backend: rqlite only. SQLite is not a supported hub backend.
+//!     Removed: FORGEWIRE_HUB_BACKEND — always rqlite (M2.6.7)
 //!
 //! rqlite connection:
 //!     FORGEWIRE_HUB_RQLITE_HOST      — rqlite host (default: 127.0.0.1)
@@ -18,7 +17,6 @@
 //!     FORGEWIRE_HUB_PORT             — bind port (default: 8765)
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -30,7 +28,7 @@ use fabric_hub::routes::{approvals, audit, cluster, dispatchers, health, labels,
 use fabric_hub::state::HubState;
 use fabric_policy::{DispatchGate, FabricPolicy};
 use fabric_store::{FabricStore, SchemaStore};
-use tracing::{info, warn};
+use tracing::info;
 
 const PROTOCOL_VERSION: i64 = 3;
 const PACKAGE_VERSION: &str = "0.5.0-rust";
@@ -69,50 +67,31 @@ async fn main() {
         std::process::exit(1);
     }
 
-    // ── Backend selection ──────────────────────────────────────────────────
-    // Default is rqlite. SQLite is the single-node fallback only.
-    let backend = std::env::var("FORGEWIRE_HUB_BACKEND")
-        .unwrap_or_else(|_| "rqlite".into())
-        .to_lowercase();
+    // ── rqlite backend (only option) ──────────────────────────────────────
+    // SQLite is not a supported hub backend (retired M2.6.7).
+    // Use FORGEWIRE_HUB_BACKEND=sqlite only in unit tests via fabric-store-sqlite directly.
+    let rqlite_host = std::env::var("FORGEWIRE_HUB_RQLITE_HOST")
+        .unwrap_or_else(|_| "127.0.0.1".into());
+    let rqlite_port: u16 = std::env::var("FORGEWIRE_HUB_RQLITE_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4001);
+    let consistency = std::env::var("FORGEWIRE_HUB_RQLITE_CONSISTENCY")
+        .unwrap_or_else(|_| "strong".into());
 
-    let store: Arc<dyn FabricStore> = match backend.as_str() {
-        "sqlite" => {
-            warn!("FORGEWIRE_HUB_BACKEND=sqlite — single-node fallback mode. Use rqlite for HA.");
-            let db_path = std::env::var("FORGEWIRE_HUB_DB_PATH")
-                .map(PathBuf::from)
-                .unwrap_or_else(|_| {
-                    if cfg!(windows) {
-                        PathBuf::from(r"C:\ProgramData\forgewire\hub.sqlite3")
-                    } else {
-                        PathBuf::from("/var/lib/forgewire/hub.sqlite3")
-                    }
-                });
-            let s = fabric_store_sqlite::SqliteStore::open(&db_path).unwrap_or_else(|e| {
-                eprintln!("cannot open database {}: {e}", db_path.display());
-                std::process::exit(1);
-            });
-            s.init_schema().await.unwrap_or_else(|e| { eprintln!("schema init failed: {e}"); std::process::exit(1); });
-            s.run_additive_migrations().await.unwrap_or_else(|e| { eprintln!("migration failed: {e}"); std::process::exit(1); });
-            info!("backend=sqlite path={}", db_path.display());
-            Arc::new(s)
-        }
-        _ => {
-            // rqlite (default)
-            let rqlite_host = std::env::var("FORGEWIRE_HUB_RQLITE_HOST")
-                .unwrap_or_else(|_| "127.0.0.1".into());
-            let rqlite_port: u16 = std::env::var("FORGEWIRE_HUB_RQLITE_PORT")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(4001);
-            let consistency = std::env::var("FORGEWIRE_HUB_RQLITE_CONSISTENCY")
-                .unwrap_or_else(|_| "strong".into());
-            let s = fabric_store_rqlite::RqliteStore::new(&rqlite_host, rqlite_port, &consistency);
-            s.init_schema().await.unwrap_or_else(|e| { eprintln!("rqlite schema init failed: {e}"); std::process::exit(1); });
-            s.run_additive_migrations().await.unwrap_or_else(|e| { eprintln!("rqlite migration failed: {e}"); std::process::exit(1); });
-            info!("backend=rqlite host={rqlite_host} port={rqlite_port} consistency={consistency}");
-            Arc::new(s)
-        }
-    };
+    let rqlite = fabric_store_rqlite::RqliteStore::new(&rqlite_host, rqlite_port, &consistency);
+    rqlite.init_schema().await.unwrap_or_else(|e| {
+        eprintln!("rqlite schema init failed: {e}");
+        eprintln!("Is rqlite running on {rqlite_host}:{rqlite_port}? Check with: curl http://{rqlite_host}:{rqlite_port}/status");
+        std::process::exit(1);
+    });
+    rqlite.run_additive_migrations().await.unwrap_or_else(|e| {
+        eprintln!("rqlite migration failed: {e}");
+        std::process::exit(1);
+    });
+    info!("backend=rqlite host={rqlite_host} port={rqlite_port} consistency={consistency}");
+
+    let store: Arc<dyn FabricStore> = Arc::new(rqlite);
 
     let state = Arc::new(HubState {
         store,
@@ -128,7 +107,7 @@ async fn main() {
         protocol_version: PROTOCOL_VERSION,
         package_version: PACKAGE_VERSION.into(),
         sidecar_integrity: "trusted_bearer".into(),
-        backend: backend.clone(),
+        backend: format!("rqlite:{rqlite_host}:{rqlite_port}"),
     });
 
     // Public routes (no auth)
@@ -200,7 +179,7 @@ async fn main() {
     });
 
     info!("forgewire-hub (Rust) v{PACKAGE_VERSION} listening on {addr}");
-    info!("backend={backend} protocol_version={PROTOCOL_VERSION} sidecar_integrity=trusted_bearer");
+    info!("backend=rqlite protocol_version={PROTOCOL_VERSION} sidecar_integrity=trusted_bearer");
 
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap_or_else(|e| {
         eprintln!("bind failed on {addr}: {e}");
