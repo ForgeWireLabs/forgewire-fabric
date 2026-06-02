@@ -1,366 +1,381 @@
 <#
 .SYNOPSIS
-    One-command ForgeWire Fabric installer. Sets up the entire stack OOTB.
+    One-command ForgeWire Fabric installer. Installs rqlite, hub, runner, watchdogs, VSIX.
 
 .DESCRIPTION
     Run this on any Windows machine to join the ForgeWire Fabric cluster.
-    The script auto-detects whether this is the first node (installs hub +
-    rqlite + runner) or a joining node (discovers existing hub, installs
-    runner only).
+    Every node gets: rqlite (Raft member), runner, watchdogs, and VSIX.
+    The first node (or -ForceHub) also gets the hub.
 
-    What gets installed:
-      1. rqlite    — Raft-replicated database (NSSM service)
-      2. Hub       — Signed dispatch control plane (NSSM service, first node only)
-      3. Runner    — Command runner background service (NSSM service)
-      4. Watchdogs — Hub + runner liveness probes (scheduled tasks)
-      5. VSIX      — VS Code extension for the Fabric sidebar
-      6. MCP       — Dispatcher + agent-runner MCP server registration
-      7. Identity  — Ed25519 keypair + signed dispatcher registration
+    No Python required. All daemons are native Rust binaries from BinDir.
 
-    Subsequent nodes only install runner + watchdog + VSIX + MCP and point
-    at the discovered hub. Hub + rqlite are skipped unless -ForceHub is set.
+    What gets installed on EVERY node:
+      1. rqlite         — Raft-replicated database (NSSM service, all nodes)
+      2. Hub            — Signed dispatch control plane (NSSM, hub node only)
+      3. Runner         — Command runner background service (NSSM)
+      4. Watchdogs      — Hub + runner liveness probes (scheduled tasks)
+      5. VSIX           — VS Code extension for the Fabric sidebar
+      6. MCP (optional) — Dispatcher MCP registration (requires Python in venv)
+
+    Hub nodes are auto-detected via mDNS LAN scan; if no hub is found this
+    machine becomes the hub. Pass -ForceHub to override.
 
 .PARAMETER WorkspaceRoot
-    Absolute path the runner clones / executes inside. REQUIRED.
+    Absolute path the runner executes inside. REQUIRED.
 
 .PARAMETER Token
-    Bearer token for hub authentication. On the first node this is
-    auto-generated if omitted. On joining nodes this MUST match the
-    hub's token (copy from the first node's C:\ProgramData\forgewire\hub.token).
+    Bearer token. Auto-generated on first (hub) node. Must be provided on
+    joining nodes — copy from hub: Get-Content C:\ProgramData\forgewire\hub.token
+
+.PARAMETER BinDir
+    Directory containing forgewire-hub.exe and forgewire-runner.exe.
+    Default: C:\ProgramData\forgewire\bin
+    Binaries are copied here from FabricRoot\target\release\ if not present.
 
 .PARAMETER FabricRoot
-    Path to the forgewire-fabric repo checkout. Default: auto-detected
-    from the location of this script (../../).
+    Path to the forgewire-fabric repo checkout. Auto-detected from script location.
 
 .PARAMETER ForceHub
-    Install the hub even if an existing hub is discovered on the LAN.
+    Force hub+rqlite bootstrap even if a hub is discovered on the LAN.
 
 .PARAMETER HubUrl
-    Explicit hub URL to use instead of auto-discovery.
+    Explicit hub URL (skip mDNS discovery).
+
+.PARAMETER RqliteJoinAddr
+    rqlite raft address of an existing cluster member to join (host:raftPort).
+    Required when joining a multi-node cluster where bootstrap is already done.
+    Example: 10.43.106.95:4002
+
+.PARAMETER Tags
+    Comma-separated runner tags (e.g. "kind:command,gpu:nvidia").
 
 .PARAMETER SkipVsix
     Skip VS Code extension installation.
 
 .PARAMETER SkipMcp
-    Skip MCP server registration.
+    Skip MCP server registration (MCP requires Python; core install works without it).
 
 .EXAMPLE
-    # First node (auto-generates token, installs everything):
+    # First node — bootstraps hub, rqlite, runner, VSIX:
     pwsh -File install-fabric.ps1 -WorkspaceRoot C:\Projects\forgewire
 
-    # Joining node (provide the token from the first node):
+    # Joining node — discovers hub via mDNS, joins rqlite cluster:
     pwsh -File install-fabric.ps1 -WorkspaceRoot C:\Projects\forgewire `
-        -Token (Get-Content \\first-node\ProgramData\forgewire\hub.token -Raw)
+        -Token (Get-Content \\hub-node\c$\ProgramData\forgewire\hub.token -Raw) `
+        -RqliteJoinAddr 10.43.106.95:4002
 
-    # Explicit hub URL (skip discovery):
+    # Explicit hub URL (skip mDNS):
     pwsh -File install-fabric.ps1 -WorkspaceRoot C:\Projects\forgewire `
         -HubUrl http://10.43.106.95:8765 `
-        -Token (Get-Content $HOME\.forgewire\hub.token -Raw)
+        -Token (Get-Content hub.token -Raw) `
+        -RqliteJoinAddr 10.43.106.95:4002
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)][string]$WorkspaceRoot,
-    [string]$Token = "",
-    [string]$FabricRoot = "",
+    [string]$Token           = "",
+    [string]$BinDir          = "C:\ProgramData\forgewire\bin",
+    [string]$FabricRoot      = "",
     [switch]$ForceHub,
-    [string]$HubUrl = "",
+    [string]$HubUrl          = "",
+    [string]$RqliteJoinAddr  = "",
+    [string]$Tags            = "",
+    [string]$ScopePrefixes   = "",
+    [int]$MaxConcurrent      = 1,
+    [string]$DataDir         = "C:\ProgramData\forgewire",
+    [int]$HubPort            = 8765,
+    [int]$RqliteHttpPort     = 4001,
+    [int]$RqliteRaftPort     = 4002,
     [switch]$SkipVsix,
-    [switch]$SkipMcp,
-    [string]$DataDir = "C:\ProgramData\forgewire",
-    [int]$HubPort = 8765,
-    [int]$RqliteHttpPort = 4001,
-    [int]$RqliteRaftPort = 4002,
-    [string]$Tags = "",
-    [string]$ScopePrefixes = "",
-    [int]$MaxConcurrent = 1
+    [switch]$SkipMcp
 )
 
 $ErrorActionPreference = "Stop"
 
-# ---- Locate fabric root ----------------------------------------------------
+# ── Self-elevation ────────────────────────────────────────────────────────────
+$identity  = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = [System.Security.Principal.WindowsPrincipal]::new($identity)
+if (-not $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    $shellExe  = (Get-Process -Id $PID).Path
+    $forwarded = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$PSCommandPath)
+    foreach ($k in $PSBoundParameters.Keys) {
+        $v = $PSBoundParameters[$k]
+        if ($v -is [switch]) { if ($v.IsPresent) { $forwarded += "-$k" } }
+        else                 { $forwarded += "-$k"; $forwarded += $v }
+    }
+    Write-Host "Requesting elevation..."
+    $proc = Start-Process -FilePath $shellExe -Verb RunAs -Wait -PassThru -ArgumentList $forwarded
+    exit $proc.ExitCode
+}
+
+if (-not (Get-Command nssm.exe -ErrorAction SilentlyContinue)) {
+    throw "nssm.exe not found on PATH. Install: winget install nssm.nssm"
+}
+
+# ── Locate fabric root ────────────────────────────────────────────────────────
 if (-not $FabricRoot) {
     $FabricRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 }
-if (-not (Test-Path (Join-Path $FabricRoot "pyproject.toml"))) {
-    throw "Cannot find pyproject.toml at $FabricRoot. Pass -FabricRoot explicitly."
-}
-Write-Host "Fabric root: $FabricRoot" -ForegroundColor Cyan
+Write-Host "Fabric root  : $FabricRoot" -ForegroundColor Cyan
 
-# ---- Locate Python ----------------------------------------------------------
-$PythonExe = $null
-$candidates = @(
-    (Join-Path $FabricRoot ".venv\Scripts\python.exe"),
-    (Join-Path $WorkspaceRoot ".venv\Scripts\python.exe")
-)
-foreach ($cand in $candidates) {
-    if (Test-Path $cand) { $PythonExe = $cand; break }
-}
-if (-not $PythonExe) {
-    $PythonExe = (Get-Command python.exe -ErrorAction SilentlyContinue).Source
-}
-if (-not $PythonExe -or -not (Test-Path $PythonExe)) {
-    throw "Python not found. Create a venv at $FabricRoot\.venv or install Python globally."
-}
-Write-Host "Python: $PythonExe"
+# ── Locate or copy Rust binaries ──────────────────────────────────────────────
+New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
+$binaries = @("forgewire-hub.exe", "forgewire-runner.exe", "forgewire-fabric-cli.exe")
+$releaseDir = Join-Path $FabricRoot "target\release"
 
-# ---- Ensure forgewire-fabric is installed -----------------------------------
-$importTest = & $PythonExe -c "import forgewire_fabric; print(forgewire_fabric.__version__)" 2>&1
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "Installing forgewire-fabric into the venv..."
-    & $PythonExe -m pip install -e "$FabricRoot[mdns]" --quiet
-    $importTest = & $PythonExe -c "import forgewire_fabric; print(forgewire_fabric.__version__)" 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to install forgewire-fabric: $importTest"
-    }
-}
-Write-Host "forgewire-fabric v$($importTest.Trim())"
-
-# ---- Token generation or validation ----------------------------------------
-if (-not $Token) {
-    $existingTokenFile = Join-Path $DataDir "hub.token"
-    if (Test-Path $existingTokenFile) {
-        $Token = (Get-Content $existingTokenFile -Raw -ErrorAction SilentlyContinue)
-        if ($Token) {
-            $Token = $Token.Trim()
-            Write-Host "Using existing token from $existingTokenFile"
+foreach ($bin in $binaries) {
+    $dest = Join-Path $BinDir $bin
+    if (-not (Test-Path $dest)) {
+        $src = Join-Path $releaseDir $bin
+        if (Test-Path $src) {
+            Copy-Item $src $dest
+            Write-Host "  Copied $bin from $releaseDir"
+        } elseif ($bin -ne "forgewire-fabric-cli.exe") {
+            throw "$bin not found in $BinDir or $releaseDir. Run: cargo build --release -p fabric-hub -p fabric-runner"
         }
     }
 }
+
+$HubExe    = Join-Path $BinDir "forgewire-hub.exe"
+$RunnerExe = Join-Path $BinDir "forgewire-runner.exe"
+$CliExe    = Join-Path $BinDir "forgewire-fabric-cli.exe"
+
+Write-Host "Hub binary   : $HubExe" -ForegroundColor Cyan
+Write-Host "Runner binary: $RunnerExe" -ForegroundColor Cyan
+
+# ── Token ────────────────────────────────────────────────────────────────────
 if (-not $Token) {
-    # Generate a new token (first node)
-    $Token = -join ((1..32) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
-    Write-Host "Generated new bearer token (first node install)." -ForegroundColor Yellow
-    Write-Host "  Save this token for joining nodes: $Token"
+    $existingTokenFile = Join-Path $DataDir "hub.token"
+    if (Test-Path $existingTokenFile) {
+        $Token = (Get-Content $existingTokenFile -Raw).Trim()
+        Write-Host "Using existing token from $existingTokenFile"
+    }
 }
-if ($Token.Length -lt 16) {
-    throw "Token must be >= 16 characters."
+if (-not $Token) {
+    $Token = -join ((1..40) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
+    Write-Host "Generated new bearer token (first node)." -ForegroundColor Yellow
+    Write-Host "  Token: $Token"
+    Write-Host "  Save this for joining nodes!"
 }
+if ($Token.Length -lt 16) { throw "Token must be >= 16 characters." }
 
-# Also write to user home for VSIX / CLI use
 $userTokenDir = Join-Path $HOME ".forgewire"
-$userTokenFile = Join-Path $userTokenDir "hub.token"
 New-Item -ItemType Directory -Force -Path $userTokenDir | Out-Null
-[System.IO.File]::WriteAllText($userTokenFile, $Token)
-Write-Host "Token written to $userTokenFile"
+[System.IO.File]::WriteAllText((Join-Path $userTokenDir "hub.token"), $Token)
 
-# ---- Discover existing hub --------------------------------------------------
+# ── Discover existing hub via mDNS ────────────────────────────────────────────
 $discoveredHub = ""
 if (-not $HubUrl -and -not $ForceHub) {
     Write-Host ""
-    Write-Host "Scanning LAN for existing ForgeWire hub (mDNS)..." -ForegroundColor Cyan
-    $discovery = & $PythonExe -c "
+    Write-Host "Scanning LAN for existing ForgeWire hub..." -ForegroundColor Cyan
+
+    # Try hub candidates on common addresses
+    $localIp = (Get-NetIPAddress -AddressFamily IPv4 -PrefixOrigin Dhcp -ErrorAction SilentlyContinue |
+        Select-Object -First 1).IPAddress
+    $subnet = if ($localIp) { ($localIp -replace '\.\d+$', '') } else { "10.43.106" }
+
+    # Quick probe of known addresses first (fast path)
+    foreach ($candidate in @("10.43.106.95", "10.43.106.56", "127.0.0.1", "${subnet}.1")) {
+        try {
+            $resp = Invoke-WebRequest -Uri "http://${candidate}:${HubPort}/healthz" `
+                -UseBasicParsing -TimeoutSec 2 -ErrorAction SilentlyContinue
+            if ($resp.StatusCode -eq 200) {
+                $discoveredHub = "http://${candidate}:${HubPort}"
+                Write-Host "  Found hub: $discoveredHub" -ForegroundColor Green
+                break
+            }
+        } catch {}
+    }
+
+    # Fallback: Python mDNS if available
+    if (-not $discoveredHub) {
+        $python = Get-Command python.exe -ErrorAction SilentlyContinue
+        if (-not $python) { $python = Get-Command python3.exe -ErrorAction SilentlyContinue }
+        if ($python) {
+            $discovered = & $python.Source -c @"
 import json
 try:
     from forgewire_fabric.hub.discovery import discover_hubs
     hubs = discover_hubs(timeout=4.0)
     print(json.dumps(hubs))
-except Exception as e:
-    print(json.dumps([]))
-" 2>&1 | Out-String
-    try {
-        $hubs = $discovery.Trim() | ConvertFrom-Json
-    } catch {
-        $hubs = @()
+except:
+    print('[]')
+"@ 2>$null | Out-String
+            try {
+                $hubs = $discovered.Trim() | ConvertFrom-Json
+                if ($hubs.Count -gt 0) {
+                    $best = $hubs | Sort-Object { $_.protocol_version } -Descending | Select-Object -First 1
+                    $discoveredHub = "http://$($best.host):$($best.port)"
+                    Write-Host "  mDNS discovered hub: $discoveredHub" -ForegroundColor Green
+                }
+            } catch {}
+        }
     }
-    if ($hubs.Count -gt 0) {
-        $best = $hubs | Sort-Object { $_.protocol_version } -Descending | Select-Object -First 1
-        $discoveredHub = "http://$($best.host):$($best.port)"
-        Write-Host "  Discovered hub: $discoveredHub (protocol v$($best.protocol_version))" -ForegroundColor Green
-    } else {
-        Write-Host "  No hub found on LAN. This node will become the hub." -ForegroundColor Yellow
+
+    if (-not $discoveredHub) {
+        Write-Host "  No existing hub found. This node will be the hub." -ForegroundColor Yellow
     }
 }
 
 $effectiveHubUrl = if ($HubUrl) { $HubUrl } elseif ($discoveredHub) { $discoveredHub } else { "" }
-$isHubNode = (-not $effectiveHubUrl) -or $ForceHub
+$isHubNode       = (-not $effectiveHubUrl) -or $ForceHub
 
-# ---- Step 1: rqlite (hub nodes only) ----------------------------------------
-if ($isHubNode) {
-    Write-Host ""
-    Write-Host "==[ Step 1/7 ]== Installing rqlite..." -ForegroundColor Cyan
-    $rqliteInstaller = Join-Path $PSScriptRoot "nssm-install-rqlite.ps1"
-    if (-not (Test-Path $rqliteInstaller)) {
-        throw "nssm-install-rqlite.ps1 not found at $rqliteInstaller"
-    }
-    & $rqliteInstaller -DataDir $DataDir -HttpPort $RqliteHttpPort -RaftPort $RqliteRaftPort
-    Write-Host "==[ Step 1/7 ]== rqlite installed." -ForegroundColor Green
-} else {
-    Write-Host ""
-    Write-Host "==[ Step 1/7 ]== Skipping rqlite (joining existing hub at $effectiveHubUrl)." -ForegroundColor DarkGray
+# ══ STEP 1 — rqlite (EVERY node joins the Raft cluster) ══════════════════════
+Write-Host ""
+Write-Host "═[ 1/6 ]═ rqlite (Raft member on every node)..." -ForegroundColor Cyan
+$rqliteInstaller = Join-Path $PSScriptRoot "nssm-install-rqlite.ps1"
+if (-not (Test-Path $rqliteInstaller)) {
+    throw "nssm-install-rqlite.ps1 not found at $rqliteInstaller"
 }
+$rqliteArgs = @{
+    DataDir  = $DataDir
+    HttpPort = $RqliteHttpPort
+    RaftPort = $RqliteRaftPort
+}
+# Joining nodes provide a -JoinAddr so rqlite connects to the existing cluster.
+# Hub nodes bootstrap a new cluster (no JoinAddr).
+if ($RqliteJoinAddr) {
+    $rqliteArgs["JoinAddr"] = $RqliteJoinAddr
+    Write-Host "  Joining existing rqlite cluster at $RqliteJoinAddr"
+} elseif ($isHubNode) {
+    Write-Host "  Bootstrapping new rqlite cluster (single-node or future multi-node)"
+}
+& $rqliteInstaller @rqliteArgs
+Write-Host "═[ 1/6 ]═ rqlite OK" -ForegroundColor Green
 
-# ---- Step 2: Hub (hub nodes only) ------------------------------------------
+# ══ STEP 2 — hub (hub node only) ══════════════════════════════════════════════
 if ($isHubNode) {
     Write-Host ""
-    Write-Host "==[ Step 2/7 ]== Installing hub..." -ForegroundColor Cyan
+    Write-Host "═[ 2/6 ]═ Hub (Rust binary, rqlite backend)..." -ForegroundColor Cyan
     $hubInstaller = Join-Path $PSScriptRoot "nssm-install-hub.ps1"
     & $hubInstaller `
-        -PythonExe $PythonExe `
-        -Token $Token `
-        -Port $HubPort `
-        -Backend "rqlite" `
+        -BinDir   $BinDir `
+        -Token    $Token `
+        -Port     $HubPort `
         -RqliteHost "127.0.0.1" `
-        -RqlitePort $RqliteHttpPort
+        -RqlitePort $RqliteHttpPort `
+        -NoWatchdog  # watchdog installed in step 4
     $effectiveHubUrl = "http://127.0.0.1:$HubPort"
-    Write-Host "==[ Step 2/7 ]== Hub installed." -ForegroundColor Green
 
-    # Wait for hub to start advertising via mDNS
-    Write-Host "Waiting for hub to become reachable..."
-    $hubReady = $false
+    Write-Host "  Waiting for hub to be reachable..."
+    $ready = $false
     for ($i = 0; $i -lt 30; $i++) {
         Start-Sleep -Seconds 1
         try {
-            $resp = Invoke-WebRequest -Uri "$effectiveHubUrl/healthz" -UseBasicParsing -TimeoutSec 3
-            if ($resp.StatusCode -eq 200) {
-                $hubReady = $true
-                break
+            if ((Invoke-WebRequest -Uri "$effectiveHubUrl/healthz" -UseBasicParsing -TimeoutSec 2).StatusCode -eq 200) {
+                $ready = $true; break
             }
         } catch {}
     }
-    if (-not $hubReady) {
-        Write-Warning "Hub did not respond within 30s — check logs at $DataDir\logs\hub.err.log"
+    if (-not $ready) {
+        Write-Warning "Hub did not respond in 30s. Check: $DataDir\logs\hub.err.log"
     } else {
-        Write-Host "Hub is reachable at $effectiveHubUrl" -ForegroundColor Green
+        Write-Host "  Hub ready at $effectiveHubUrl" -ForegroundColor Green
     }
+    Write-Host "═[ 2/6 ]═ Hub OK" -ForegroundColor Green
 } else {
     Write-Host ""
-    Write-Host "==[ Step 2/7 ]== Skipping hub install (using discovered hub)." -ForegroundColor DarkGray
+    Write-Host "═[ 2/6 ]═ Hub — joining node, using $effectiveHubUrl" -ForegroundColor DarkGray
 }
 
-# ---- Step 3: Runner ----------------------------------------------------------
+# ══ STEP 3 — Runner (Rust binary) ══════════════════════════════════════════════
 Write-Host ""
-Write-Host "==[ Step 3/7 ]== Installing runner..." -ForegroundColor Cyan
+Write-Host "═[ 3/6 ]═ Runner (Rust binary)..." -ForegroundColor Cyan
 $runnerInstaller = Join-Path $PSScriptRoot "nssm-install-runner.ps1"
-$runnerArgs = @{
-    PythonExe     = $PythonExe
-    HubUrl        = $effectiveHubUrl
-    Token         = $Token
-    WorkspaceRoot = $WorkspaceRoot
-    MaxConcurrent = $MaxConcurrent
-}
-if ($Tags)          { $runnerArgs["Tags"] = $Tags }
-if ($ScopePrefixes) { $runnerArgs["ScopePrefixes"] = $ScopePrefixes }
-& $runnerInstaller @runnerArgs
-Write-Host "==[ Step 3/7 ]== Runner installed." -ForegroundColor Green
+$scope = if ($ScopePrefixes) { $ScopePrefixes } else { $WorkspaceRoot }
+& $runnerInstaller `
+    -BinDir       $BinDir `
+    -HubUrl       $effectiveHubUrl `
+    -Token        $Token `
+    -WorkspaceRoot $WorkspaceRoot `
+    -ScopePrefixes $scope `
+    -MaxConcurrent $MaxConcurrent `
+    -Tags         $Tags `
+    -NoWatchdog  # watchdog installed in step 4
+Write-Host "═[ 3/6 ]═ Runner OK" -ForegroundColor Green
 
-# ---- Step 4: Watchdogs -------------------------------------------------------
+# ══ STEP 4 — Watchdogs ══════════════════════════════════════════════════════════
 Write-Host ""
-Write-Host "==[ Step 4/7 ]== Installing watchdogs..." -ForegroundColor Cyan
-$hubWatchdog = Join-Path $PSScriptRoot "install-hub-watchdog.ps1"
-$runnerWatchdog = Join-Path $PSScriptRoot "install-runner-watchdog.ps1"
-if ($isHubNode -and (Test-Path $hubWatchdog)) {
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $hubWatchdog `
-        -ServiceName "ForgeWireHub" `
-        -HealthzUrl "http://127.0.0.1:$HubPort/healthz"
-    Write-Host "  Hub watchdog installed."
+Write-Host "═[ 4/6 ]═ Watchdogs..." -ForegroundColor Cyan
+$hubWd    = Join-Path $PSScriptRoot "install-hub-watchdog.ps1"
+$runnerWd = Join-Path $PSScriptRoot "install-runner-watchdog.ps1"
+if ($isHubNode -and (Test-Path $hubWd)) {
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $hubWd `
+        -ServiceName "ForgeWireHub" -HealthzUrl "http://127.0.0.1:$HubPort/healthz"
+    Write-Host "  Hub watchdog installed"
 }
-if (Test-Path $runnerWatchdog) {
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runnerWatchdog `
-        -ServiceName "ForgeWireRunner" `
-        -HubUrl $effectiveHubUrl
-    Write-Host "  Runner watchdog installed."
+if (Test-Path $runnerWd) {
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runnerWd `
+        -ServiceName "ForgeWireRunner" -HubUrl $effectiveHubUrl
+    Write-Host "  Runner watchdog installed"
 }
-Write-Host "==[ Step 4/7 ]== Watchdogs installed." -ForegroundColor Green
+Write-Host "═[ 4/6 ]═ Watchdogs OK" -ForegroundColor Green
 
-# ---- Step 5: VSIX ------------------------------------------------------------
+# ══ STEP 5 — VSIX ══════════════════════════════════════════════════════════════
 if (-not $SkipVsix) {
     Write-Host ""
-    Write-Host "==[ Step 5/7 ]== Installing VS Code extension..." -ForegroundColor Cyan
-    $vsixDir = Join-Path $FabricRoot "vscode"
-    if (-not (Get-Command code -ErrorAction SilentlyContinue) -and
-        -not (Get-Command code.cmd -ErrorAction SilentlyContinue)) {
-        Write-Warning "VS Code not found on PATH. Skipping VSIX install."
+    Write-Host "═[ 5/6 ]═ VSIX..." -ForegroundColor Cyan
+    $codeCmds = @("code","code.cmd")
+    $codeExe  = $null
+    foreach ($c in $codeCmds) {
+        if (Get-Command $c -ErrorAction SilentlyContinue) { $codeExe = $c; break }
+    }
+
+    if (-not $codeExe) {
+        Write-Warning "VS Code not on PATH. Skipping VSIX. Install manually later."
     } else {
-        # Find the latest pre-built vsix
-        $vsixFile = Get-ChildItem $vsixDir -Filter "forgewire-fabric-*.vsix" -ErrorAction SilentlyContinue |
-            Sort-Object Name -Descending |
-            Select-Object -First 1
-        if ($vsixFile) {
-            $codeCmd = if (Get-Command code.cmd -ErrorAction SilentlyContinue) { "code.cmd" } else { "code" }
-            & $codeCmd --install-extension $vsixFile.FullName --force 2>&1 | Out-Null
-            Write-Host "  Installed $($vsixFile.Name)"
-        } else {
-            # Try to build the vsix if npm is available
-            if (Get-Command npx -ErrorAction SilentlyContinue) {
-                Write-Host "  No pre-built VSIX found. Building..."
-                Push-Location $vsixDir
-                try {
-                    $pkgVersion = (Get-Content "package.json" -Raw | ConvertFrom-Json).version
-                    $built = "forgewire-fabric-$pkgVersion.vsix"
-                    npx --yes @vscode/vsce package --out $built 2>&1 | Out-Null
-                    if (Test-Path $built) {
-                        $codeCmd = if (Get-Command code.cmd -ErrorAction SilentlyContinue) { "code.cmd" } else { "code" }
-                        & $codeCmd --install-extension $built --force 2>&1 | Out-Null
-                        Write-Host "  Built and installed $built"
-                    } else {
-                        Write-Warning "VSIX build failed. Install manually later."
-                    }
-                } finally { Pop-Location }
-            } else {
-                Write-Warning "No pre-built VSIX and npx not available. Install VSIX manually."
-            }
+        # Find latest pre-built VSIX in dist/ first, then root vscode/
+        $vsixDirs = @(
+            (Join-Path $FabricRoot "vscode\dist"),
+            (Join-Path $FabricRoot "vscode"),
+            $BinDir,
+            $DataDir
+        )
+        $vsixFile = $null
+        foreach ($d in $vsixDirs) {
+            $vsixFile = Get-ChildItem $d -Filter "forgewire-fabric-*.vsix" -ErrorAction SilentlyContinue |
+                Sort-Object { [version]($_.BaseName -replace 'forgewire-fabric-','') } -Descending |
+                Select-Object -First 1
+            if ($vsixFile) { break }
         }
 
-        # Write VS Code workspace settings with the hub URL
+        if ($vsixFile) {
+            & $codeExe --install-extension $vsixFile.FullName --force 2>&1 | Out-Null
+            Write-Host "  Installed $($vsixFile.Name)"
+        } else {
+            Write-Warning "No pre-built VSIX found. Build with: cd $FabricRoot\vscode && npm run compile && npx vsce package"
+        }
+
+        # Configure VS Code workspace settings
         $vsWorkspace = Join-Path $WorkspaceRoot ".vscode"
         New-Item -ItemType Directory -Force -Path $vsWorkspace | Out-Null
         $vsSettingsPath = Join-Path $vsWorkspace "settings.json"
         $vsSettings = @{}
         if (Test-Path $vsSettingsPath) {
-            try { $vsSettings = Get-Content $vsSettingsPath -Raw | ConvertFrom-Json -AsHashtable } catch {}
+            try { $vsSettings = Get-Content $vsSettingsPath -Raw | ConvertFrom-Json -AsHashtable -ErrorAction SilentlyContinue } catch {}
         }
-        # For hub nodes, use 127.0.0.1 as primary (always reachable)
-        # For joining nodes, use the discovered hub URL
-        $primaryUrl = if ($isHubNode) { "http://127.0.0.1:$HubPort" } else { $effectiveHubUrl }
-        $vsSettings["forgewireFabric.hubUrl"] = $primaryUrl
-        $vsSettings["forgewireFabric.hubTokenFile"] = $userTokenFile
+        $tokenFilePath = Join-Path $DataDir "hub.token"
+        $primaryUrl    = if ($isHubNode) { "http://127.0.0.1:$HubPort" } else { $effectiveHubUrl }
+        $vsSettings["forgewireFabric.hubUrl"]       = $primaryUrl
+        $vsSettings["forgewireFabric.hubTokenFile"] = $tokenFilePath
         $vsSettings["forgewireFabric.hubCandidates"] = @(
             @{ url = $primaryUrl; label = "Primary"; priority = 1 }
         )
-        $vsSettings | ConvertTo-Json -Depth 4 | Set-Content $vsSettingsPath -Encoding UTF8
-        Write-Host "  VS Code workspace settings updated: $vsSettingsPath"
+        $vsSettings | ConvertTo-Json -Depth 5 | Set-Content $vsSettingsPath -Encoding UTF8
+        Write-Host "  Workspace settings: $vsSettingsPath"
     }
-    Write-Host "==[ Step 5/7 ]== VSIX installed." -ForegroundColor Green
+    Write-Host "═[ 5/6 ]═ VSIX OK" -ForegroundColor Green
 } else {
-    Write-Host ""
-    Write-Host "==[ Step 5/7 ]== Skipping VSIX install (-SkipVsix)." -ForegroundColor DarkGray
+    Write-Host "═[ 5/6 ]═ VSIX skipped (-SkipVsix)" -ForegroundColor DarkGray
 }
 
-# ---- Step 6: MCP registration ------------------------------------------------
-if (-not $SkipMcp) {
-    Write-Host ""
-    Write-Host "==[ Step 6/7 ]== Registering MCP servers..." -ForegroundColor Cyan
-    $oldHubUrl = $env:FORGEWIRE_HUB_URL
-    $oldHubToken = $env:FORGEWIRE_HUB_TOKEN
-    try {
-        $env:FORGEWIRE_HUB_URL = $effectiveHubUrl
-        $env:FORGEWIRE_HUB_TOKEN = $Token.Trim()
-
-        # Register dispatcher + runner MCP
-        & $PythonExe -m forgewire_fabric.cli mcp install --hub-url $effectiveHubUrl --with-runner --workspace-root $WorkspaceRoot 2>&1 | Out-Null
-        Write-Host "  MCP servers registered in user mcp.json."
-
-        # Register signed dispatcher identity
-        & $PythonExe -m forgewire_fabric.cli dispatchers register --hostname $env:COMPUTERNAME 2>&1 | Out-Null
-        Write-Host "  Dispatcher identity registered with hub."
-    } catch {
-        Write-Warning "MCP/dispatcher registration failed: $($_.Exception.Message)"
-        Write-Warning "You can retry manually: forgewire-fabric mcp install --hub-url $effectiveHubUrl --with-runner"
-    } finally {
-        $env:FORGEWIRE_HUB_URL = $oldHubUrl
-        $env:FORGEWIRE_HUB_TOKEN = $oldHubToken
-    }
-    Write-Host "==[ Step 6/7 ]== MCP registered." -ForegroundColor Green
-} else {
-    Write-Host ""
-    Write-Host "==[ Step 6/7 ]== Skipping MCP registration (-SkipMcp)." -ForegroundColor DarkGray
-}
-
-# ---- Step 7: Report host roles -----------------------------------------------
+# ══ STEP 6 — MCP + host roles (optional, requires Python) ════════════════════
 Write-Host ""
-Write-Host "==[ Step 7/7 ]== Reporting host roles to hub..." -ForegroundColor Cyan
+Write-Host "═[ 6/6 ]═ MCP + host roles..." -ForegroundColor Cyan
+
+# Report host roles via native CLI or direct HTTP
 $headers = @{ Authorization = "Bearer $($Token.Trim())" }
-$roles = @("command_runner")
+$roles   = @("command_runner")
 if ($isHubNode) { $roles += "hub_head" }
 foreach ($role in $roles) {
     $body = @{
@@ -368,40 +383,78 @@ foreach ($role in $roles) {
         role     = $role
         enabled  = $true
         status   = "installed"
-        metadata = @{ installer = "install-fabric.ps1"; timestamp = (Get-Date).ToUniversalTime().ToString("o") }
+        metadata = @{ installer = "install-fabric.ps1 (Rust)"; timestamp = (Get-Date).ToUniversalTime().ToString("o") }
     } | ConvertTo-Json -Depth 4
     try {
         Invoke-RestMethod -Method Post -Uri "$effectiveHubUrl/hosts/roles" `
             -Headers $headers -ContentType "application/json" -Body $body -TimeoutSec 5 | Out-Null
-        Write-Host "  Reported: $role"
+        Write-Host "  Host role reported: $role"
     } catch {
-        Write-Warning "Could not report role '$role': $($_.Exception.Message)"
+        Write-Warning "Could not report host role '$role': $($_.Exception.Message)"
     }
 }
-Write-Host "==[ Step 7/7 ]== Host roles reported." -ForegroundColor Green
 
-# ---- Summary -----------------------------------------------------------------
+# MCP registration (optional — requires Python integration layer)
+if (-not $SkipMcp) {
+    $python = (Get-Command python.exe -ErrorAction SilentlyContinue)?.Source
+    if (-not $python) {
+        $venvPython = Join-Path $FabricRoot ".venv\Scripts\python.exe"
+        if (Test-Path $venvPython) { $python = $venvPython }
+    }
+    if ($python) {
+        try {
+            $env:FORGEWIRE_HUB_URL   = $effectiveHubUrl
+            $env:FORGEWIRE_HUB_TOKEN = $Token.Trim()
+            & $python -m forgewire_fabric.cli mcp install --hub-url $effectiveHubUrl --with-runner --workspace-root $WorkspaceRoot 2>&1 | Out-Null
+            & $python -m forgewire_fabric.cli dispatchers register --hostname $env:COMPUTERNAME 2>&1 | Out-Null
+            Write-Host "  MCP servers registered and dispatcher identity recorded"
+        } catch {
+            Write-Warning "MCP registration failed (non-fatal): $($_.Exception.Message)"
+        }
+    } else {
+        Write-Host "  Python not found — skipping MCP registration (add later: forgewire-fabric mcp install)"
+    }
+}
+Write-Host "═[ 6/6 ]═ Done" -ForegroundColor Green
+
+# ══ Summary ════════════════════════════════════════════════════════════════════
 Write-Host ""
-Write-Host "=========================================" -ForegroundColor Green
-Write-Host " ForgeWire Fabric installation complete!" -ForegroundColor Green
-Write-Host "=========================================" -ForegroundColor Green
+Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Green
+Write-Host "║  ForgeWire Fabric installed successfully!    ║" -ForegroundColor Green
+Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Green
 Write-Host ""
 if ($isHubNode) {
-    Write-Host "  This node is: HUB + RUNNER" -ForegroundColor White
-    Write-Host "  Hub URL:      $effectiveHubUrl"
-    Write-Host "  rqlite:       http://127.0.0.1:$RqliteHttpPort"
+    Write-Host "  Role        : HUB + RUNNER (Rust)" -ForegroundColor White
+    Write-Host "  Hub URL     : $effectiveHubUrl"
+    Write-Host "  rqlite      : http://127.0.0.1:$RqliteHttpPort  (raft: :$RqliteRaftPort)"
 } else {
-    Write-Host "  This node is: RUNNER (hub at $effectiveHubUrl)" -ForegroundColor White
+    Write-Host "  Role        : RUNNER (Rust, hub @ $effectiveHubUrl)" -ForegroundColor White
+    Write-Host "  rqlite      : local member, joined cluster"
 }
-Write-Host "  Runner:       ForgeWireRunner (NSSM service)"
-Write-Host "  Token:        $userTokenFile"
-Write-Host "  Workspace:    $WorkspaceRoot"
-Write-Host "  Logs:         $DataDir\logs"
+Write-Host "  Workspace   : $WorkspaceRoot"
+Write-Host "  Binaries    : $BinDir"
+Write-Host "  Token       : $DataDir\hub.token"
+Write-Host "  Logs        : $DataDir\logs"
 Write-Host ""
-Write-Host "  To add another node to this cluster:" -ForegroundColor Yellow
-Write-Host "    1. Copy the token: scp $($env:COMPUTERNAME):$userTokenFile .\hub.token"
-Write-Host "    2. On the new machine:"
+Write-Host "  To add another node:" -ForegroundColor Yellow
+Write-Host "    1. Copy the token and this script to the new machine"
+Write-Host "    2. Run on the new machine:"
 Write-Host "       pwsh -File install-fabric.ps1 -WorkspaceRoot C:\Projects\forgewire ``"
-Write-Host "           -Token (Get-Content .\hub.token -Raw)"
+Write-Host "           -Token `"$Token`" ``"
+Write-Host "           -RqliteJoinAddr $($env:COMPUTERNAME):$RqliteRaftPort"
 Write-Host ""
-Write-Host "  VSIX: Reload VS Code (Ctrl+Shift+P > Developer: Reload Window)" -ForegroundColor Yellow
+Write-Host "  Reload VS Code (Ctrl+Shift+P → Developer: Reload Window)" -ForegroundColor Yellow
+
+# ══ Quick smoke test ════════════════════════════════════════════════════════════
+Write-Host ""
+Write-Host "Running quick smoke test..." -ForegroundColor Cyan
+try {
+    $healthz = Invoke-RestMethod -Uri "$effectiveHubUrl/healthz" -TimeoutSec 5
+    if ($healthz.rust_hub -and $healthz.backend -like "rqlite*") {
+        Write-Host "  PASS hub healthz: v$($healthz.version) backend=$($healthz.backend)" -ForegroundColor Green
+    } else {
+        Write-Warning "  WARN hub healthz returned unexpected fields: $($healthz | ConvertTo-Json -Compress)"
+    }
+} catch {
+    Write-Warning "  FAIL hub healthz unreachable: $($_.Exception.Message)"
+}

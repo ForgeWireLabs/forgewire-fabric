@@ -213,93 +213,157 @@ async fn main() {
         }
 
         Commands::Doctor { hub_url, token_file } => {
+            let mut failures = 0u32;
+            let mut warnings = 0u32;
+
             println!("ForgeWire Fabric Doctor");
-            println!("======================");
+            println!("=======================");
             println!();
 
-            // Hub connectivity
-            let client = HubClient::new(&hub_url, "");
-            print!("Hub ({hub_url}): ");
+            // ── rqlite (must check FIRST — hub depends on it) ────────────────
+            let rqlite_host = std::env::var("FORGEWIRE_HUB_RQLITE_HOST")
+                .unwrap_or_else(|_| "127.0.0.1".into());
+            let rqlite_port = std::env::var("FORGEWIRE_HUB_RQLITE_PORT")
+                .ok().and_then(|v| v.parse::<u16>().ok()).unwrap_or(4001);
+            let rqlite_status_url = format!("http://{rqlite_host}:{rqlite_port}/status");
+            let rqlite_readyz_url = format!("http://{rqlite_host}:{rqlite_port}/readyz");
+
+            print!("rqlite ({rqlite_host}:{rqlite_port}):  ");
+            match reqwest::get(&rqlite_readyz_url).await {
+                Ok(r) if r.status().is_success() => {
+                    // Check leader status from /status
+                    match reqwest::get(&rqlite_status_url).await {
+                        Ok(sr) if sr.status().is_success() => {
+                            if let Ok(body) = sr.json::<serde_json::Value>().await {
+                                let leader_addr = body
+                                    .pointer("/store/leader/addr")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("");
+                                let state = body
+                                    .pointer("/store/raft/state")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown");
+                                if leader_addr.is_empty() {
+                                    println!("FAIL — no Raft leader elected (state={state})");
+                                    println!("  The rqlite cluster has no leader. Dispatch and claims will fail.");
+                                    println!("  Fix: ensure at least 2 of 3 rqlite nodes are reachable.");
+                                    println!("  Check: nssm status ForgeWireRqlite{}", if cfg!(windows) { "" } else { "" });
+                                    failures += 1;
+                                } else {
+                                    println!("OK  (leader={leader_addr}, state={state})");
+                                }
+                            } else {
+                                println!("OK  (readyz=200, status parse failed)");
+                            }
+                        }
+                        _ => println!("OK  (readyz=200)"),
+                    }
+                }
+                Ok(r) => {
+                    println!("FAIL — rqlite returned {} (not ready)", r.status());
+                    println!("  rqlite is running but not ready. Check rqlite logs.");
+                    failures += 1;
+                }
+                Err(e) => {
+                    println!("FAIL — rqlite not reachable: {e}");
+                    println!("  rqlite must be running. Start with:");
+                    if cfg!(windows) {
+                        println!("    nssm start ForgeWireRqliteNode1");
+                    } else {
+                        println!("    systemctl start forgewire-rqlite");
+                    }
+                    failures += 1;
+                }
+            }
+
+            // ── Hub connectivity ─────────────────────────────────────────────
+            let token = load_token(token_file.as_deref());
+            let client = HubClient::new(&hub_url, &token);
+            print!("Hub ({hub_url}):  ");
             match client.healthz().await {
                 Ok(health) => {
-                    let version = health["version"].as_str().unwrap_or("?");
-                    let proto = health["protocol_version"].as_i64().unwrap_or(0);
-                    let sidecar = health["sidecar_integrity"].as_str().unwrap_or("unknown");
+                    let version  = health["version"].as_str().unwrap_or("?");
+                    let proto    = health["protocol_version"].as_i64().unwrap_or(0);
+                    let sidecar  = health["sidecar_integrity"].as_str().unwrap_or("unknown");
                     let rust_hub = health["rust_hub"].as_bool().unwrap_or(false);
-                    println!("OK (v{version}, proto={proto}, runtime={})", if rust_hub { "rust" } else { "python" });
+                    let backend  = health["backend"].as_str().unwrap_or("?");
 
+                    if !rust_hub {
+                        println!("WARN — Python hub detected (v{version}). Switch to Rust hub.");
+                        warnings += 1;
+                    } else if !backend.starts_with("rqlite") {
+                        println!("WARN — hub backend is '{backend}', expected rqlite.");
+                        warnings += 1;
+                    } else {
+                        println!("OK   (v{version}, proto={proto}, backend={backend}, runtime=rust)");
+                    }
                     if sidecar == "trusted_bearer" {
-                        println!("  WARNING: sidecar_integrity=trusted_bearer");
-                        println!("    Out-of-band dispatch fields are bearer-gated only.");
-                        println!("    Upgrade to protocol v3 to sign all execution-semantic fields.");
+                        println!("  WARN sidecar_integrity=trusted_bearer: out-of-band fields are bearer-gated only.");
+                        println!("       Upgrade dispatchers to protocol v3 to close this gap (M2.7.7 expiry gate).");
+                        warnings += 1;
                     }
                 }
                 Err(e) => {
-                    println!("UNREACHABLE ({e})");
+                    println!("FAIL — {e}");
+                    failures += 1;
                 }
             }
 
-            // Identity files
-            let identity_paths = if cfg!(windows) {
+            // ── Token file ───────────────────────────────────────────────────
+            let token_path = token_file.as_deref().map(String::from).unwrap_or_else(|| {
+                if cfg!(windows) { r"C:\ProgramData\forgewire\hub.token".into() }
+                else { "/var/lib/forgewire/hub.token".into() }
+            });
+            print!("Token ({token_path}):  ");
+            match std::fs::read_to_string(&token_path) {
+                Ok(t) if t.trim().len() >= 16 => println!("OK   ({} chars)", t.trim().len()),
+                Ok(t) => { println!("WARN — only {} chars (min 16)", t.trim().len()); warnings += 1; }
+                Err(_) => { println!("FAIL — file not found"); failures += 1; }
+            }
+
+            // ── Identity files ───────────────────────────────────────────────
+            let identity_paths: Vec<PathBuf> = if cfg!(windows) {
                 vec![
-                    PathBuf::from(r"C:\ProgramData\forgewire\runner_identity.json"),
-                    PathBuf::from(r"C:\ProgramData\forgewire\hub_identity.json"),
+                    r"C:\ProgramData\forgewire\runner_identity.json".into(),
+                    r"C:\ProgramData\forgewire\hub_identity.json".into(),
                 ]
             } else {
                 vec![
-                    PathBuf::from("/var/lib/forgewire/runner_identity.json"),
-                    PathBuf::from("/var/lib/forgewire/hub_identity.json"),
+                    "/var/lib/forgewire/runner_identity.json".into(),
+                    "/var/lib/forgewire/hub_identity.json".into(),
                 ]
             };
             for path in &identity_paths {
-                print!("Identity ({}): ", path.display());
+                let label = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+                print!("Identity ({label}):  ");
                 match fabric_identity::load(path) {
-                    Ok(id) => println!("OK ({}, purpose={}, pk={}...)", id.id, id.purpose, &id.public_key_hex[..16]),
-                    Err(fabric_identity::IdentityError::NotFound(_)) => println!("not found"),
-                    Err(e) => println!("ERROR: {e}"),
+                    Ok(id) => println!("OK   ({}, purpose={}, pk={}...)", id.id, id.purpose, &id.public_key_hex[..16]),
+                    Err(fabric_identity::IdentityError::NotFound(_)) => println!("not found (optional)"),
+                    Err(e) => { println!("FAIL — {e}"); failures += 1; }
                 }
             }
 
-            // Token file
-            let token_path = token_file.unwrap_or_else(|| {
-                if cfg!(windows) {
-                    r"C:\ProgramData\forgewire\hub.token".into()
-                } else {
-                    "/var/lib/forgewire/hub.token".into()
-                }
-            });
-            print!("Token ({token_path}): ");
-            match std::fs::read_to_string(&token_path) {
-                Ok(t) => {
-                    let len = t.trim().len();
-                    if len >= 16 {
-                        println!("OK ({len} chars)");
-                    } else {
-                        println!("WARNING: only {len} chars (minimum 16)");
-                    }
-                }
-                Err(e) => println!("ERROR: {e}"),
-            }
-
-            // rqlite
-            print!("rqlite (127.0.0.1:4001): ");
-            let rqlite_client = HubClient::new("http://127.0.0.1:4001", "");
-            match rqlite_client.healthz().await {
-                Ok(_) => println!("responding"),
-                Err(_) => {
-                    // Try readyz directly
-                    match reqwest::get("http://127.0.0.1:4001/readyz").await {
-                        Ok(r) if r.status().is_success() => println!("OK (readyz=200)"),
-                        Ok(r) => println!("DEGRADED (readyz={})", r.status()),
-                        Err(_) => println!("not running"),
-                    }
-                }
-            }
-
+            // ── Native binaries ──────────────────────────────────────────────
             println!();
             println!("Native binaries:");
-            println!("  forgewire-hub:    {}", if which("forgewire-hub") { "found on PATH" } else { "not on PATH" });
-            println!("  forgewire-runner: {}", if which("forgewire-runner") { "found on PATH" } else { "not on PATH" });
+            let bin_dir = if cfg!(windows) { r"C:\ProgramData\forgewire\bin" } else { "/var/lib/forgewire/bin" };
+            for bin in &["forgewire-hub", "forgewire-runner", "forgewire-fabric-cli"] {
+                let path = PathBuf::from(bin_dir).join(format!("{}{}", bin, if cfg!(windows) { ".exe" } else { "" }));
+                let found = path.exists() || which(bin);
+                print!("  {bin:<26} ");
+                if found { println!("OK"); } else { println!("not found in {bin_dir}"); warnings += 1; }
+            }
+
+            // ── Summary ──────────────────────────────────────────────────────
+            println!();
+            if failures > 0 {
+                eprintln!("RESULT: {} failure(s), {} warning(s) — cluster is NOT healthy", failures, warnings);
+                std::process::exit(1);
+            } else if warnings > 0 {
+                println!("RESULT: 0 failures, {} warning(s) — cluster is degraded", warnings);
+            } else {
+                println!("RESULT: all checks passed ✓");
+            }
         }
     }
 }
