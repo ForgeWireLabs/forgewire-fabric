@@ -25,7 +25,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 license = "Apache-2.0"
 repository = "https://github.com/DigitalHallucinations/forgewire-fabric"
@@ -70,4 +70,5 @@ cloned_instead_of_copied = "warn"
 manual_let_else = "warn"
 semicolon_if_nothing_returned = "warn"
 uninlined_format_args = "warn"
+
 

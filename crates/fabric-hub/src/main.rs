@@ -38,7 +38,7 @@ use fabric_streams::{DurabilityProfile, StreamBuffer};
 use tracing::info;
 
 const PROTOCOL_VERSION: i64 = 3;
-const PACKAGE_VERSION: &str = "0.5.0";
+const PACKAGE_VERSION: &str = "0.5.1";
 
 #[tokio::main]
 async fn main() {
@@ -213,3 +213,4 @@ async fn shutdown_signal() {
     tokio::signal::ctrl_c().await.ok();
     info!("received shutdown signal");
 }
+
