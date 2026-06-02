@@ -17,7 +17,7 @@ use crate::state::HubState;
 pub async fn cluster_health(
     State(state): State<Arc<HubState>>,
 ) -> Json<Value> {
-    let rqlite = if state.backend == "rqlite" {
+    let rqlite = if state.backend.starts_with("rqlite") {
         let host = std::env::var("FORGEWIRE_HUB_RQLITE_HOST").unwrap_or_else(|_| "127.0.0.1".into());
         let port: u16 = std::env::var("FORGEWIRE_HUB_RQLITE_PORT").ok()
             .and_then(|v| v.parse().ok()).unwrap_or(4001);

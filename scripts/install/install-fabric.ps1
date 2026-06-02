@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     One-command ForgeWire Fabric installer. Installs rqlite, hub, runner, watchdogs, VSIX.
 
@@ -10,12 +10,12 @@
     No Python required. All daemons are native Rust binaries from BinDir.
 
     What gets installed on EVERY node:
-      1. rqlite         — Raft-replicated database (NSSM service, all nodes)
-      2. Hub            — Signed dispatch control plane (NSSM, hub node only)
-      3. Runner         — Command runner background service (NSSM)
-      4. Watchdogs      — Hub + runner liveness probes (scheduled tasks)
-      5. VSIX           — VS Code extension for the Fabric sidebar
-      6. MCP (optional) — Dispatcher MCP registration (requires Python in venv)
+      1. rqlite         - Raft-replicated database (NSSM service, all nodes)
+      2. Hub            - Signed dispatch control plane (NSSM, hub node only)
+      3. Runner         - Command runner background service (NSSM)
+      4. Watchdogs      - Hub + runner liveness probes (scheduled tasks)
+      5. VSIX           - VS Code extension for the Fabric sidebar
+      6. MCP (optional) - Dispatcher MCP registration (requires Python in venv)
 
     Hub nodes are auto-detected via mDNS LAN scan; if no hub is found this
     machine becomes the hub. Pass -ForceHub to override.
@@ -25,7 +25,7 @@
 
 .PARAMETER Token
     Bearer token. Auto-generated on first (hub) node. Must be provided on
-    joining nodes — copy from hub: Get-Content C:\ProgramData\forgewire\hub.token
+    joining nodes - copy from hub: Get-Content C:\ProgramData\forgewire\hub.token
 
 .PARAMETER BinDir
     Directory containing forgewire-hub.exe and forgewire-runner.exe.
@@ -56,10 +56,10 @@
     Skip MCP server registration (MCP requires Python; core install works without it).
 
 .EXAMPLE
-    # First node — bootstraps hub, rqlite, runner, VSIX:
+    # First node - bootstraps hub, rqlite, runner, VSIX:
     pwsh -File install-fabric.ps1 -WorkspaceRoot C:\Projects\forgewire
 
-    # Joining node — discovers hub via mDNS, joins rqlite cluster:
+    # Joining node - discovers hub via mDNS, joins rqlite cluster:
     pwsh -File install-fabric.ps1 -WorkspaceRoot C:\Projects\forgewire `
         -Token (Get-Content \\hub-node\c$\ProgramData\forgewire\hub.token -Raw) `
         -RqliteJoinAddr 10.43.106.95:4002
@@ -220,9 +220,9 @@ except:
 $effectiveHubUrl = if ($HubUrl) { $HubUrl } elseif ($discoveredHub) { $discoveredHub } else { "" }
 $isHubNode       = (-not $effectiveHubUrl) -or $ForceHub
 
-# ══ STEP 1 — rqlite (EVERY node joins the Raft cluster) ══════════════════════
+# == STEP 1 - rqlite (EVERY node joins the Raft cluster) ══════════════════════
 Write-Host ""
-Write-Host "═[ 1/6 ]═ rqlite (Raft member on every node)..." -ForegroundColor Cyan
+Write-Host "-- 1/6 -- rqlite (Raft member on every node)..." -ForegroundColor Cyan
 $rqliteInstaller = Join-Path $PSScriptRoot "nssm-install-rqlite.ps1"
 if (-not (Test-Path $rqliteInstaller)) {
     throw "nssm-install-rqlite.ps1 not found at $rqliteInstaller"
@@ -241,12 +241,12 @@ if ($RqliteJoinAddr) {
     Write-Host "  Bootstrapping new rqlite cluster (single-node or future multi-node)"
 }
 & $rqliteInstaller @rqliteArgs
-Write-Host "═[ 1/6 ]═ rqlite OK" -ForegroundColor Green
+Write-Host "-- 1/6 -- rqlite OK" -ForegroundColor Green
 
-# ══ STEP 2 — hub (hub node only) ══════════════════════════════════════════════
+# == STEP 2 - hub (hub node only) ══════════════════════════════════════════════
 if ($isHubNode) {
     Write-Host ""
-    Write-Host "═[ 2/6 ]═ Hub (Rust binary, rqlite backend)..." -ForegroundColor Cyan
+    Write-Host "-- 2/6 -- Hub (Rust binary, rqlite backend)..." -ForegroundColor Cyan
     $hubInstaller = Join-Path $PSScriptRoot "nssm-install-hub.ps1"
     & $hubInstaller `
         -BinDir   $BinDir `
@@ -272,15 +272,15 @@ if ($isHubNode) {
     } else {
         Write-Host "  Hub ready at $effectiveHubUrl" -ForegroundColor Green
     }
-    Write-Host "═[ 2/6 ]═ Hub OK" -ForegroundColor Green
+    Write-Host "-- 2/6 -- Hub OK" -ForegroundColor Green
 } else {
     Write-Host ""
-    Write-Host "═[ 2/6 ]═ Hub — joining node, using $effectiveHubUrl" -ForegroundColor DarkGray
+    Write-Host "-- 2/6 -- Hub - joining node, using $effectiveHubUrl" -ForegroundColor DarkGray
 }
 
-# ══ STEP 3 — Runner (Rust binary) ══════════════════════════════════════════════
+# == STEP 3 - Runner (Rust binary) ══════════════════════════════════════════════
 Write-Host ""
-Write-Host "═[ 3/6 ]═ Runner (Rust binary)..." -ForegroundColor Cyan
+Write-Host "-- 3/6 -- Runner (Rust binary)..." -ForegroundColor Cyan
 $runnerInstaller = Join-Path $PSScriptRoot "nssm-install-runner.ps1"
 $scope = if ($ScopePrefixes) { $ScopePrefixes } else { $WorkspaceRoot }
 & $runnerInstaller `
@@ -292,11 +292,11 @@ $scope = if ($ScopePrefixes) { $ScopePrefixes } else { $WorkspaceRoot }
     -MaxConcurrent $MaxConcurrent `
     -Tags         $Tags `
     -NoWatchdog  # watchdog installed in step 4
-Write-Host "═[ 3/6 ]═ Runner OK" -ForegroundColor Green
+Write-Host "-- 3/6 -- Runner OK" -ForegroundColor Green
 
-# ══ STEP 4 — Watchdogs ══════════════════════════════════════════════════════════
+# == STEP 4 - Watchdogs ══════════════════════════════════════════════════════════
 Write-Host ""
-Write-Host "═[ 4/6 ]═ Watchdogs..." -ForegroundColor Cyan
+Write-Host "-- 4/6 -- Watchdogs..." -ForegroundColor Cyan
 $hubWd    = Join-Path $PSScriptRoot "install-hub-watchdog.ps1"
 $runnerWd = Join-Path $PSScriptRoot "install-runner-watchdog.ps1"
 if ($isHubNode -and (Test-Path $hubWd)) {
@@ -309,12 +309,12 @@ if (Test-Path $runnerWd) {
         -ServiceName "ForgeWireRunner" -HubUrl $effectiveHubUrl
     Write-Host "  Runner watchdog installed"
 }
-Write-Host "═[ 4/6 ]═ Watchdogs OK" -ForegroundColor Green
+Write-Host "-- 4/6 -- Watchdogs OK" -ForegroundColor Green
 
-# ══ STEP 5 — VSIX ══════════════════════════════════════════════════════════════
+# == STEP 5 - VSIX ══════════════════════════════════════════════════════════════
 if (-not $SkipVsix) {
     Write-Host ""
-    Write-Host "═[ 5/6 ]═ VSIX..." -ForegroundColor Cyan
+    Write-Host "-- 5/6 -- VSIX..." -ForegroundColor Cyan
     $codeCmds = @("code","code.cmd")
     $codeExe  = $null
     foreach ($c in $codeCmds) {
@@ -364,14 +364,14 @@ if (-not $SkipVsix) {
         $vsSettings | ConvertTo-Json -Depth 5 | Set-Content $vsSettingsPath -Encoding UTF8
         Write-Host "  Workspace settings: $vsSettingsPath"
     }
-    Write-Host "═[ 5/6 ]═ VSIX OK" -ForegroundColor Green
+    Write-Host "-- 5/6 -- VSIX OK" -ForegroundColor Green
 } else {
-    Write-Host "═[ 5/6 ]═ VSIX skipped (-SkipVsix)" -ForegroundColor DarkGray
+    Write-Host "-- 5/6 -- VSIX skipped (-SkipVsix)" -ForegroundColor DarkGray
 }
 
-# ══ STEP 6 — MCP + host roles (optional, requires Python) ════════════════════
+# == STEP 6 - MCP + host roles (optional, requires Python) ════════════════════
 Write-Host ""
-Write-Host "═[ 6/6 ]═ MCP + host roles..." -ForegroundColor Cyan
+Write-Host "-- 6/6 -- MCP + host roles..." -ForegroundColor Cyan
 
 # Report host roles via native CLI or direct HTTP
 $headers = @{ Authorization = "Bearer $($Token.Trim())" }
@@ -394,9 +394,10 @@ foreach ($role in $roles) {
     }
 }
 
-# MCP registration (optional — requires Python integration layer)
+# MCP registration (optional - requires Python integration layer)
 if (-not $SkipMcp) {
-    $python = (Get-Command python.exe -ErrorAction SilentlyContinue)?.Source
+    $pythonCmd = Get-Command python.exe -ErrorAction SilentlyContinue
+    $python = if ($pythonCmd) { $pythonCmd.Source } else { $null }
     if (-not $python) {
         $venvPython = Join-Path $FabricRoot ".venv\Scripts\python.exe"
         if (Test-Path $venvPython) { $python = $venvPython }
@@ -412,16 +413,16 @@ if (-not $SkipMcp) {
             Write-Warning "MCP registration failed (non-fatal): $($_.Exception.Message)"
         }
     } else {
-        Write-Host "  Python not found — skipping MCP registration (add later: forgewire-fabric mcp install)"
+        Write-Host "  Python not found - skipping MCP registration (add later: forgewire-fabric mcp install)"
     }
 }
-Write-Host "═[ 6/6 ]═ Done" -ForegroundColor Green
+Write-Host "-- 6/6 -- Done" -ForegroundColor Green
 
-# ══ Summary ════════════════════════════════════════════════════════════════════
+# == Summary ════════════════════════════════════════════════════════════════════
 Write-Host ""
-Write-Host "╔══════════════════════════════════════════════╗" -ForegroundColor Green
-Write-Host "║  ForgeWire Fabric installed successfully!    ║" -ForegroundColor Green
-Write-Host "╚══════════════════════════════════════════════╝" -ForegroundColor Green
+Write-Host "#================================================" -ForegroundColor Green
+Write-Host "#  ForgeWire Fabric installed successfully!" -ForegroundColor Green
+Write-Host "#================================================" -ForegroundColor Green
 Write-Host ""
 if ($isHubNode) {
     Write-Host "  Role        : HUB + RUNNER (Rust)" -ForegroundColor White
@@ -445,7 +446,7 @@ Write-Host "           -RqliteJoinAddr $($env:COMPUTERNAME):$RqliteRaftPort"
 Write-Host ""
 Write-Host "  Reload VS Code (Ctrl+Shift+P → Developer: Reload Window)" -ForegroundColor Yellow
 
-# ══ Quick smoke test ════════════════════════════════════════════════════════════
+# == Quick smoke test ════════════════════════════════════════════════════════════
 Write-Host ""
 Write-Host "Running quick smoke test..." -ForegroundColor Cyan
 try {
