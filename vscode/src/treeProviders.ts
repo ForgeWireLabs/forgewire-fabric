@@ -53,11 +53,11 @@ export class HubProvider implements vscode.TreeDataProvider<HubNode> {
       return [];
     }
     const c = this.client();
-    const cfg = vscode.workspace.getConfiguration("forgewireFabric");
+    const cfg = vscode.workspace.getConfiguration("forgewire");
     let hubName = (cfg.get<string>("hubName") ?? "").trim();
 
     const renameCmd: vscode.Command = {
-      command: "forgewireFabric.renameHub",
+      command: "forgewire.renameHub",
       title: "Rename Hub",
     };
 
@@ -78,7 +78,7 @@ export class HubProvider implements vscode.TreeDataProvider<HubNode> {
           icon: "debug-disconnect",
           description: "click to connect",
           command: {
-            command: "forgewireFabric.connectHub",
+            command: "forgewire.connectHub",
             title: "Connect to Hub",
           },
         },
@@ -86,7 +86,7 @@ export class HubProvider implements vscode.TreeDataProvider<HubNode> {
           key: "settings",
           label: "Open Settings\u2026",
           icon: "gear",
-          command: { command: "forgewireFabric.openSettings", title: "Open Settings" },
+          command: { command: "forgewire.openSettings", title: "Open Settings" },
         },
       ];
     }
@@ -187,7 +187,7 @@ export class HubProvider implements vscode.TreeDataProvider<HubNode> {
           label: "Runners",
           description: `${online} online / ${runners.length} total`,
           icon: "server-environment",
-          command: { command: "forgewireFabric.refresh", title: "Refresh" },
+          command: { command: "forgewire.refresh", title: "Refresh" },
         }
       );
     } catch (err) {
@@ -204,7 +204,7 @@ export class HubProvider implements vscode.TreeDataProvider<HubNode> {
       key: "settings",
       label: "Settings\u2026",
       icon: "gear",
-      command: { command: "forgewireFabric.openSettings", title: "Open Settings" },
+      command: { command: "forgewire.openSettings", title: "Open Settings" },
     });
 
     return nodes;
@@ -681,7 +681,7 @@ export class TasksProvider implements vscode.TreeDataProvider<TaskNode> {
         (t.result?.error ? `\n**error:** ${t.result.error}\n` : "")
     );
     item.command = {
-      command: "forgewireFabric.showTask",
+      command: "forgewire.showTask",
       title: "Show Task",
       arguments: [t.id],
     };
@@ -750,7 +750,7 @@ function renderHistoryTaskItem(t: TaskInfo): vscode.TreeItem {
       (origin ? `\n**origin**\n\n${origin}\n` : "")
   );
   item.command = {
-    command: "forgewireFabric.showTask",
+    command: "forgewire.showTask",
     title: "Show Task",
     arguments: [t.id],
   };
@@ -964,7 +964,7 @@ export class HostsProvider implements vscode.TreeDataProvider<HostsNode> {
       item.contextValue = `hosts.cluster.${n.cluster}`;
       item.tooltip =
         n.cluster === "fabric"
-          ? `ForgeWire Fabric (rqlite/sqlite backend). Active: ${n.backend ?? "unknown"}.`
+          ? `ForgeWire (rqlite/sqlite backend). Active: ${n.backend ?? "unknown"}.`
           : "Loom: substrate cluster (forgewire_core). Not yet wired into the hub.";
       return item;
     }
@@ -1431,7 +1431,7 @@ export class ApprovalsProvider implements vscode.TreeDataProvider<ApprovalNode> 
             label: `${deferredCount} deferred approval${deferredCount === 1 ? "" : "s"}`,
             description: "snoozed locally",
             icon: "debug-pause",
-            command: { command: "forgewireFabric.showDeferredApprovals", title: "Show Snoozed Approvals" },
+            command: { command: "forgewire.showDeferredApprovals", title: "Show Snoozed Approvals" },
             contextValue: "approval.deferred.placeholder",
           });
         }
@@ -1489,7 +1489,7 @@ export class ApprovalsProvider implements vscode.TreeDataProvider<ApprovalNode> 
     );
     item.contextValue = `approval.${a.status}`;
     item.command = {
-      command: "forgewireFabric.examineApproval",
+      command: "forgewire.examineApproval",
       title: "Examine Approval",
       arguments: [a],
     };
@@ -1540,7 +1540,7 @@ function renderHistoryApprovalItem(a: ApprovalInfo): vscode.TreeItem {
       (origin ? `\n**origin**\n\n${origin}\n` : "")
   );
   item.command = {
-    command: "forgewireFabric.examineApproval",
+    command: "forgewire.examineApproval",
     title: "Examine Approval",
     arguments: [a],
   };

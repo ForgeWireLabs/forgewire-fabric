@@ -159,7 +159,7 @@ export class HubClient {
   constructor(private readonly baseUrl: string, private readonly token: string) {}
 
   static fromConfig(): HubClient | undefined {
-    const cfg = vscode.workspace.getConfiguration("forgewireFabric");
+    const cfg = vscode.workspace.getConfiguration("forgewire");
     const baseUrl = (cfg.get<string>("hubUrl") ?? "").trim();
     const token = readToken(cfg);
     if (!baseUrl || !token) {
@@ -173,7 +173,7 @@ export class HubClient {
    * broken by uptime: highest uptime wins). Returns the first reachable
    * candidate plus all probe results for UI display.
    *
-   * If `forgewireFabric.hubPin` is set, that URL is returned directly without
+   * If `forgewire.hubPin` is set, that URL is returned directly without
    * probing -- this is the manual-override path.
    */
   static async probe(): Promise<{
@@ -182,7 +182,7 @@ export class HubClient {
     pinned: boolean;
     probes: Array<{ url: string; label?: string; priority?: number; ok: boolean; uptime?: number; error?: string }>;
   }> {
-    const cfg = vscode.workspace.getConfiguration("forgewireFabric");
+    const cfg = vscode.workspace.getConfiguration("forgewire");
     const token = readToken(cfg);
     const pin = (cfg.get<string>("hubPin") ?? "").trim();
     if (pin) {
@@ -463,3 +463,4 @@ function expandHome(value: string): string {
   }
   return value;
 }
+

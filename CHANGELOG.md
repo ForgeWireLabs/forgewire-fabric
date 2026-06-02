@@ -136,3 +136,4 @@ Pre-changelog releases — see `git log` for full history. Notable milestones:
 - Earlier: dispatcher host-role registration, host-role summaries,
   machine-label promotion, rqlite cluster path, runner v2 protocol.
 
+

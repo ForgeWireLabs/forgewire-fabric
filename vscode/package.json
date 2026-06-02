@@ -1,8 +1,8 @@
 {
-  "name": "forgewire-fabric",
-  "displayName": "ForgeWire Fabric",
-  "description": "Dispatch tasks to a ForgeWire Fabric compute mesh: signed envelopes, scope-bound capability tokens, live stream output. Run a hub or runner from inside VS Code on Windows, macOS, or Linux.",
-  "version": "0.2.1",
+  "name": "forgewire",
+  "displayName": "ForgeWire",
+  "description": "Unified control surface for the ForgeWire platform — Fabric, Loom, Hub, runners, and future services: signed envelopes, scope-bound capability tokens, live stream output. Run a hub or runner from inside VS Code on Windows, macOS, or Linux.",
+  "version": "0.3.0",
   "publisher": "DigitalHallucinations",
   "license": "Apache-2.0",
   "icon": "media/icon.png",
@@ -13,7 +13,7 @@
     "Other"
   ],
   "keywords": [
-    "forgewire-fabric",
+    "forgewire",
     "distributed",
     "cluster",
     "task-dispatch",
@@ -22,12 +22,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/DigitalHallucinations/forgewire-fabric.git",
+    "url": "https://github.com/DigitalHallucinations/forgewire.git",
     "directory": "vscode"
   },
-  "homepage": "https://github.com/DigitalHallucinations/forgewire-fabric",
+  "homepage": "https://github.com/DigitalHallucinations/forgewire",
   "bugs": {
-    "url": "https://github.com/DigitalHallucinations/forgewire-fabric/issues"
+    "url": "https://github.com/DigitalHallucinations/forgewire/issues"
   },
   "main": "./dist/extension.js",
   "activationEvents": [
@@ -35,14 +35,14 @@
   ],
   "contributes": {
     "configuration": {
-      "title": "ForgeWire Fabric",
+      "title": "ForgeWire",
       "properties": {
-        "forgewireFabric.hubUrl": {
+        "forgewire.hubUrl": {
           "type": "string",
           "default": "",
-          "description": "Base URL of the ForgeWire hub (e.g. http://hub.local:8765). Leave empty to be prompted on first connect. When forgewireFabric.hubCandidates is non-empty this acts as an implicit additional candidate at priority 100."
+          "description": "Base URL of the ForgeWire hub (e.g. http://hub.local:8765). Leave empty to be prompted on first connect. When forgewire.hubCandidates is non-empty this acts as an implicit additional candidate at priority 100."
         },
-        "forgewireFabric.hubCandidates": {
+        "forgewire.hubCandidates": {
           "type": "array",
           "default": [],
           "items": {
@@ -68,17 +68,17 @@
           },
           "markdownDescription": "Ordered list of hub candidates for failover. The extension probes each candidate in priority order and uses the first reachable one as the active hub. Example:\n```\n[\n  { \"url\": \"http://hub-host:8765\", \"label\": \"OptiPlex (always-on)\", \"priority\": 1 },\n  { \"url\": \"http://hub-host-2:8765\", \"label\": \"Dell\", \"priority\": 2 }\n]\n```"
         },
-        "forgewireFabric.hubPin": {
+        "forgewire.hubPin": {
           "type": "string",
           "default": "",
           "description": "Manual override: when set, the extension dispatches to this URL only and does not probe candidates. Use the *Pin to Hub\u00e2\u20ac\u00a6* command to set this. Clear with *Unpin Hub*."
         },
-        "forgewireFabric.hubName": {
+        "forgewire.hubName": {
           "type": "string",
           "default": "",
           "description": "Friendly display name for the hub (shown in the sidebar and status bar). Purely cosmetic \u00e2\u20ac\u201d no effect on hub identity or auth."
         },
-        "forgewireFabric.runnerAliases": {
+        "forgewire.runnerAliases": {
           "type": "object",
           "default": {},
           "additionalProperties": {
@@ -86,78 +86,78 @@
           },
           "description": "Map of runner_id -> friendly alias. Used as the runner label in the sidebar."
         },
-        "forgewireFabric.hubToken": {
+        "forgewire.hubToken": {
           "type": "string",
           "default": "",
           "markdownDescription": "Bearer token for the hub. **Treat as a secret** \u2014 prefer SecretStorage via the *ForgeWire: Set Hub Token* command."
         },
-        "forgewireFabric.hubTokenFile": {
+        "forgewire.hubTokenFile": {
           "type": "string",
           "default": "",
           "description": "Path to a file containing the hub bearer token. Used when forgewire.hubToken is empty. Defaults to ~/.forgewire/hub.token when present."
         },
-        "forgewireFabric.pythonPath": {
+        "forgewire.pythonPath": {
           "type": "string",
           "default": "",
           "description": "Python interpreter used to install / launch the forgewire CLI. Empty = auto-detect (uses python.defaultInterpreterPath, then 'python3', then 'python')."
         },
-        "forgewireFabric.refreshIntervalSeconds": {
+        "forgewire.refreshIntervalSeconds": {
           "type": "number",
           "default": 10,
           "minimum": 2,
           "description": "How often to refresh the runners and tasks tree views."
         },
-        "forgewireFabric.approvals.ageBadgeHours": {
+        "forgewire.approvals.ageBadgeHours": {
           "type": "number",
           "default": 24,
           "minimum": 1,
           "description": "Show an aged-approval warning badge after this many hours pending."
         },
-        "forgewireFabric.autoStartHubPort": {
+        "forgewire.autoStartHubPort": {
           "type": "number",
           "default": 8765,
           "description": "Default port used by 'ForgeWire: Start Hub Here'."
         },
-        "forgewireFabric.cluster.repoRoot": {
+        "forgewire.cluster.repoRoot": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Filesystem path to the `forgewire-fabric` checkout containing `config/cluster.yaml` and `scripts/dr/`. Empty = auto-detect by walking up from the active workspace folder. Required only if you keep the repo outside any open workspace."
+          "markdownDescription": "Filesystem path to the `forgewire` checkout containing `config/cluster.yaml` and `scripts/dr/`. Empty = auto-detect by walking up from the active workspace folder. Required only if you keep the repo outside any open workspace."
         },
-        "forgewireFabric.cluster.preferredNode": {
+        "forgewire.cluster.preferredNode": {
           "type": "string",
           "default": "",
           "description": "Override cluster.yaml's preferred_node for this machine when running DR / chaos installers from this UI. Empty = use cluster.yaml."
         },
-        "forgewireFabric.dr.backup.cadenceMinutes": {
+        "forgewire.dr.backup.cadenceMinutes": {
           "type": "number",
           "default": 0,
           "minimum": 0,
           "description": "How often the rqlite backup task runs. 0 = use cluster.yaml backups.cadence_minutes (5)."
         },
-        "forgewireFabric.dr.backup.retentionHours": {
+        "forgewire.dr.backup.retentionHours": {
           "type": "number",
           "default": 0,
           "minimum": 0,
           "description": "How long to keep rqlite backup snapshots. 0 = use cluster.yaml backups.retention_hours (24)."
         },
-        "forgewireFabric.dr.chaos.cadenceMinutes": {
+        "forgewire.dr.chaos.cadenceMinutes": {
           "type": "number",
           "default": 0,
           "minimum": 0,
           "markdownDescription": "How often the chaos drill task runs (24h = 1440). 0 = use cluster.yaml chaos.cadence_minutes (1440). **Lower values WILL show up as latency spikes on the hub.**"
         },
-        "forgewireFabric.dr.chaos.drills": {
+        "forgewire.dr.chaos.drills": {
           "type": "string",
           "default": "",
           "markdownDescription": "Comma-separated drill list. Empty = use cluster.yaml `chaos.drills`. Available: `kill-leader`, `lose-quorum`, `partition-recovery` (manual; touches Windows Firewall)."
         },
-        "forgewireFabric.dr.chaos.retentionDays": {
+        "forgewire.dr.chaos.retentionDays": {
           "type": "number",
           "default": 0,
           "minimum": 0,
           "description": "How many days of chaos JSONL logs to keep. 0 = use cluster.yaml chaos.retention_days (30)."
         },
-        "forgewireFabric.dr.chaos.principal": {
+        "forgewire.dr.chaos.principal": {
           "type": "string",
           "enum": [
             "SYSTEM",
@@ -166,7 +166,7 @@
           "default": "SYSTEM",
           "markdownDescription": "Windows principal the chaos scheduled task runs as. **SYSTEM** is recommended (no UAC prompts, full service-control rights). Choose **user** only if you cannot provision SSH keys for SYSTEM and need the task to inherit your user's `%USERPROFILE%\\.ssh` for cross-host drills."
         },
-        "forgewireFabric.dr.chaos.force": {
+        "forgewire.dr.chaos.force": {
           "type": "boolean",
           "default": false,
           "description": "Bypass the single-driver guard when installing the chaos task on a host whose preferred_node differs from cluster.yaml chaos.driver_node. Leave false unless you know what you're doing."
@@ -175,522 +175,522 @@
     },
     "commands": [
       {
-        "command": "forgewireFabric.installCli",
-        "title": "Install / Update CLI (pip install forgewire-fabric)",
-        "category": "ForgeWire Fabric"
+        "command": "forgewire.installCli",
+        "title": "Install / Update CLI (pip install forgewire)",
+        "category": "ForgeWire"
       },
       {
-        "command": "forgewireFabric.connectHub",
+        "command": "forgewire.connectHub",
         "title": "Connect to Hub\u2026",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(plug)"
       },
       {
-        "command": "forgewireFabric.setToken",
+        "command": "forgewire.setToken",
         "title": "Set Hub Token\u2026",
-        "category": "ForgeWire Fabric"
+        "category": "ForgeWire"
       },
       {
-        "command": "forgewireFabric.disconnect",
+        "command": "forgewire.disconnect",
         "title": "Disconnect",
-        "category": "ForgeWire Fabric"
+        "category": "ForgeWire"
       },
       {
-        "command": "forgewireFabric.startHubHere",
+        "command": "forgewire.startHubHere",
         "title": "Start Hub Here\u2026",
-        "category": "ForgeWire Fabric"
+        "category": "ForgeWire"
       },
       {
-        "command": "forgewireFabric.startRunnerHere",
+        "command": "forgewire.startRunnerHere",
         "title": "Start Runner Here\u2026",
-        "category": "ForgeWire Fabric"
+        "category": "ForgeWire"
       },
       {
-        "command": "forgewireFabric.dispatchTask",
+        "command": "forgewire.dispatchTask",
         "title": "Dispatch Task\u2026",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(rocket)"
       },
       {
-        "command": "forgewireFabric.refresh",
+        "command": "forgewire.refresh",
         "title": "Refresh",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(refresh)"
       },
       {
-        "command": "forgewireFabric.streamTask",
+        "command": "forgewire.streamTask",
         "title": "Tail Task Stream",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(output)"
       },
       {
-        "command": "forgewireFabric.cancelTask",
+        "command": "forgewire.cancelTask",
         "title": "Cancel Task",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(stop-circle)"
       },
       {
-        "command": "forgewireFabric.showTask",
+        "command": "forgewire.showTask",
         "title": "Show Task",
-        "category": "ForgeWire Fabric"
+        "category": "ForgeWire"
       },
       {
-        "command": "forgewireFabric.approveApproval",
+        "command": "forgewire.approveApproval",
         "title": "Approve Approval",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(check)"
       },
       {
-        "command": "forgewireFabric.denyApproval",
+        "command": "forgewire.denyApproval",
         "title": "Deny Approval",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(circle-slash)"
       },
       {
-        "command": "forgewireFabric.deferApproval",
+        "command": "forgewire.deferApproval",
         "title": "Snooze Approval...",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(debug-pause)"
       },
       {
-        "command": "forgewireFabric.showDeferredApprovals",
+        "command": "forgewire.showDeferredApprovals",
         "title": "Show Snoozed Approvals",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(eye)"
       },
       {
-        "command": "forgewireFabric.examineApproval",
+        "command": "forgewire.examineApproval",
         "title": "Examine Approval",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(inspect)"
       },
       {
-        "command": "forgewireFabric.copyApprovalReference",
+        "command": "forgewire.copyApprovalReference",
         "title": "Copy Approval ID / Envelope Hash",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(copy)"
       },
       {
-        "command": "forgewireFabric.copyToken",
+        "command": "forgewire.copyToken",
         "title": "Copy Hub Token to Clipboard",
-        "category": "ForgeWire Fabric"
+        "category": "ForgeWire"
       },
       {
-        "command": "forgewireFabric.generateToken",
+        "command": "forgewire.generateToken",
         "title": "Generate New Hub Token",
-        "category": "ForgeWire Fabric"
+        "category": "ForgeWire"
       },
       {
-        "command": "forgewireFabric.openSettings",
+        "command": "forgewire.openSettings",
         "title": "Open Settings\u00e2\u20ac\u00a6",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(gear)"
       },
       {
-        "command": "forgewireFabric.renameHub",
+        "command": "forgewire.renameHub",
         "title": "Rename Hub\u00e2\u20ac\u00a6",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(edit)"
       },
       {
-        "command": "forgewireFabric.renameHost",
+        "command": "forgewire.renameHost",
         "title": "Rename Host\u00e2\u20ac\u00a6",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(edit)"
       },
       {
-        "command": "forgewireFabric.renameRunner",
+        "command": "forgewire.renameRunner",
         "title": "Rename Runner Alias\u00e2\u20ac\u00a6",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(edit)"
       },
       {
-        "command": "forgewireFabric.pauseRunner",
+        "command": "forgewire.pauseRunner",
         "title": "Pause Runner (drain)",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(debug-pause)"
       },
       {
-        "command": "forgewireFabric.resumeRunner",
+        "command": "forgewire.resumeRunner",
         "title": "Resume Runner",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(debug-start)"
       },
       {
-        "command": "forgewireFabric.restartRunnerService",
+        "command": "forgewire.restartRunnerService",
         "title": "Restart Runner Service (local)",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(debug-restart)"
       },
       {
-        "command": "forgewireFabric.startRunnerService",
+        "command": "forgewire.startRunnerService",
         "title": "Start Runner Service (local)",
-        "category": "ForgeWire Fabric"
+        "category": "ForgeWire"
       },
       {
-        "command": "forgewireFabric.stopRunnerService",
+        "command": "forgewire.stopRunnerService",
         "title": "Stop Runner Service (local)",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(debug-stop)"
       },
       {
-        "command": "forgewireFabric.pinHub",
+        "command": "forgewire.pinHub",
         "title": "Pin to Hub\u00e2\u20ac\u00a6",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(pin)"
       },
       {
-        "command": "forgewireFabric.unpinHub",
+        "command": "forgewire.unpinHub",
         "title": "Unpin Hub",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(pinned)"
       },
       {
-        "command": "forgewireFabric.promoteHub",
+        "command": "forgewire.promoteHub",
         "title": "Promote This Node to Hub\u00e2\u20ac\u00a6",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(arrow-up)"
       },
       {
-        "command": "forgewireFabric.demoteHub",
+        "command": "forgewire.demoteHub",
         "title": "Demote Active Hub\u00e2\u20ac\u00a6",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(arrow-down)"
       },
       {
-        "command": "forgewireFabric.editHubCandidates",
+        "command": "forgewire.editHubCandidates",
         "title": "Edit Hub Candidates\u00e2\u20ac\u00a6",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(list-tree)"
       },
       {
-        "command": "forgewireFabric.dr.installBackupTask",
+        "command": "forgewire.dr.installBackupTask",
         "title": "DR: Install rqlite Backup Task on This Host",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(database)"
       },
       {
-        "command": "forgewireFabric.dr.installChaosTask",
+        "command": "forgewire.dr.installChaosTask",
         "title": "DR: Install Chaos Drill Task on This Host",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(zap)"
       },
       {
-        "command": "forgewireFabric.dr.provisionSshForSystem",
+        "command": "forgewire.dr.provisionSshForSystem",
         "title": "DR: Provision SSH Key for SYSTEM (cross-host chaos)",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(key)"
       },
       {
-        "command": "forgewireFabric.dr.runChaosNow",
+        "command": "forgewire.dr.runChaosNow",
         "title": "DR: Run Chaos Drill Now",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(play)"
       },
       {
-        "command": "forgewireFabric.dr.tailLastChaosLog",
+        "command": "forgewire.dr.tailLastChaosLog",
         "title": "DR: Open Last Chaos Drill Log",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(go-to-file)"
       },
       {
-        "command": "forgewireFabric.dr.openClusterYaml",
+        "command": "forgewire.dr.openClusterYaml",
         "title": "DR: Open cluster.yaml",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(json)"
       },
       {
-        "command": "forgewireFabric.dr.openSettings",
+        "command": "forgewire.dr.openSettings",
         "title": "DR: Open Cluster & Chaos Settings",
-        "category": "ForgeWire Fabric",
+        "category": "ForgeWire",
         "icon": "$(settings-gear)"
       }
     ],
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "forgewireFabric",
-          "title": "ForgeWire Fabric",
+          "id": "forgewire",
+          "title": "ForgeWire",
           "icon": "media/sidebar.svg"
         }
       ]
     },
     "views": {
-      "forgewireFabric": [
+      "forgewire": [
         {
-          "id": "forgewireFabric.hub",
+          "id": "forgewire.hub",
           "name": "Hub",
           "icon": "$(plug)",
-          "contextualTitle": "ForgeWire Fabric Hub"
+          "contextualTitle": "ForgeWire Hub"
         },
         {
-          "id": "forgewireFabric.hosts",
+          "id": "forgewire.hosts",
           "name": "Hosts",
           "icon": "$(device-desktop)",
-          "contextualTitle": "ForgeWire Fabric Hosts"
+          "contextualTitle": "ForgeWire Hosts"
         },
         {
-          "id": "forgewireFabric.tasks",
+          "id": "forgewire.tasks",
           "name": "Tasks",
           "icon": "$(checklist)",
-          "contextualTitle": "ForgeWire Fabric Tasks"
+          "contextualTitle": "ForgeWire Tasks"
         },
         {
-          "id": "forgewireFabric.approvals",
+          "id": "forgewire.approvals",
           "name": "Approvals",
           "icon": "$(verified)",
-          "contextualTitle": "ForgeWire Fabric Approvals"
+          "contextualTitle": "ForgeWire Approvals"
         },
         {
-          "id": "forgewireFabric.audit",
+          "id": "forgewire.audit",
           "name": "Audit log",
           "icon": "$(history)",
-          "contextualTitle": "ForgeWire Fabric Audit Log"
+          "contextualTitle": "ForgeWire Audit Log"
         },
         {
-          "id": "forgewireFabric.secrets",
+          "id": "forgewire.secrets",
           "name": "Secrets",
           "icon": "$(lock)",
-          "contextualTitle": "ForgeWire Fabric Secrets"
+          "contextualTitle": "ForgeWire Secrets"
         }
       ]
     },
     "viewsWelcome": [
       {
-        "view": "forgewireFabric.hub",
-        "contents": "No hub connection.\n\n[Connect to Hub](command:forgewireFabric.connectHub)\n\n[Open Settings](command:forgewireFabric.openSettings)\n\n[Start a Hub Locally](command:forgewireFabric.startHubHere)",
-        "when": "!forgewireFabric.connected"
+        "view": "forgewire.hub",
+        "contents": "No hub connection.\n\n[Connect to Hub](command:forgewire.connectHub)\n\n[Open Settings](command:forgewire.openSettings)\n\n[Start a Hub Locally](command:forgewire.startHubHere)",
+        "when": "!forgewire.connected"
       },
       {
-        "view": "forgewireFabric.hosts",
-        "contents": "No hub connection.\n\n[Connect to Hub](command:forgewireFabric.connectHub)\n\n[Start a Hub Locally](command:forgewireFabric.startHubHere)",
-        "when": "!forgewireFabric.connected"
+        "view": "forgewire.hosts",
+        "contents": "No hub connection.\n\n[Connect to Hub](command:forgewire.connectHub)\n\n[Start a Hub Locally](command:forgewire.startHubHere)",
+        "when": "!forgewire.connected"
       },
       {
-        "view": "forgewireFabric.tasks",
-        "contents": "No hub connection.\n\n[Connect to Hub](command:forgewireFabric.connectHub)",
-        "when": "!forgewireFabric.connected"
+        "view": "forgewire.tasks",
+        "contents": "No hub connection.\n\n[Connect to Hub](command:forgewire.connectHub)",
+        "when": "!forgewire.connected"
       },
       {
-        "view": "forgewireFabric.approvals",
-        "contents": "No hub connection.\n\n[Connect to Hub](command:forgewireFabric.connectHub)",
-        "when": "!forgewireFabric.connected"
+        "view": "forgewire.approvals",
+        "contents": "No hub connection.\n\n[Connect to Hub](command:forgewire.connectHub)",
+        "when": "!forgewire.connected"
       },
       {
-        "view": "forgewireFabric.audit",
-        "contents": "No hub connection.\n\n[Connect to Hub](command:forgewireFabric.connectHub)",
-        "when": "!forgewireFabric.connected"
+        "view": "forgewire.audit",
+        "contents": "No hub connection.\n\n[Connect to Hub](command:forgewire.connectHub)",
+        "when": "!forgewire.connected"
       },
       {
-        "view": "forgewireFabric.secrets",
-        "contents": "No hub connection.\n\n[Connect to Hub](command:forgewireFabric.connectHub)",
-        "when": "!forgewireFabric.connected"
+        "view": "forgewire.secrets",
+        "contents": "No hub connection.\n\n[Connect to Hub](command:forgewire.connectHub)",
+        "when": "!forgewire.connected"
       }
     ],
     "menus": {
       "view/title": [
         {
-          "command": "forgewireFabric.refresh",
-          "when": "view == forgewireFabric.tasks || view == forgewireFabric.hub || view == forgewireFabric.hosts || view == forgewireFabric.approvals || view == forgewireFabric.audit || view == forgewireFabric.secrets",
+          "command": "forgewire.refresh",
+          "when": "view == forgewire.tasks || view == forgewire.hub || view == forgewire.hosts || view == forgewire.approvals || view == forgewire.audit || view == forgewire.secrets",
           "group": "navigation@1"
         },
         {
-          "command": "forgewireFabric.openSettings",
-          "when": "view == forgewireFabric.hub",
+          "command": "forgewire.openSettings",
+          "when": "view == forgewire.hub",
           "group": "navigation@2"
         },
         {
-          "command": "forgewireFabric.dispatchTask",
-          "when": "view == forgewireFabric.tasks",
+          "command": "forgewire.dispatchTask",
+          "when": "view == forgewire.tasks",
           "group": "navigation@2"
         },
         {
-          "command": "forgewireFabric.showDeferredApprovals",
-          "when": "view == forgewireFabric.approvals && forgewireFabric.hasDeferredApprovals",
+          "command": "forgewire.showDeferredApprovals",
+          "when": "view == forgewire.approvals && forgewire.hasDeferredApprovals",
           "group": "navigation@2"
         },
         {
-          "command": "forgewireFabric.connectHub",
-          "when": "view == forgewireFabric.hosts",
+          "command": "forgewire.connectHub",
+          "when": "view == forgewire.hosts",
           "group": "navigation@2"
         }
       ],
       "view/item/context": [
         {
-          "command": "forgewireFabric.renameHub",
-          "when": "view == forgewireFabric.hub && viewItem == hub.name",
+          "command": "forgewire.renameHub",
+          "when": "view == forgewire.hub && viewItem == hub.name",
           "group": "inline@1"
         },
         {
-          "command": "forgewireFabric.pinHub",
-          "when": "view == forgewireFabric.hub && viewItem == hub.url.auto",
+          "command": "forgewire.pinHub",
+          "when": "view == forgewire.hub && viewItem == hub.url.auto",
           "group": "inline@1"
         },
         {
-          "command": "forgewireFabric.unpinHub",
-          "when": "view == forgewireFabric.hub && viewItem == hub.url.pinned",
+          "command": "forgewire.unpinHub",
+          "when": "view == forgewire.hub && viewItem == hub.url.pinned",
           "group": "inline@1"
         },
         {
-          "command": "forgewireFabric.editHubCandidates",
-          "when": "view == forgewireFabric.hub && viewItem == hub.candidates",
+          "command": "forgewire.editHubCandidates",
+          "when": "view == forgewire.hub && viewItem == hub.candidates",
           "group": "inline@1"
         },
         {
-          "command": "forgewireFabric.renameHost",
-          "when": "view == forgewireFabric.hosts && viewItem =~ /^hosts\\.host\\./",
+          "command": "forgewire.renameHost",
+          "when": "view == forgewire.hosts && viewItem =~ /^hosts\\.host\\./",
           "group": "inline@1"
         },
         {
-          "command": "forgewireFabric.renameRunner",
-          "when": "view == forgewireFabric.hosts && viewItem =~ /^runner\\./",
+          "command": "forgewire.renameRunner",
+          "when": "view == forgewire.hosts && viewItem =~ /^runner\\./",
           "group": "inline@1.5"
         },
         {
-          "command": "forgewireFabric.pauseRunner",
-          "when": "view == forgewireFabric.hosts && viewItem =~ /^runner\\.online\\./",
+          "command": "forgewire.pauseRunner",
+          "when": "view == forgewire.hosts && viewItem =~ /^runner\\.online\\./",
           "group": "inline@2"
         },
         {
-          "command": "forgewireFabric.resumeRunner",
-          "when": "view == forgewireFabric.hosts && viewItem =~ /^runner\\.draining\\./",
+          "command": "forgewire.resumeRunner",
+          "when": "view == forgewire.hosts && viewItem =~ /^runner\\.draining\\./",
           "group": "inline@2"
         },
         {
-          "command": "forgewireFabric.restartRunnerService",
-          "when": "view == forgewireFabric.hosts && viewItem =~ /^runner\\.[a-z]+\\.local$/",
+          "command": "forgewire.restartRunnerService",
+          "when": "view == forgewire.hosts && viewItem =~ /^runner\\.[a-z]+\\.local$/",
           "group": "inline@3"
         },
         {
-          "command": "forgewireFabric.stopRunnerService",
-          "when": "view == forgewireFabric.hosts && viewItem =~ /^runner\\.[a-z]+\\.local$/",
+          "command": "forgewire.stopRunnerService",
+          "when": "view == forgewire.hosts && viewItem =~ /^runner\\.[a-z]+\\.local$/",
           "group": "runner@2"
         },
         {
-          "command": "forgewireFabric.startRunnerService",
-          "when": "view == forgewireFabric.hosts && viewItem =~ /^runner\\.offline\\.local$/",
+          "command": "forgewire.startRunnerService",
+          "when": "view == forgewire.hosts && viewItem =~ /^runner\\.offline\\.local$/",
           "group": "runner@1"
         },
         {
-          "command": "forgewireFabric.streamTask",
-          "when": "view == forgewireFabric.tasks && viewItem =~ /^task\\./",
+          "command": "forgewire.streamTask",
+          "when": "view == forgewire.tasks && viewItem =~ /^task\\./",
           "group": "inline@1"
         },
         {
-          "command": "forgewireFabric.cancelTask",
-          "when": "view == forgewireFabric.tasks && viewItem =~ /^task\\./",
+          "command": "forgewire.cancelTask",
+          "when": "view == forgewire.tasks && viewItem =~ /^task\\./",
           "group": "inline@2"
         },
         {
-          "command": "forgewireFabric.showTask",
-          "when": "view == forgewireFabric.tasks && viewItem =~ /^task\\./"
+          "command": "forgewire.showTask",
+          "when": "view == forgewire.tasks && viewItem =~ /^task\\./"
         },
         {
-          "command": "forgewireFabric.approveApproval",
-          "when": "view == forgewireFabric.approvals && viewItem == approval.pending",
+          "command": "forgewire.approveApproval",
+          "when": "view == forgewire.approvals && viewItem == approval.pending",
           "group": "inline@1"
         },
         {
-          "command": "forgewireFabric.denyApproval",
-          "when": "view == forgewireFabric.approvals && viewItem == approval.pending",
+          "command": "forgewire.denyApproval",
+          "when": "view == forgewire.approvals && viewItem == approval.pending",
           "group": "inline@2"
         },
         {
-          "command": "forgewireFabric.deferApproval",
-          "when": "view == forgewireFabric.approvals && viewItem == approval.pending",
+          "command": "forgewire.deferApproval",
+          "when": "view == forgewire.approvals && viewItem == approval.pending",
           "group": "inline@3"
         },
         {
-          "command": "forgewireFabric.examineApproval",
-          "when": "view == forgewireFabric.approvals && viewItem =~ /^approval\\./",
+          "command": "forgewire.examineApproval",
+          "when": "view == forgewire.approvals && viewItem =~ /^approval\\./",
           "group": "inline@4"
         },
         {
-          "command": "forgewireFabric.copyApprovalReference",
-          "when": "view == forgewireFabric.approvals && viewItem =~ /^approval\\./",
+          "command": "forgewire.copyApprovalReference",
+          "when": "view == forgewire.approvals && viewItem =~ /^approval\\./",
           "group": "inline@5"
         }
       ],
       "commandPalette": [
         {
-          "command": "forgewireFabric.streamTask"
+          "command": "forgewire.streamTask"
         },
         {
-          "command": "forgewireFabric.cancelTask"
+          "command": "forgewire.cancelTask"
         },
         {
-          "command": "forgewireFabric.showTask"
+          "command": "forgewire.showTask"
         },
         {
-          "command": "forgewireFabric.approveApproval",
+          "command": "forgewire.approveApproval",
           "when": "false"
         },
         {
-          "command": "forgewireFabric.denyApproval",
+          "command": "forgewire.denyApproval",
           "when": "false"
         },
         {
-          "command": "forgewireFabric.deferApproval",
+          "command": "forgewire.deferApproval",
           "when": "false"
         },
         {
-          "command": "forgewireFabric.examineApproval",
+          "command": "forgewire.examineApproval",
           "when": "false"
         },
         {
-          "command": "forgewireFabric.copyApprovalReference",
+          "command": "forgewire.copyApprovalReference",
           "when": "false"
         },
         {
-          "command": "forgewireFabric.pauseRunner"
+          "command": "forgewire.pauseRunner"
         },
         {
-          "command": "forgewireFabric.resumeRunner"
+          "command": "forgewire.resumeRunner"
         },
         {
-          "command": "forgewireFabric.restartRunnerService"
+          "command": "forgewire.restartRunnerService"
         },
         {
-          "command": "forgewireFabric.startRunnerService"
+          "command": "forgewire.startRunnerService"
         },
         {
-          "command": "forgewireFabric.stopRunnerService"
+          "command": "forgewire.stopRunnerService"
         },
         {
-          "command": "forgewireFabric.pinHub"
+          "command": "forgewire.pinHub"
         },
         {
-          "command": "forgewireFabric.unpinHub"
+          "command": "forgewire.unpinHub"
         },
         {
-          "command": "forgewireFabric.promoteHub"
+          "command": "forgewire.promoteHub"
         },
         {
-          "command": "forgewireFabric.demoteHub"
+          "command": "forgewire.demoteHub"
         },
         {
-          "command": "forgewireFabric.editHubCandidates"
+          "command": "forgewire.editHubCandidates"
         },
         {
-          "command": "forgewireFabric.dr.installBackupTask"
+          "command": "forgewire.dr.installBackupTask"
         },
         {
-          "command": "forgewireFabric.dr.installChaosTask"
+          "command": "forgewire.dr.installChaosTask"
         },
         {
-          "command": "forgewireFabric.dr.provisionSshForSystem"
+          "command": "forgewire.dr.provisionSshForSystem"
         },
         {
-          "command": "forgewireFabric.dr.runChaosNow"
+          "command": "forgewire.dr.runChaosNow"
         },
         {
-          "command": "forgewireFabric.dr.tailLastChaosLog"
+          "command": "forgewire.dr.tailLastChaosLog"
         },
         {
-          "command": "forgewireFabric.dr.openClusterYaml"
+          "command": "forgewire.dr.openClusterYaml"
         },
         {
-          "command": "forgewireFabric.dr.openSettings"
+          "command": "forgewire.dr.openSettings"
         }
       ]
     }
@@ -708,3 +708,4 @@
     "@vscode/vsce": "^2.32.0"
   }
 }
+

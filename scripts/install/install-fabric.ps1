@@ -424,7 +424,7 @@ if (-not $SkipVsix) {
         )
         $vsixFile = $null
         foreach ($d in $vsixDirs) {
-            $vsixFile = Get-ChildItem $d -Filter "forgewire-fabric-*.vsix" -ErrorAction SilentlyContinue |
+            $vsixFile = Get-ChildItem $d -Filter "forgewire-*.vsix" -ErrorAction SilentlyContinue |
                 Sort-Object { [version]($_.BaseName -replace 'forgewire-fabric-','') } -Descending |
                 Select-Object -First 1
             if ($vsixFile) { break }
@@ -617,5 +617,6 @@ try {
 } catch {
     Write-Warning "  FAIL hub healthz unreachable: $($_.Exception.Message)"
 }
+
 
 
