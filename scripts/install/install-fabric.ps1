@@ -143,43 +143,20 @@ $CliExe    = Join-Path $BinDir "forgewire-fabric-cli.exe"
 Write-Host "Hub binary   : $HubExe" -ForegroundColor Cyan
 Write-Host "Runner binary: $RunnerExe" -ForegroundColor Cyan
 
-# ── Token ────────────────────────────────────────────────────────────────────
-if (-not $Token) {
-    $existingTokenFile = Join-Path $DataDir "hub.token"
-    if (Test-Path $existingTokenFile) {
-        $Token = (Get-Content $existingTokenFile -Raw).Trim()
-        Write-Host "Using existing token from $existingTokenFile"
-    }
-}
-if (-not $Token) {
-    $Token = -join ((1..40) | ForEach-Object { '{0:x}' -f (Get-Random -Maximum 16) })
-    Write-Host "Generated new bearer token (first node)." -ForegroundColor Yellow
-    Write-Host "  Token: $Token"
-    Write-Host "  Save this for joining nodes!"
-}
-if ($Token.Length -lt 16) { throw "Token must be >= 16 characters." }
-
-$userTokenDir = Join-Path $HOME ".forgewire"
-New-Item -ItemType Directory -Force -Path $userTokenDir | Out-Null
-[System.IO.File]::WriteAllText((Join-Path $userTokenDir "hub.token"), $Token)
-
-# ── Discover existing hub via mDNS ────────────────────────────────────────────
+# ── Discover existing hub FIRST — determines whether token is required ────────
 $discoveredHub = ""
 if (-not $HubUrl -and -not $ForceHub) {
     Write-Host ""
     Write-Host "Scanning LAN for existing ForgeWire hub..." -ForegroundColor Cyan
 
-    # Build a candidate list from the local subnet (dynamic — works on any network)
+    # Build candidate list dynamically from all detected subnets
     $localIps = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
         Where-Object { $_.PrefixOrigin -in @('Dhcp','Manual') -and $_.IPAddress -notlike '169.*' }
     $subnets = @($localIps | ForEach-Object { $_.IPAddress -replace '\.\d+$', '' }) | Select-Object -Unique
     if (-not $subnets) { $subnets = @("192.0.2") }
 
-    # Probe loopback first, then low host numbers (.1–.20) on each detected subnet
     $candidates = @("127.0.0.1")
-    foreach ($s in $subnets) {
-        1..20 | ForEach-Object { $candidates += "${s}.$_" }
-    }
+    foreach ($s in $subnets) { 1..20 | ForEach-Object { $candidates += "${s}.$_" } }
     $candidates = $candidates | Select-Object -Unique
 
     Write-Host "  Probing $($candidates.Count) addresses on detected subnets: $($subnets -join ', ')"
@@ -197,8 +174,8 @@ if (-not $HubUrl -and -not $ForceHub) {
 
     # Fallback: Python mDNS if available
     if (-not $discoveredHub) {
-        $python = Get-Command python.exe -ErrorAction SilentlyContinue
-        if (-not $python) { $python = Get-Command python3.exe -ErrorAction SilentlyContinue }
+        $python = (Get-Command python.exe -ErrorAction SilentlyContinue) ??
+                  (Get-Command python3.exe -ErrorAction SilentlyContinue)
         if ($python) {
             $discovered = & $python.Source -c @"
 import json
@@ -221,12 +198,118 @@ except:
     }
 
     if (-not $discoveredHub) {
-        Write-Host "  No existing hub found. This node will be the hub." -ForegroundColor Yellow
+        Write-Host "  No existing hub found — this node will bootstrap as hub." -ForegroundColor Yellow
     }
 }
 
 $effectiveHubUrl = if ($HubUrl) { $HubUrl } elseif ($discoveredHub) { $discoveredHub } else { "" }
 $isHubNode       = (-not $effectiveHubUrl) -or $ForceHub
+
+# ── Token — required to join; auto-generated only when bootstrapping a new hub ─
+#
+# Security model (current):  bearer token is the sole cluster admission gate.
+#   Hub node  → token is auto-generated, written to a locked file, and shown
+#               once. Operator must copy it to every joining node.
+#   Joining node → token MUST be provided explicitly via -Token. The installer
+#               will verify it authenticates against the hub before writing any
+#               services. A wrong or missing token is a hard failure.
+#
+# Future: User accounts + OAuth will replace the shared token with per-operator
+# credentials. Until then, treat the token like an SSH private key — rotate it
+# if it is ever exposed, and distribute it only over secure channels.
+
+if ($isHubNode) {
+    # Hub bootstrap: use an existing token or generate a cryptographically
+    # strong one. Never silently fall through to a weak default.
+    if (-not $Token) {
+        $existingTokenFile = Join-Path $DataDir "hub.token"
+        if (Test-Path $existingTokenFile) {
+            $Token = (Get-Content $existingTokenFile -Raw).Trim()
+            Write-Host ""
+            Write-Host "Reusing existing hub token from $existingTokenFile" -ForegroundColor Cyan
+        }
+    }
+    if (-not $Token) {
+        # 32 random bytes → 64-char hex string
+        $rng   = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+        $bytes = New-Object byte[] 32
+        $rng.GetBytes($bytes)
+        $Token = ($bytes | ForEach-Object { '{0:x2}' -f $_ }) -join ''
+        Write-Host ""
+        Write-Host "┌─────────────────────────────────────────────────────────┐" -ForegroundColor Yellow
+        Write-Host "│  NEW HUB TOKEN GENERATED — copy this to joining nodes   │" -ForegroundColor Yellow
+        Write-Host "│                                                         │" -ForegroundColor Yellow
+        Write-Host "│  $Token  │" -ForegroundColor White
+        Write-Host "│                                                         │" -ForegroundColor Yellow
+        Write-Host "│  Treat this like a password. Rotate if ever exposed.    │" -ForegroundColor Yellow
+        Write-Host "└─────────────────────────────────────────────────────────┘" -ForegroundColor Yellow
+        Write-Host ""
+    }
+} else {
+    # Joining node: token is REQUIRED. Without it this machine cannot be
+    # admitted to the cluster and there is nothing useful to install.
+    if (-not $Token) {
+        Write-Host ""
+        Write-Host "ERROR: A hub was found at $effectiveHubUrl but no -Token was provided." -ForegroundColor Red
+        Write-Host ""
+        Write-Host "Joining a cluster requires the hub bearer token. Get it from the hub node:" -ForegroundColor Yellow
+        Write-Host "  Get-Content C:\ProgramData\forgewire\hub.token"
+        Write-Host "  # or from your hub operator."
+        Write-Host ""
+        Write-Host "Then re-run with:"
+        Write-Host "  pwsh -File install-fabric.ps1 -WorkspaceRoot <path> -Token <token>"
+        Write-Host ""
+        throw "Token required to join cluster at $effectiveHubUrl. Aborting."
+    }
+
+    # Verify the token actually authenticates against the discovered hub BEFORE
+    # writing any services. A wrong token means a broken install.
+    Write-Host ""
+    Write-Host "Verifying token against hub at $effectiveHubUrl ..." -ForegroundColor Cyan
+    try {
+        $authCheck = Invoke-WebRequest `
+            -Uri "$effectiveHubUrl/runners" `
+            -Headers @{ Authorization = "Bearer $($Token.Trim())" } `
+            -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+        if ($authCheck.StatusCode -eq 200) {
+            Write-Host "  Token verified." -ForegroundColor Green
+        } else {
+            throw "Unexpected status $($authCheck.StatusCode)"
+        }
+    } catch {
+        $status = $_.Exception.Response?.StatusCode?.value__
+        Write-Host ""
+        Write-Host "ERROR: Token rejected by hub (HTTP $status)." -ForegroundColor Red
+        Write-Host "  The token you provided does not match the hub at $effectiveHubUrl."
+        Write-Host "  Get the correct token from the hub node:"
+        Write-Host "    Get-Content C:\ProgramData\forgewire\hub.token"
+        Write-Host ""
+        throw "Token authentication failed against $effectiveHubUrl. Aborting."
+    }
+}
+
+if ($Token.Length -lt 16) { throw "Token must be >= 16 characters." }
+
+# Write token to the local data dir (locked ACL) and user home dir
+New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
+$sysTokenFile = Join-Path $DataDir "hub.token"
+[System.IO.File]::WriteAllText($sysTokenFile, $Token)
+try {
+    # Restrict system token file to SYSTEM + Administrators only
+    $acl  = Get-Acl $sysTokenFile
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($id in @("NT AUTHORITY\SYSTEM","BUILTIN\Administrators")) {
+        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+            $id, "FullControl", "Allow")
+        $acl.AddAccessRule($rule)
+    }
+    Set-Acl $sysTokenFile $acl
+} catch {
+    Write-Warning "Could not restrict ACL on $sysTokenFile (non-fatal): $($_.Exception.Message)"
+}
+$userTokenDir = Join-Path $HOME ".forgewire"
+New-Item -ItemType Directory -Force -Path $userTokenDir | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $userTokenDir "hub.token"), $Token)
 
 # == STEP 1 - rqlite (EVERY node joins the Raft cluster) ══════════════════════
 Write-Host ""
@@ -514,6 +597,12 @@ Write-Host "           -Token `"$Token`" ``"
 Write-Host "           -RqliteJoinAddr $($env:COMPUTERNAME):$RqliteRaftPort"
 Write-Host ""
 Write-Host "  Reload VS Code (Ctrl+Shift+P → Developer: Reload Window)" -ForegroundColor Yellow
+Write-Host ""
+Write-Host "Security posture:" -ForegroundColor Cyan
+Write-Host "  The hub bearer token is the sole cluster admission gate." -ForegroundColor DarkGray
+Write-Host "  Anyone with the token can dispatch tasks to this cluster." -ForegroundColor DarkGray
+Write-Host "  Rotate it with: forgewire-fabric token rotate" -ForegroundColor DarkGray
+Write-Host "  Future versions will add per-operator accounts and OAuth." -ForegroundColor DarkGray
 
 # == Quick smoke test ════════════════════════════════════════════════════════════
 Write-Host ""
