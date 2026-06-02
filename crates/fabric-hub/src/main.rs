@@ -31,7 +31,7 @@ use fabric_store::{FabricStore, SchemaStore};
 use tracing::info;
 
 const PROTOCOL_VERSION: i64 = 3;
-const PACKAGE_VERSION: &str = "0.5.0-rust";
+const PACKAGE_VERSION: &str = "0.5.0";
 
 #[tokio::main]
 async fn main() {
