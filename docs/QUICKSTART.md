@@ -2,10 +2,10 @@
 
 A 5-minute path from zero to a working hub + runner controlled from your laptop.
 
-ForgeWire is a *signed task fabric*. One machine runs the **hub** (a FastAPI
-service that owns the task graph). Any number of other machines run **runners**
-that claim tasks scoped to a path glob and stream output back. You **dispatch**
-tasks from a CLI (or VS Code, see `docs/vscode.md`) on any machine that can
+ForgeWire is a *signed task fabric*. One machine runs the **hub** (a native Rust
+daemon that owns the task graph, backed by rqlite for HA). Any number of other
+machines run **runners** that claim tasks scoped to a path glob and stream output
+back. You **dispatch** tasks from a CLI (or VS Code) on any machine that can
 reach the hub.
 
 > **Threat model**: every register / claim / heartbeat is ed25519-signed by
@@ -57,30 +57,34 @@ this token can issue tasks to your cluster.**
 
 ### 2b. Start the hub
 
+The standard path uses the native Rust binary (no Python dependency):
+
 ```powershell
-# Windows
-$env:FORGEWIRE_HUB_TOKEN = (Get-Content hub.token).Trim()
-forgewire-fabric hub start --host 0.0.0.0 --port 8765
+# Windows — set token file and start
+$env:FORGEWIRE_HUB_TOKEN_FILE = "C:\ProgramData\forgewire\hub.token"
+$env:FORGEWIRE_HUB_HOST       = "0.0.0.0"
+$env:FORGEWIRE_HUB_PORT       = "8765"
+forgewire-hub.exe
 ```
 
 ```bash
 # Linux / macOS
-export FORGEWIRE_HUB_TOKEN=$(cat hub.token)
-forgewire-fabric hub start --host 0.0.0.0 --port 8765
+export FORGEWIRE_HUB_TOKEN_FILE=/etc/forgewire/hub.token
+export FORGEWIRE_HUB_HOST=0.0.0.0
+export FORGEWIRE_HUB_PORT=8765
+./forgewire-hub
 ```
 
 Verify from another shell:
 
 ```bash
-export FORGEWIRE_HUB_URL=http://<hub-host>:8765
-export FORGEWIRE_HUB_TOKEN=$(cat hub.token)
-forgewire-fabric hub healthz
-# → {"status":"ok","protocol_version":2,...}
+curl -s http://<hub-host>:8765/healthz
+# → {"status":"ok","rust_hub":true,"protocol_version":3,"stream_profile":"strict",...}
 ```
 
 To run the hub as a long-lived service, see
 [`docs/operations/service-install.md`](operations/service-install.md) for
-NSSM (Windows) and systemd (Linux) recipes.
+NSSM (Windows), systemd (Linux), and the remote deploy recipe.
 
 ---
 
@@ -190,22 +194,35 @@ settings reference.
 
 ## Environment variables
 
-| Variable | Purpose |
-| --- | --- |
-| `FORGEWIRE_HUB_URL` | Hub base URL for clients (`http://host:port`). |
-| `FORGEWIRE_HUB_TOKEN` | Bearer token shared with the hub. |
-| `FORGEWIRE_HUB_TOKEN_FILE` | Path to a file containing the token (alternative to `_TOKEN`). |
-| `FORGEWIRE_HUB_DISCOVER` | If `1`, browse mDNS for a hub when `_URL` is unset (requires `mdns` extra). |
-| `FORGEWIRE_HUB_HOST` / `FORGEWIRE_HUB_PORT` | Default bind for `forgewire-fabric hub start`. |
-| `FORGEWIRE_HUB_DB_PATH` | SQLite path for the hub's task graph (default `~/.forgewire/hub.sqlite3`). |
-| `FORGEWIRE_RUNNER_WORKSPACE_ROOT` | Working tree for the runner. |
-| `FORGEWIRE_RUNNER_TAGS` | Comma-separated runner capability tags. |
-| `FORGEWIRE_RUNNER_SCOPE_PREFIXES` | Comma-separated path prefixes the runner accepts. |
-| `FORGEWIRE_RUNNER_MAX_CONCURRENT` | Max concurrent tasks (default 1). |
-| `FORGEWIRE_RUNNER_POLL_INTERVAL` | Seconds between empty-claim polls (default 5.0). |
+### Hub
 
-Legacy `BLACKBOARD_*` aliases are still accepted for backwards compatibility
-with parent-platform integrations that still use legacy naming.
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `FORGEWIRE_HUB_HOST` | `127.0.0.1` | Bind address (`0.0.0.0` for LAN) |
+| `FORGEWIRE_HUB_PORT` | `8765` | Bind port |
+| `FORGEWIRE_HUB_TOKEN_FILE` | `C:\ProgramData\forgewire\hub.token` (Win) / `/var/lib/forgewire/hub.token` (Linux) | Bearer token file |
+| `FORGEWIRE_HUB_RQLITE_HOST` | `127.0.0.1` | rqlite node address |
+| `FORGEWIRE_HUB_RQLITE_PORT` | `4001` | rqlite port |
+| `FORGEWIRE_HUB_RQLITE_CONSISTENCY` | `strong` | `none`\|`weak`\|`strong` |
+| `FORGEWIRE_HUB_STREAM_PROFILE` | `strict` | `strict`\|`balanced`\|`throughput` — runner output flush policy |
+
+### Clients / dispatchers
+
+| Variable | Purpose |
+|----------|---------|
+| `FORGEWIRE_HUB_URL` | Hub base URL for clients (`http://host:port`) |
+| `FORGEWIRE_HUB_TOKEN` | Bearer token (alternative to `_TOKEN_FILE`) |
+| `FORGEWIRE_HUB_TOKEN_FILE` | Path to a file containing the token |
+
+### Runner
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `FORGEWIRE_RUNNER_WORKSPACE_ROOT` | — | Working tree for the runner |
+| `FORGEWIRE_RUNNER_TAGS` | — | Comma-separated capability tags |
+| `FORGEWIRE_RUNNER_SCOPE_PREFIXES` | — | Path prefixes the runner accepts |
+| `FORGEWIRE_RUNNER_MAX_CONCURRENT` | `1` | Max concurrent tasks |
+| `FORGEWIRE_RUNNER_POLL_INTERVAL` | `5.0` | Seconds between empty-claim polls |
 
 ## Signed dispatch (M2.4)
 

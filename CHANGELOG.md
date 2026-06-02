@@ -5,6 +5,40 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project
 uses [semantic versioning](https://semver.org/spec/v2.0.0.html) for the Python
 package. The VSIX (`vscode/`) is versioned independently.
 
+## [0.5.0] - 2026-06-02  *(Rust workspace — see version note)*
+
+> **Version note:** The Rust workspace tracks its own semver independently of the Python package.
+> The Python package remains at 0.14.0 (last bump: M2.6.7). The Rust binaries (`forgewire-hub`,
+> `forgewire-runner`, `forgewire-fabric-cli`) are at 0.5.0.
+
+### Added
+
+- **Stream bounded write buffer + named durability profiles** (`fabric-streams`, `fabric-hub`):
+  - `DurabilityProfile` enum: `Strict` (every line written before HTTP response — default),
+    `Balanced` (flush every 50 lines), `Throughput` (flush every 200 lines).
+  - `StreamBuffer`: per-task bounded `VecDeque` with threshold-based flush and hard backpressure
+    cap (500 lines / 2000 lines). `push()` returns `Some(batch)` at threshold; `push_bulk()`
+    handles bulk appends. `flush_task()` force-drains before terminal state.
+  - Hub wired end-to-end: `append_stream` and `append_stream_bulk` routes route through the
+    buffer; `submit_result` force-flushes all pending lines before writing terminal state so
+    no lines are lost at task completion regardless of profile.
+  - `FORGEWIRE_HUB_STREAM_PROFILE` env var selects the profile at startup (default: `strict`).
+  - `/healthz` now reports `stream_profile`, `stream_buffered_tasks`, `stream_buffered_lines`.
+  - 17 new `fabric-streams` tests (counter + profile + buffer, including concurrency test).
+  - OptiPlex hub (`forgewire-hub` 0.5.0, DESKTOP-38GVF8D:8765) updated and verified live.
+
+### Internal
+
+- `fabric-hub/src/state.rs`: `HubState` gains `stream_buffer: Arc<StreamBuffer>`.
+- `fabric-hub/src/routes/streams.rs`: strict path bypasses buffer (write-through); balanced/throughput
+  paths accumulate and flush; `flush_batch()` helper groups by `worker_id` for bulk store writes.
+- `fabric-hub/src/routes/health.rs`: buffer diagnostic counters added to healthz JSON.
+- `fabric-hub/src/main.rs`: `FORGEWIRE_HUB_STREAM_PROFILE` parsed at startup; logged at info level.
+- `todos/114-forgewire-fabric/phase-2.7-rust-first-runtime.md`: stream-buffering gate item
+  checked off; definition-of-done at 8/10.
+
+---
+
 ## [0.13.0] - 2026-05-13
 
 ### Added
