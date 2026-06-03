@@ -2,7 +2,7 @@
   "name": "forgewire",
   "displayName": "ForgeWire",
   "description": "Unified control surface for the ForgeWire platform — Fabric, Loom, Hub, runners, and future services: signed envelopes, scope-bound capability tokens, live stream output. Run a hub or runner from inside VS Code on Windows, macOS, or Linux.",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "publisher": "DigitalHallucinations",
   "license": "Apache-2.0",
   "icon": "media/icon.png",
@@ -170,6 +170,12 @@
           "type": "boolean",
           "default": false,
           "description": "Bypass the single-driver guard when installing the chaos task on a host whose preferred_node differs from cluster.yaml chaos.driver_node. Leave false unless you know what you're doing."
+        },
+        "forgewire.tasks.staleQueuedMinutes": {
+          "type": "number",
+          "default": 30,
+          "minimum": 0,
+          "description": "Minutes a task can remain queued before it is flagged as stale (yellow icon, Cancel control). Set to 0 to disable stale detection. Long-running queues should increase or disable this."
         }
       }
     },
@@ -270,6 +276,26 @@
         "category": "ForgeWire",
         "icon": "$(copy)"
       },
+        {
+          "command": "forgewire.redispatchTask",
+          "when": "view == forgewire.tasks && viewItem =~ /^taskHistory\\.(failed|cancelled|timed_out)$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "forgewire.dismissTask",
+          "when": "view == forgewire.tasks && viewItem =~ /^taskHistory\\./",
+          "group": "inline@2"
+        },
+        {
+          "command": "forgewire.cancelStaleTask",
+          "when": "view == forgewire.tasks && viewItem =~ /^task\\.[a-z]+\\.stale$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "forgewire.redispatchTask",
+          "when": "view == forgewire.tasks && viewItem =~ /^task\\.[a-z]+\\.failed$/",
+          "group": "inline@1"
+        },
       {
         "command": "forgewire.copyToken",
         "title": "Copy Hub Token to Clipboard",
@@ -404,6 +430,24 @@
         "title": "DR: Open Cluster & Chaos Settings",
         "category": "ForgeWire",
         "icon": "$(settings-gear)"
+      },
+      {
+        "command": "forgewire.redispatchTask",
+        "title": "Redispatch Task",
+        "category": "ForgeWire",
+        "icon": "$(redo)"
+      },
+      {
+        "command": "forgewire.dismissTask",
+        "title": "Dismiss from History",
+        "category": "ForgeWire",
+        "icon": "$(close)"
+      },
+      {
+        "command": "forgewire.cancelStaleTask",
+        "title": "Cancel Stale Task",
+        "category": "ForgeWire",
+        "icon": "$(trash)"
       }
     ],
     "viewsContainers": {
@@ -609,6 +653,26 @@
           "command": "forgewire.copyApprovalReference",
           "when": "view == forgewire.approvals && viewItem =~ /^approval\\./",
           "group": "inline@5"
+        },
+        {
+          "command": "forgewire.redispatchTask",
+          "when": "view == forgewire.tasks && viewItem =~ /^taskHistory\\.(failed|cancelled|timed_out)$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "forgewire.dismissTask",
+          "when": "view == forgewire.tasks && viewItem =~ /^taskHistory\\./",
+          "group": "inline@2"
+        },
+        {
+          "command": "forgewire.cancelStaleTask",
+          "when": "view == forgewire.tasks && viewItem =~ /^task\\.[a-z]+\\.stale$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "forgewire.redispatchTask",
+          "when": "view == forgewire.tasks && viewItem =~ /^task\\.[a-z]+\\.failed$/",
+          "group": "inline@1"
         }
       ],
       "commandPalette": [
@@ -640,6 +704,26 @@
         {
           "command": "forgewire.copyApprovalReference",
           "when": "false"
+        },
+        {
+          "command": "forgewire.redispatchTask",
+          "when": "view == forgewire.tasks && viewItem =~ /^taskHistory\\.(failed|cancelled|timed_out)$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "forgewire.dismissTask",
+          "when": "view == forgewire.tasks && viewItem =~ /^taskHistory\\./",
+          "group": "inline@2"
+        },
+        {
+          "command": "forgewire.cancelStaleTask",
+          "when": "view == forgewire.tasks && viewItem =~ /^task\\.[a-z]+\\.stale$/",
+          "group": "inline@1"
+        },
+        {
+          "command": "forgewire.redispatchTask",
+          "when": "view == forgewire.tasks && viewItem =~ /^task\\.[a-z]+\\.failed$/",
+          "group": "inline@1"
         },
         {
           "command": "forgewire.pauseRunner"
@@ -691,7 +775,25 @@
         },
         {
           "command": "forgewire.dr.openSettings"
-        }
+        },
+      {
+        "command": "forgewire.redispatchTask",
+        "title": "Redispatch Task",
+        "category": "ForgeWire",
+        "icon": "$(redo)"
+      },
+      {
+        "command": "forgewire.dismissTask",
+        "title": "Dismiss from History",
+        "category": "ForgeWire",
+        "icon": "$(close)"
+      },
+      {
+        "command": "forgewire.cancelStaleTask",
+        "title": "Cancel Stale Task",
+        "category": "ForgeWire",
+        "icon": "$(trash)"
+      }
       ]
     }
   },
@@ -708,4 +810,8 @@
     "@vscode/vsce": "^2.32.0"
   }
 }
+
+
+
+
 

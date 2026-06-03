@@ -71,7 +71,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   );
   auditProvider = new AuditProvider(getClient);
   secretsProvider = new SecretsProvider(getClient);
-  tasksProvider = new TasksProvider(getClient);
+  tasksProvider = new TasksProvider(getClient, 100, ctx);
   ctx.subscriptions.push(
     vscode.window.registerTreeDataProvider("forgewire.hub", hubProvider),
     vscode.window.registerTreeDataProvider("forgewire.hosts", hostsProvider),
@@ -93,6 +93,9 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     vscode.commands.registerCommand("forgewire.streamTask", streamTaskCmd),
     vscode.commands.registerCommand("forgewire.cancelTask", cancelTaskCmd),
     vscode.commands.registerCommand("forgewire.showTask", showTaskCmd),
+    vscode.commands.registerCommand("forgewire.redispatchTask", redispatchTaskCmd),
+    vscode.commands.registerCommand("forgewire.dismissTask", dismissTaskCmd),
+    vscode.commands.registerCommand("forgewire.cancelStaleTask", cancelStaleTaskCmd),
     vscode.commands.registerCommand("forgewire.approveApproval", approveApprovalCmd),
     vscode.commands.registerCommand("forgewire.denyApproval", denyApprovalCmd),
     vscode.commands.registerCommand("forgewire.deferApproval", deferApprovalCmd),
@@ -618,6 +621,66 @@ async function cancelTaskCmd(arg: number | { id: number }): Promise<void> {
   try {
     await c.cancel(id);
     vscode.window.showInformationMessage(`Cancelled task #${id}.`);
+    refreshAll();
+  } catch (err) {
+    vscode.window.showErrorMessage(
+      `Cancel failed: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+
+// ---- Redispatch a failed/cancelled task ----------------------------------------
+// Reads the original task params and submits a fresh dispatch with the same
+// title, prompt, scope_globs, base_commit, branch, kind, priority, and timeout.
+
+async function redispatchTaskCmd(arg: number | { id: number }): Promise<void> {
+  const c = getClient();
+  if (!c) { return; }
+  const id = typeof arg === "number" ? arg : arg?.id;
+  if (!id) { return; }
+  try {
+    const t = await c.getTask(id);
+    const newTask = await c.dispatch({
+      title: t.title,
+      prompt: t.prompt,
+      scope_globs: t.scope_globs ?? [],
+      base_commit: t.base_commit,
+      branch: t.branch,
+      kind: t.kind,
+      priority: t["priority"] as number | undefined,
+      timeout_minutes: t["timeout_minutes"] as number | undefined,
+    });
+    vscode.window.showInformationMessage(
+      `Redispatched as task #${newTask.id}.`
+    );
+    refreshAll();
+  } catch (err) {
+    vscode.window.showErrorMessage(
+      `Redispatch failed: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+
+// ---- Dismiss a history task from the VSIX view --------------------------------
+// Does NOT delete the task from the hub — it is hidden from the history panel
+// and the dismissal is persisted in extension globalState.
+
+function dismissTaskCmd(arg: number | { id: number }): void {
+  const id = typeof arg === "number" ? arg : arg?.id;
+  if (!id) { return; }
+  tasksProvider.dismissTask(id);
+}
+
+// ---- Cancel a stale queued task -----------------------------------------------
+
+async function cancelStaleTaskCmd(arg: number | { id: number }): Promise<void> {
+  const c = getClient();
+  if (!c) { return; }
+  const id = typeof arg === "number" ? arg : arg?.id;
+  if (!id) { return; }
+  try {
+    await c.cancel(id);
+    vscode.window.showInformationMessage(`Cancelled stale task #${id}.`);
     refreshAll();
   } catch (err) {
     vscode.window.showErrorMessage(

@@ -532,7 +532,7 @@ function runnerProps(r: RunnerInfo, aliases: Record<string, string>): RunnerNode
 
 export type TaskNode =
   | { kind: "group"; group: "agent" | "command"; count: number }
-  | { kind: "task"; task: TaskInfo; parent: "agent" | "command" }
+  | { kind: "task"; task: TaskInfo; parent: "agent" | "command"; stale: boolean }
   | { kind: "historyGroup"; count: number }
   | { kind: "historyTask"; task: TaskInfo }
   | { kind: "placeholder"; label: string; icon: string; description?: string };
@@ -547,7 +547,31 @@ export class TasksProvider implements vscode.TreeDataProvider<TaskNode> {
     history: [],
   };
 
-  constructor(private readonly client: () => HubClient | undefined, private readonly historyLimit = 100) {}
+  /** Task IDs dismissed by the user — excluded from history display. */
+  private dismissed = new Set<number>();
+
+  constructor(
+    private readonly client: () => HubClient | undefined,
+    private readonly historyLimit = 100,
+    private readonly ctx?: vscode.ExtensionContext
+  ) {
+    if (ctx) {
+      const saved = ctx.globalState.get<number[]>("forgewire.dismissedTaskIds", []);
+      this.dismissed = new Set(saved);
+    }
+  }
+
+  dismissTask(id: number): void {
+    this.dismissed.add(id);
+    this.ctx?.globalState.update("forgewire.dismissedTaskIds", [...this.dismissed]);
+    this._onDidChange.fire();
+  }
+
+  clearDismissed(): void {
+    this.dismissed.clear();
+    this.ctx?.globalState.update("forgewire.dismissedTaskIds", []);
+    this._onDidChange.fire();
+  }
 
   refresh(): void {
     this._onDidChange.fire();
@@ -610,7 +634,9 @@ export class TasksProvider implements vscode.TreeDataProvider<TaskNode> {
           },
         ];
       }
-      return this.cache.history.map((t) => ({ kind: "historyTask" as const, task: t }));
+      return this.cache.history
+        .filter((t) => !this.dismissed.has(t.id))
+        .map((t) => ({ kind: "historyTask" as const, task: t }));
     }
     // element is an agent/command group node — return its tasks.
     const bucket = this.cache[element.group];
@@ -624,7 +650,15 @@ export class TasksProvider implements vscode.TreeDataProvider<TaskNode> {
         },
       ];
     }
-    return bucket.map((t) => ({ kind: "task" as const, task: t, parent: element.group }));
+    const staleMinutes = vscode.workspace
+      .getConfiguration("forgewire")
+      .get<number>("tasks.staleQueuedMinutes", 30);
+    return bucket.map((t) => ({
+      kind: "task" as const,
+      task: t,
+      parent: element.group,
+      stale: isStaleQueued(t, staleMinutes),
+    }));
   }
 
   getTreeItem(n: TaskNode): vscode.TreeItem {
@@ -669,15 +703,22 @@ export class TasksProvider implements vscode.TreeDataProvider<TaskNode> {
     const t = n.task;
     const item = new vscode.TreeItem(`#${t.id}  ${t.title}`, vscode.TreeItemCollapsibleState.None);
     item.id = `task:${t.id}`;
-    item.contextValue = `task.${n.parent}`;
-    item.description = `${t.status} \u00b7 ${t.branch}`;
-    item.iconPath = new vscode.ThemeIcon(statusIcon(t.status));
+    // contextValue encodes parent kind + status subtype for context menus.
+    // Stale (queued too long) gets its own subtype so a distinct cancel button appears.
+    const subtype = n.stale ? "stale" : t.status;
+    item.contextValue = `task.${n.parent}.${subtype}`;
+    const staleAgeLabel = n.stale ? ` \u00b7 ${staleAge(t.created_at)}` : "";
+    item.description = n.stale
+      ? `queued (stale${staleAgeLabel}) \u00b7 ${t.branch}`
+      : `${t.status} \u00b7 ${t.branch}`;
+    item.iconPath = statusThemeIcon(n.stale ? "stale" : t.status);
     item.tooltip = new vscode.MarkdownString(
       `**#${t.id} ${t.title}** \`${t.status}\`\n\n` +
         `- kind: \`${t.kind ?? "agent"}\`\n` +
         `- branch: \`${t.branch}\`\n- base: \`${t.base_commit?.slice(0, 12)}\`\n` +
         `- scope: \`${(t.scope_globs ?? []).join(", ")}\`\n` +
         `- worker: ${t.worker_id ?? "_unassigned_"}\n- created: ${t.created_at ?? "?"}\n` +
+        (n.stale ? `\n\u26a0\ufe0f **Stale** \u2014 queued for ${staleAge(t.created_at)} with no runner claiming it.\n` : "") +
         (t.result?.error ? `\n**error:** ${t.result.error}\n` : "")
     );
     item.command = {
@@ -722,8 +763,12 @@ function renderHistoryTaskItem(t: TaskInfo): vscode.TreeItem {
   item.contextValue = `taskHistory.${t.status}`;
   const ageLabel = historyAgeLabel(t.completed_at ?? t.created_at);
   const duration = computeRuntime(t);
+  const isFailed = t.status === "failed" || t.status === "timed_out";
+  // Put the status first and make it UPPERCASE for failed/timed_out so it
+  // stands out at a glance even without the icon colour.
+  const statusLabel = isFailed ? t.status.toUpperCase() : t.status;
   item.description = [
-    t.status,
+    statusLabel,
     t.kind ?? "agent",
     t.branch,
     duration ? `ran ${duration}` : undefined,
@@ -731,7 +776,7 @@ function renderHistoryTaskItem(t: TaskInfo): vscode.TreeItem {
   ]
     .filter(Boolean)
     .join(" \u00b7 ");
-  item.iconPath = new vscode.ThemeIcon(statusIcon(t.status));
+  item.iconPath = statusThemeIcon(t.status);
   const origin = readOriginBlock(t);
   const errorLine = t.result?.error ? `\n**error:** ${t.result.error}\n` : "";
   item.tooltip = new vscode.MarkdownString(
@@ -757,23 +802,41 @@ function renderHistoryTaskItem(t: TaskInfo): vscode.TreeItem {
   return item;
 }
 
-function statusIcon(s: string): string {
+function statusThemeIcon(s: string): vscode.ThemeIcon {
   switch (s) {
     case "queued":
-      return "clock";
+      return new vscode.ThemeIcon("clock");
+    case "stale":
+      return new vscode.ThemeIcon("clock", new vscode.ThemeColor("charts.yellow"));
     case "running":
-      return "loading~spin";
+      return new vscode.ThemeIcon("loading~spin", new vscode.ThemeColor("charts.blue"));
     case "done":
-      return "check";
+      return new vscode.ThemeIcon("pass", new vscode.ThemeColor("charts.green"));
     case "failed":
-      return "error";
-    case "cancelled":
-      return "circle-slash";
+      return new vscode.ThemeIcon("error", new vscode.ThemeColor("charts.red"));
     case "timed_out":
-      return "warning";
+      return new vscode.ThemeIcon("warning", new vscode.ThemeColor("charts.red"));
+    case "cancelled":
+      return new vscode.ThemeIcon("circle-slash");
     default:
-      return "circle-outline";
+      return new vscode.ThemeIcon("circle-outline");
   }
+}
+
+/** True when a queued task has been waiting longer than the configured threshold. */
+function isStaleQueued(t: TaskInfo, staleMinutes: number): boolean {
+  if (staleMinutes <= 0 || t.status !== "queued") { return false; }
+  const ts = t.created_at ? Date.parse(t.created_at) : 0;
+  return ts > 0 && (Date.now() - ts) > staleMinutes * 60_000;
+}
+
+/** Human-readable age of a task's creation timestamp, e.g. "47m" or "2h 3m". */
+function staleAge(created_at: string | undefined | null): string {
+  if (!created_at) { return "?"; }
+  const ms = Date.now() - Date.parse(created_at);
+  const m = Math.floor(ms / 60_000);
+  if (m < 60) { return `${m}m`; }
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
 }
 
 function runnerIcon(state: string, isLocal: boolean): vscode.ThemeIcon {
