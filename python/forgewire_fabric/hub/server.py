@@ -57,6 +57,7 @@ LOGGER = logging.getLogger("forgewire_fabric.hub")
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
 DEFAULT_PORT = 8765
+PROGRESS_POLL_SECONDS = 1.0
 
 # Protocol/handshake version. The dispatcher and runner both ship this value
 # in /runners/register; the hub rejects any peer whose major version differs.
@@ -301,7 +302,46 @@ class Blackboard:
         sql = SCHEMA_PATH.read_text(encoding="utf-8")
         with self._connect() as conn:
             conn.executescript(sql)
+        # Additive column migrations for pre-existing rqlite clusters.
+        # Each ALTER is tried individually; "duplicate column" errors are
+        # silently ignored so re-runs are safe.
+        self._run_additive_migrations()
 
+    def _run_additive_migrations(self) -> None:
+        """Try each additive ALTER TABLE; swallow duplicate-column errors."""
+        _ADDITIVE: list[str] = [
+            "ALTER TABLE tasks ADD COLUMN required_tools TEXT NOT NULL DEFAULT '[]'",
+            "ALTER TABLE tasks ADD COLUMN required_tags TEXT NOT NULL DEFAULT '[]'",
+            "ALTER TABLE tasks ADD COLUMN tenant TEXT",
+            "ALTER TABLE tasks ADD COLUMN workspace_root TEXT",
+            "ALTER TABLE tasks ADD COLUMN require_base_commit INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE tasks ADD COLUMN dispatcher_id TEXT",
+            "ALTER TABLE tasks ADD COLUMN required_capabilities TEXT NOT NULL DEFAULT '[]'",
+            "ALTER TABLE tasks ADD COLUMN secrets_needed TEXT NOT NULL DEFAULT '[]'",
+            "ALTER TABLE tasks ADD COLUMN network_egress TEXT",
+            "ALTER TABLE runners ADD COLUMN claim_failures_total INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE runners ADD COLUMN claim_failures_consecutive INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE runners ADD COLUMN last_claim_error TEXT",
+            "ALTER TABLE runners ADD COLUMN last_claim_error_at TEXT",
+            "ALTER TABLE runners ADD COLUMN heartbeat_failures_total INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE runners ADD COLUMN capabilities TEXT NOT NULL DEFAULT '{}'",
+        ]
+        with self._connect() as conn:
+            for stmt in _ADDITIVE:
+                try:
+                    conn.execute(stmt)
+                except Exception:  # noqa: BLE001 — duplicate column, silently skip
+                    pass
+
+    # ----------------------------------------------------------------- labels
+
+    def get_labels(self) -> dict[str, Any]:
+        """Return the fabric-wide label payload: hub_name + runner_aliases."""
+        with self._connect() as conn:
+            rows = conn.execute("SELECT key, value FROM labels").fetchall()
+        hub_name = ""
+        aliases: dict[str, str] = {}
+        host_aliases: dict[str, str] = {}
         for r in rows:
             k = r["key"]
             v = r["value"]
