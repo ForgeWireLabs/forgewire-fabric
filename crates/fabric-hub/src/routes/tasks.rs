@@ -302,7 +302,17 @@ pub async fn claim_task_v2(
 
     let (picked_idx, candidates_seen) = pick_task(&candidates, &runner_view);
     let chosen_idx = match picked_idx {
-        None => return Ok(Json(json!({"task": null, "info": {"reason": "no_eligible_runner", "candidates_seen": candidates_seen}}))),
+        None => {
+            tracing::debug!(
+                runner_id = %payload.runner_id,
+                candidates_seen,
+                scope_prefixes = ?runner_view.scope_prefixes,
+                workspace_root = ?runner_view.workspace_root,
+                tags = ?runner_view.tags,
+                "no eligible task for runner"
+            );
+            return Ok(Json(json!({"task": null, "info": {"reason": "no_eligible_runner", "candidates_seen": candidates_seen}})));
+        }
         Some(i) => i,
     };
 

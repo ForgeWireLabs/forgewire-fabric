@@ -26,7 +26,7 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::watch;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 pub const POLL_INTERVAL: Duration = Duration::from_secs(5);
@@ -218,7 +218,11 @@ pub async fn claim_loop(
                 info!(task_id, title = task["title"].as_str().unwrap_or("?"), "claimed task");
                 run_one_task(client.clone(), identity.clone(), &config, &task).await;
             }
-            Ok(ClaimResponse { task: None, .. }) => {}
+            Ok(ClaimResponse { task: None, info }) => {
+                if let Some(reason) = info["reason"].as_str() {
+                    debug!(reason, "no task available");
+                }
+            }
             Err(e) if e.is_not_found() => {
                 warn!("hub 404 on claim; re-registering");
                 register_with_retries(&client, &identity, &config).await;
@@ -409,10 +413,16 @@ fn build_register_payload(config: &RunnerConfig) -> RegisterPayload {
 }
 
 fn build_claim_payload(config: &RunnerConfig) -> ClaimPayload {
+    // Mirror the same kind: tag injection as build_register_payload so that
+    // runner_kind_from_tags() on the hub resolves "command" not "agent".
+    let mut tags = config.tags.clone();
+    if !tags.iter().any(|t| t.starts_with("kind:")) {
+        tags.push("kind:command".into());
+    }
     ClaimPayload {
         scope_prefixes: config.scope_prefixes.clone(),
         tools: config.tools.clone(),
-        tags: config.tags.clone(),
+        tags,
         tenant: config.tenant.clone(),
         workspace_root: Some(config.workspace_root.display().to_string()),
         last_known_commit: None,

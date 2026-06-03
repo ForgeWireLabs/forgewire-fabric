@@ -117,6 +117,20 @@ impl RqliteStore {
         Ok(rows)
     }
 
+    /// Execute a single INSERT and return last_insert_id from the rqlite response.
+    ///
+    /// rqlite returns `last_insert_id` in the execute result directly — do NOT
+    /// use `SELECT last_insert_rowid()` as a follow-up query; it always returns 0
+    /// over HTTP because it is connection-local in SQLite and rqlite uses a new
+    /// connection per request.
+    async fn execute_insert(&self, sql: &str, params: &[Value]) -> Result<i64, RqliteError> {
+        let resp = self.execute(&[(sql, params)]).await?;
+        let id = resp["results"][0]["last_insert_id"]
+            .as_i64()
+            .ok_or_else(|| RqliteError::Http("INSERT returned no last_insert_id".into()))?;
+        Ok(id)
+    }
+
     /// Execute a read query. Returns rows as Vec<Value>.
     async fn query(&self, sql: &str, params: &[Value]) -> Result<Vec<Value>, RqliteError> {
         let body = if params.is_empty() {
@@ -604,14 +618,10 @@ impl TaskStore for RqliteStore {
         let egress_json = p.network_egress.as_ref().map(|v| serde_json::to_string(v).unwrap_or_else(|_| "null".into()));
         let require_bc: i64 = if p.require_base_commit { 1 } else { 0 };
 
-        self.execute_one(
+        let id = self.execute_insert(
             "INSERT INTO tasks (todo_id,title,prompt,scope_globs,base_commit,branch,timeout_minutes,priority,metadata,required_tools,required_tags,tenant,workspace_root,require_base_commit,dispatcher_id,required_capabilities,secrets_needed,network_egress,kind,created_at,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'queued')",
             &[json!(p.todo_id), json!(p.title), json!(p.prompt), json!(scope_json), json!(p.base_commit), json!(p.branch), json!(p.timeout_minutes), json!(p.priority), json!(meta_json), json!(tools_json), json!(tags_json), json!(p.tenant), json!(p.workspace_root), json!(require_bc), json!(p.dispatcher_id), json!(caps_json), json!(secrets_json), json!(egress_json), json!(p.kind), json!(now)],
-        ).await?;
-
-        // Get the inserted ID via last_insert_rowid
-        let id: Option<i64> = self.query_scalar("SELECT last_insert_rowid()", &[]).await?;
-        let id = id.ok_or_else(|| StoreError::Backend("no last_insert_rowid".into()))?;
+        ).await.map_err(|e| StoreError::Backend(e.to_string()))?;
         self.get_task(id).await
     }
 
@@ -908,12 +918,11 @@ impl StreamStore for RqliteStore {
         }
         let max_seq: Option<i64> = self.query_scalar("SELECT COALESCE(MAX(seq),0) FROM task_streams WHERE task_id=?", &[json!(task_id)]).await?;
         let next_seq = max_seq.unwrap_or(0) + 1;
-        self.execute_one(
+        let id = self.execute_insert(
             "INSERT INTO task_streams (task_id,seq,channel,line,created_at) VALUES (?,?,?,?,?)",
             &[json!(task_id), json!(next_seq), json!(channel), json!(line), json!(now)],
-        ).await?;
-        let id: Option<i64> = self.query_scalar("SELECT last_insert_rowid()", &[]).await?;
-        Ok(StreamLine { id: id.unwrap_or(0), task_id, seq: next_seq, channel: channel.to_owned(), line: line.to_owned(), created_at: now.to_owned() })
+        ).await.map_err(|e| StoreError::Backend(e.to_string()))?;
+        Ok(StreamLine { id, task_id, seq: next_seq, channel: channel.to_owned(), line: line.to_owned(), created_at: now.to_owned() })
     }
 
     async fn append_stream_bulk(&self, task_id: i64, worker_id: &str, entries: &[(String, String)], now: &str) -> StoreResult<Vec<StreamLine>> {
@@ -928,12 +937,11 @@ impl StreamStore for RqliteStore {
         let mut result = Vec::with_capacity(entries.len());
         for (channel, line) in entries {
             seq += 1;
-            self.execute_one(
+            let id = self.execute_insert(
                 "INSERT INTO task_streams (task_id,seq,channel,line,created_at) VALUES (?,?,?,?,?)",
                 &[json!(task_id), json!(seq), json!(channel), json!(line), json!(now)],
-            ).await?;
-            let id: Option<i64> = self.query_scalar("SELECT last_insert_rowid()", &[]).await?;
-            result.push(StreamLine { id: id.unwrap_or(0), task_id, seq, channel: channel.clone(), line: line.clone(), created_at: now.to_owned() });
+            ).await.map_err(|e| StoreError::Backend(e.to_string()))?;
+            result.push(StreamLine { id, task_id, seq, channel: channel.clone(), line: line.clone(), created_at: now.to_owned() });
         }
         Ok(result)
     }
@@ -957,12 +965,11 @@ impl ProgressStore for RqliteStore {
         }
         let max_seq: Option<i64> = self.query_scalar("SELECT COALESCE(MAX(seq),0) FROM progress WHERE task_id=?", &[json!(task_id)]).await?;
         let next_seq = max_seq.unwrap_or(0) + 1;
-        self.execute_one(
+        let id = self.execute_insert(
             "INSERT INTO progress (task_id,seq,message,files_touched,created_at) VALUES (?,?,?,?,?)",
             &[json!(task_id), json!(next_seq), json!(message), json!(files_json), json!(now)],
-        ).await?;
-        let id: Option<i64> = self.query_scalar("SELECT last_insert_rowid()", &[]).await?;
-        Ok(ProgressEntry { id: id.unwrap_or(0), task_id, seq: next_seq, message: message.to_owned(), files_touched: json!([]), created_at: now.to_owned() })
+        ).await.map_err(|e| StoreError::Backend(e.to_string()))?;
+        Ok(ProgressEntry { id, task_id, seq: next_seq, message: message.to_owned(), files_touched: json!([]), created_at: now.to_owned() })
     }
 
     async fn progress_since(&self, task_id: i64, after_seq: i64) -> StoreResult<Vec<ProgressEntry>> {
@@ -1168,12 +1175,11 @@ impl NoteStore for RqliteStore {
         if exists.is_empty() {
             return Err(StoreError::NotFound(format!("task {task_id}")));
         }
-        self.execute_one(
+        let id = self.execute_insert(
             "INSERT INTO notes (task_id, author, body, created_at) VALUES (?,?,?,?)",
             &[json!(task_id), json!(author), json!(body), json!(now)],
-        ).await?;
-        let id: Option<i64> = self.query_scalar("SELECT last_insert_rowid()", &[]).await?;
-        Ok(NoteRow { id: id.unwrap_or(0), task_id, author: author.to_owned(), body: body.to_owned(), created_at: now.to_owned() })
+        ).await.map_err(|e| StoreError::Backend(e.to_string()))?;
+        Ok(NoteRow { id, task_id, author: author.to_owned(), body: body.to_owned(), created_at: now.to_owned() })
     }
 
     async fn read_notes(&self, task_id: i64, after_id: i64) -> StoreResult<Vec<NoteRow>> {
