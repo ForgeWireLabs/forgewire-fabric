@@ -31,7 +31,7 @@ use tracing::{debug, error, info, warn};
 pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 pub const POLL_INTERVAL: Duration = Duration::from_secs(5);
 pub const PROTOCOL_VERSION: i64 = 3;
-pub const RUNNER_VERSION: &str = "0.5.0";
+pub const RUNNER_VERSION: &str = "0.6.0";
 const MAX_REGISTER_BACKOFF: Duration = Duration::from_secs(30);
 const MAX_LOG_TAIL_LINES: usize = 50;
 

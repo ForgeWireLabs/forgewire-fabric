@@ -38,7 +38,7 @@ use fabric_streams::{DurabilityProfile, StreamBuffer};
 use tracing::info;
 
 const PROTOCOL_VERSION: i64 = 3;
-const PACKAGE_VERSION: &str = "0.5.1";
+const PACKAGE_VERSION: &str = "0.6.0";
 
 #[tokio::main]
 async fn main() {
