@@ -1,4 +1,4 @@
-"""ForgeWire hub HTTP/SSE service.
+﻿"""ForgeWire hub HTTP/SSE service.
 
 Runs on the always-on hub host. Exposes a small REST + SSE API used by:
 
@@ -9,20 +9,15 @@ Runs on the always-on hub host. Exposes a small REST + SSE API used by:
 
 Auth: bearer token from ``FORGEWIRE_HUB_TOKEN`` env (or ``--token-file`` path).
 Legacy alias ``BLACKBOARD_TOKEN`` is also honoured.
-Storage: SQLite WAL at ``FORGEWIRE_HUB_DB_PATH`` (default
-``~/.forgewire/hub.sqlite3``). On first start, an existing
-``~/.phrenforge/remote_subagent.sqlite3`` is auto-copied for one-shot upgrade.
+Storage: rqlite (Raft-backed, HA-ready). SQLite was retired in M2.7.3.
 
 Run::
 
     python -m forgewire_fabric.hub.server --host 0.0.0.0 --port 8765
 
 Hardening notes:
-* Default bind is 127.0.0.1 (safe for colocation-only setups). The hub
-  launcher (``scripts/remote/start_hub.ps1``) overrides this with 0.0.0.0
-  so dispatchers on the LAN can reach it.
+* Default bind is 127.0.0.1 (safe for colocation-only setups).
 * Bearer required on every endpoint except ``/healthz``.
-* SQLite is opened per-request via a context manager; WAL handles concurrency.
 """
 
 from __future__ import annotations
@@ -34,7 +29,6 @@ import hashlib
 import json
 import logging
 import os
-import sqlite3
 import sys
 import time
 import uuid
@@ -60,14 +54,8 @@ from forgewire_fabric.hub.secret_broker import (
 
 LOGGER = logging.getLogger("forgewire_fabric.hub")
 
-# Default DB lives under ~/.forgewire/ on a fresh install. The legacy
-# ~/.phrenforge/remote_subagent.sqlite3 path is auto-migrated on first
-# start so existing PhrenForge installs upgrade in place; once moved,
-# the legacy file is left behind for operator visibility.
-DEFAULT_DB = Path.home() / ".forgewire" / "hub.sqlite3"
-_LEGACY_DEFAULT_DB = Path.home() / ".phrenforge" / "remote_subagent.sqlite3"
 SCHEMA_PATH = Path(__file__).with_name("schema.sql")
-PROGRESS_POLL_SECONDS = 1.0
+
 DEFAULT_PORT = 8765
 
 # Protocol/handshake version. The dispatcher and runner both ship this value
@@ -155,11 +143,7 @@ class BlackboardConfig:
     # equivalent to permit-all but still emits structured
     # :class:`PolicyDecision` records on every dispatch/completion.
     policy_path: Path | None = None
-    # rqlite is the default and recommended backend. "sqlite" is preserved
-    # as a legacy single-node fallback but is deprecated and will be removed
-    # when the Rust store contract (M2.7.3) replaces the Python Blackboard.
-    # New installs via install-fabric.ps1 always use rqlite.
-    backend: str = "rqlite"
+    backend: str = "rqlite"  # rqlite is the only supported backend (SQLite retired M2.7.3)
     rqlite_host: str = "127.0.0.1"
     rqlite_port: int = 4001
     rqlite_consistency: str = "strong"
@@ -200,74 +184,40 @@ class Blackboard:
         self,
         db_path: Path,
         *,
-        backend: str = "sqlite",
+        backend: str = "rqlite",
         rqlite_host: str = "127.0.0.1",
         rqlite_port: int = 4001,
         rqlite_consistency: str = "strong",
         secrets_backend: str | None = None,
         labels_snapshot_path: Path | None = None,
     ) -> None:
-        if backend not in ("sqlite", "rqlite"):
-            raise ValueError(f"unknown backend {backend!r}")
-        self._backend = backend
+        if backend != "rqlite":
+            raise ValueError(f"unsupported backend {backend!r}: only 'rqlite' is supported (SQLite retired M2.7.3)")
+        self._backend = "rqlite"
         self._rqlite_host = rqlite_host
         self._rqlite_port = rqlite_port
         self._rqlite_consistency = rqlite_consistency
         self._db_path = db_path
-        # Shared httpx.Client for the rqlite backend. One process-wide HTTP
-        # client with a generous keepalive pool means that the per-request
-        # `_connect()` context manager only allocates a thin wrapper around
-        # the already-warm TCP/keepalive sockets to rqlite, instead of
-        # paying TCP setup + a fresh connection-pool per call. Without
-        # this, every blackboard call under threadpool concurrency burns a
-        # new socket and starves the FastAPI threadpool waiting on Raft.
-        self._rqlite_client: httpx.Client | None = None
-        if backend == "rqlite":
-            self._rqlite_client = httpx.Client(
-                base_url=f"http://{rqlite_host}:{rqlite_port}",
-                timeout=30.0,
-                follow_redirects=True,
-                limits=httpx.Limits(
-                    max_connections=200,
-                    max_keepalive_connections=100,
-                ),
-            )
-        if backend == "sqlite":
-            self._db_path.parent.mkdir(parents=True, exist_ok=True)
-            # One-shot legacy migration: if the operator hasn't pointed
-            # FORGEWIRE_HUB_DB_PATH anywhere and the canonical path doesn't
-            # exist yet, but a PhrenForge-era ~/.phrenforge/remote_subagent.sqlite3
-            # does, copy it across so existing fleets keep their task history.
-            if (
-                db_path == DEFAULT_DB
-                and not db_path.exists()
-                and _LEGACY_DEFAULT_DB.exists()
-            ):
-                try:
-                    import shutil
-
-                    shutil.copy2(_LEGACY_DEFAULT_DB, db_path)
-                    LOGGER.info(
-                        "Migrated legacy hub DB %s -> %s",
-                        _LEGACY_DEFAULT_DB,
-                        db_path,
-                    )
-                except OSError as exc:  # pragma: no cover - migration is advisory
-                    LOGGER.warning(
-                        "Legacy hub DB migration failed (%s -> %s): %s",
-                        _LEGACY_DEFAULT_DB,
-                        db_path,
-                        exc,
-                    )
-        else:
-            LOGGER.info(
-                "Blackboard backend=rqlite host=%s port=%s",
-                rqlite_host,
-                rqlite_port,
-            )
+        # Shared httpx.Client for rqlite. One process-wide HTTP client with
+        # a generous keepalive pool so per-request _connect() calls share
+        # warm TCP/keepalive sockets instead of paying setup cost per call.
+        self._rqlite_client: httpx.Client | None = httpx.Client(
+            base_url=f"http://{rqlite_host}:{rqlite_port}",
+            timeout=30.0,
+            follow_redirects=True,
+            limits=httpx.Limits(
+                max_connections=200,
+                max_keepalive_connections=100,
+            ),
+        )
+        LOGGER.info(
+            "Blackboard backend=rqlite host=%s port=%s",
+            rqlite_host,
+            rqlite_port,
+        )
         self._init_schema()
         # Stage C.3: in-memory per-task stream-seq counter. Resets on hub
-        # restart and re-primes lazily from MAX(seq) in SQLite, so kill -9
+        # restart and re-primes lazily from MAX(seq) in rqlite, so kill -9
         # is safe.
         self._stream_counter = _make_stream_counter()
         # M2.5.5a: hub-side sealed secret broker. Master key is lazily
@@ -330,32 +280,19 @@ class Blackboard:
 
     @property
     def backend(self) -> str:
-        """Active backend: ``"sqlite"`` or ``"rqlite"``."""
+        """Active backend — always ``"rqlite"``."""
         return self._backend
 
     @contextlib.contextmanager
     def _connect(self) -> Iterable[Any]:
-        if self._backend == "rqlite":
-            conn = _rqlite_db.connect(
-                self._rqlite_host,
-                self._rqlite_port,
-                timeout=30.0,
-                consistency=self._rqlite_consistency,
-                client=self._rqlite_client,
-            )
-            try:
-                yield conn
-            finally:
-                conn.close()
-            return
-        conn = sqlite3.connect(
-            self._db_path,
-            isolation_level=None,  # autocommit; we use BEGIN IMMEDIATE explicitly
+        conn = _rqlite_db.connect(
+            self._rqlite_host,
+            self._rqlite_port,
             timeout=30.0,
+            consistency=self._rqlite_consistency,
+            client=self._rqlite_client,
         )
-        conn.row_factory = sqlite3.Row
         try:
-            conn.execute("PRAGMA foreign_keys = ON")
             yield conn
         finally:
             conn.close()
@@ -364,247 +301,7 @@ class Blackboard:
         sql = SCHEMA_PATH.read_text(encoding="utf-8")
         with self._connect() as conn:
             conn.executescript(sql)
-            self._migrate_v2_columns(conn)
 
-    @staticmethod
-    def _migrate_v2_columns(conn: sqlite3.Connection) -> None:
-        """Idempotently add v2 columns to the legacy ``tasks`` table.
-
-        SQLite < 3.35 has no ``ALTER TABLE ... ADD COLUMN IF NOT EXISTS``,
-        so we introspect the schema and add only what's missing. This is
-        safe to run on every startup.
-        """
-        existing = {
-            r["name"]
-            for r in conn.execute("PRAGMA table_info(tasks)").fetchall()
-        }
-        additions = [
-            ("required_tools", "TEXT NOT NULL DEFAULT '[]'"),
-            ("required_tags", "TEXT NOT NULL DEFAULT '[]'"),
-            ("tenant", "TEXT"),
-            ("workspace_root", "TEXT"),
-            ("require_base_commit", "INTEGER NOT NULL DEFAULT 0"),
-            # M2.4: signed-dispatch column. Nullable so legacy bearer-only
-            # dispatches keep working when require_signed_dispatch=False.
-            ("dispatcher_id", "TEXT"),
-            # M2.5.4: structured capability predicates (json list of
-            # strings like ``"gpu.cuda >= 12"``). Empty list = match
-            # any runner (legacy behaviour).
-            ("required_capabilities", "TEXT NOT NULL DEFAULT '[]'"),
-            # M2.5.5a: declared secret names the runner needs in its
-            # task env (e.g. ``["GITHUB_TOKEN"]``). Hub looks these up
-            # at claim time and injects plaintext into the claim
-            # response, while only the *names* are recorded in the
-            # audit log. Empty list = no secrets requested.
-            ("secrets_needed", "TEXT NOT NULL DEFAULT '[]'"),
-            # M2.5.5b: per-task network egress policy. JSON object of
-            # the form ``{"allow": ["pypi.org", ...], "extra_hosts":
-            # [...]}``. Empty/None = no egress restriction (legacy
-            # default). ``extra_hosts`` triggers the M2.5.1 approval
-            # gate.
-            ("network_egress", "TEXT"),
-            # task kind taxonomy: 'agent' (Copilot-Chat agent runner)
-            # vs 'command' (shell-exec runner). Default 'agent' preserves
-            # backward compat: every pre-existing dispatched task is an
-            # agent task.
-            ("kind", "TEXT NOT NULL DEFAULT 'agent'"),
-        ]
-        for col, decl in additions:
-            if col not in existing:
-                conn.execute(f"ALTER TABLE tasks ADD COLUMN {col} {decl}")
-
-        # Record the on-disk schema version. schema.sql seeds rows 1 and 2;
-        # row 3 corresponds to the ``tasks.kind`` column added above. Future
-        # migrations should append a matching row here, never mutate or
-        # delete existing rows.
-        conn.execute(
-            "INSERT OR IGNORE INTO schema_version (version, applied_at) "
-            "VALUES (?, datetime('now'))",
-            (SCHEMA_VERSION,),
-        )
-
-        # v0.4: runner self-reported reliability counters. Surfaced on
-        # /runners so a stuck claim loop is visible in the UI.
-        runner_cols = {
-            r["name"]
-            for r in conn.execute("PRAGMA table_info(runners)").fetchall()
-        }
-        runner_additions = [
-            ("claim_failures_total", "INTEGER NOT NULL DEFAULT 0"),
-            ("claim_failures_consecutive", "INTEGER NOT NULL DEFAULT 0"),
-            ("last_claim_error", "TEXT"),
-            ("last_claim_error_at", "TEXT"),
-            ("heartbeat_failures_total", "INTEGER NOT NULL DEFAULT 0"),
-            # M2.5.4: structured capability blob shipped on
-            # /runners/register. JSON dict; missing/empty = legacy
-            # runner that only advertises tools/tags/host fields.
-            ("capabilities", "TEXT NOT NULL DEFAULT '{}'"),
-        ]
-        for col, decl in runner_additions:
-            if col not in runner_cols:
-                conn.execute(f"ALTER TABLE runners ADD COLUMN {col} {decl}")
-
-        # M2.4: dispatcher registry. Mirror of ``runners`` but for the
-        # other end of the protocol.
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS dispatchers (
-                dispatcher_id  TEXT PRIMARY KEY,
-                public_key     TEXT NOT NULL,
-                label          TEXT NOT NULL,
-                hostname       TEXT,
-                metadata       TEXT NOT NULL DEFAULT '{}',
-                first_seen     TEXT NOT NULL DEFAULT (datetime('now')),
-                last_seen      TEXT NOT NULL DEFAULT (datetime('now')),
-                last_nonce     TEXT
-            )
-            """
-        )
-
-        # Fabric-wide cosmetic labels: hub display name + per-runner aliases.
-        # These are scoped to the hub (one row per logical key) and propagate
-        # to every connected client. No effect on identity, auth, or routing.
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS labels (
-                key         TEXT PRIMARY KEY,
-                value       TEXT NOT NULL,
-                updated_by  TEXT,
-                updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
-            )
-            """
-        )
-
-        # Phase 6+: host role installation facts. Runners and dispatchers
-        # prove liveness by heartbeat/registration, but agent-runner
-        # availability can be "installed but sleeping" because it lives in
-        # an interactive VS Code MCP session. The installer records those
-        # enablement facts here so /hosts can render host capability rows.
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS host_roles (
-                hostname    TEXT NOT NULL,
-                role        TEXT NOT NULL,
-                enabled     INTEGER NOT NULL DEFAULT 1,
-                status      TEXT,
-                metadata    TEXT NOT NULL DEFAULT '{}',
-                updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
-                PRIMARY KEY (hostname, role)
-            )
-            """
-        )
-
-        # M2.5.1: human-approval queue for REQUIRE_APPROVAL dispatch
-        # decisions. The gate computes a stable envelope_hash over the
-        # policy-relevant fields (sorted scope_globs, target branch, task
-        # label) and either reuses the matching pending row or creates a
-        # new one. Operators clear the queue with the
-        # ``forgewire-fabric approvals`` CLI; the dispatcher then re-POSTs
-        # the same brief with ``approval_id`` set, which the gate consumes.
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS approvals (
-                approval_id      TEXT PRIMARY KEY,
-                envelope_hash    TEXT NOT NULL,
-                decision_json    TEXT NOT NULL,
-                task_label       TEXT NOT NULL,
-                branch           TEXT,
-                scope_globs_json TEXT NOT NULL,
-                dispatcher_id    TEXT,
-                status           TEXT NOT NULL DEFAULT 'pending',
-                approver         TEXT,
-                reason           TEXT,
-                created_at       TEXT NOT NULL DEFAULT (datetime('now')),
-                resolved_at      TEXT,
-                consumed_at      TEXT
-            )
-            """
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_approvals_envelope ON approvals(envelope_hash, status)"
-        )
-
-        # M2.5.3: append-only, hash-chained audit log.
-        #
-        # Each row commits ``event_id_hash = sha256(prev_event_id_hash ||
-        # canonical_json(payload))`` so any tamper or omission breaks the
-        # chain on read. ``payload_json`` carries the event-specific body
-        # whose structure depends on ``kind``:
-        #   dispatch  -> {task_id, sealed_brief_hash, base_commit, branch,
-        #                 scope_globs, dispatcher_id, signed:bool,
-        #                 approval_id|null}
-        #   claim     -> {task_id, worker_id, hostname}
-        #   result    -> {task_id, worker_id, status, head_commit,
-        #                 commits, files_touched, output_commit_hash}
-        # Replay walks (dispatch, [claim, result]) tuples by ``task_id``.
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS audit_event (
-                seq                  INTEGER PRIMARY KEY AUTOINCREMENT,
-                event_id_hash        TEXT NOT NULL UNIQUE,
-                prev_event_id_hash   TEXT NOT NULL,
-                kind                 TEXT NOT NULL,
-                task_id              INTEGER,
-                payload_json         TEXT NOT NULL,
-                created_at           TEXT NOT NULL DEFAULT (datetime('now'))
-            )
-            """
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_audit_task ON audit_event(task_id, seq)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_audit_kind ON audit_event(kind, seq)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_event(created_at)"
-        )
-
-        # M2.5.2: cost ledger — one row per reported task completion.
-        # Runner POSTs actual token/cost/wall figures at submit_result time.
-        # The hub reads these for budget enforcement and CLI reporting.
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS cost_ledger (
-                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-                task_id             TEXT NOT NULL,
-                dispatcher_id       TEXT,
-                runner_id           TEXT,
-                model_id            TEXT NOT NULL DEFAULT '',
-                prompt_tokens       INTEGER NOT NULL DEFAULT 0,
-                completion_tokens   INTEGER NOT NULL DEFAULT 0,
-                cost_usd            REAL NOT NULL DEFAULT 0.0,
-                wall_seconds        REAL NOT NULL DEFAULT 0.0,
-                runner_cpu_seconds  REAL NOT NULL DEFAULT 0.0,
-                created_at          TEXT NOT NULL DEFAULT (datetime('now'))
-            )
-            """
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_cost_task ON cost_ledger(task_id)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_cost_created ON cost_ledger(created_at)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_cost_model ON cost_ledger(model_id, created_at)"
-        )
-
-        # M2.5.5a: sealed secret broker storage.
-        SecretBroker.init_schema(conn)
-
-    # ----------------------------------------------------------------- labels
-
-    def get_labels(self) -> dict[str, Any]:
-        """Return the fabric-wide label payload: hub_name + runner_aliases."""
-        with self._connect() as conn:
-            rows = conn.execute("SELECT key, value FROM labels").fetchall()
-        hub_name = ""
-        aliases: dict[str, str] = {}
-        host_aliases: dict[str, str] = {}
         for r in rows:
             k = r["key"]
             v = r["value"]
@@ -1143,7 +840,7 @@ class Blackboard:
         return [self._audit_row_to_dict(r) for r in rows]
 
     @staticmethod
-    def _audit_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    def _audit_row_to_dict(row: Any) -> dict[str, Any]:
         return {
             "seq": int(row["seq"]),
             "event_id_hash": row["event_id_hash"],
@@ -2525,7 +2222,7 @@ class Blackboard:
         return self.get_task(task_id), {"reason": "claimed"}
 
 
-def _task_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+def _task_row_to_dict(row: Any) -> dict[str, Any]:
     record = dict(row)
     record["scope_globs"] = json.loads(record["scope_globs"])
     record["metadata"] = json.loads(record["metadata"])
@@ -2555,14 +2252,14 @@ def _task_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return record
 
 
-def _result_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+def _result_row_to_dict(row: Any) -> dict[str, Any]:
     record = dict(row)
     record["commits"] = json.loads(record.pop("commits_json"))
     record["files_touched"] = json.loads(record["files_touched"])
     return record
 
 
-def _runner_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+def _runner_row_to_dict(row: Any) -> dict[str, Any]:
     record = dict(row)
     record["tools"] = json.loads(record["tools"])
     record["tags"] = json.loads(record["tags"])
@@ -2580,7 +2277,7 @@ def _runner_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     return record
 
 
-def _host_role_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+def _host_role_row_to_dict(row: Any) -> dict[str, Any]:
     record = dict(row)
     record["enabled"] = bool(record.get("enabled"))
     try:
@@ -3308,8 +3005,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=str(
             os.environ.get("FORGEWIRE_HUB_DB_PATH")
             or os.environ.get("BLACKBOARD_DB_PATH")
-            or DEFAULT_DB
+            or (Path.home() / ".forgewire" / "hub.db")
         ),
+        help="Unused path kept for CLI compat; rqlite manages its own storage.",
     )
     parser.add_argument("--token-file", default=None)
     parser.add_argument(
@@ -3342,15 +3040,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ).lower()
         in {"1", "true", "yes", "on"},
         help="Advertise the hub on the local LAN via mDNS (_forgewire-hub._tcp).",
-    )
-    parser.add_argument(
-        "--backend",
-        choices=("sqlite", "rqlite"),
-        default=os.environ.get("FORGEWIRE_HUB_BACKEND", "rqlite"),
-        help=(
-            "State backend. 'rqlite' = Raft-replicated cluster (default, recommended). "
-            "'sqlite' = legacy single-node WAL (deprecated, will be removed in M2.7.3)."
-        ),
     )
     parser.add_argument(
         "--rqlite-host",
@@ -3432,7 +3121,6 @@ def main(argv: list[str] | None = None) -> None:
         port=args.port,
         min_runner_version=args.min_runner_version,
         require_signed_dispatch=args.require_signed_dispatch,
-        backend=args.backend,
         rqlite_host=args.rqlite_host,
         rqlite_port=args.rqlite_port,
         rqlite_consistency=args.rqlite_consistency,

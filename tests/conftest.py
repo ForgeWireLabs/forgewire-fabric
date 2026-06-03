@@ -51,50 +51,6 @@ def pytest_collection_modifyitems(
             item.add_marker(skip)
 
 
-# ---------------------------------------------------------------------------
-# Patch BlackboardConfig so tests fail with a clear rqlite-required message
-# rather than silently falling back to SQLite (which is not a valid backend).
-# ---------------------------------------------------------------------------
-try:
-    import forgewire_fabric.hub.server as _srv
-
-    _orig_init = _srv.BlackboardConfig.__init__
-
-    def _patched_init(
-        self,
-        db_path,
-        token,
-        host,
-        port,
-        min_runner_version=_srv.DEFAULT_MIN_RUNNER_VERSION,
-        require_signed_dispatch=False,
-        policy_path=None,
-        backend="rqlite",
-        rqlite_host="127.0.0.1",
-        rqlite_port=4001,
-        rqlite_consistency="strong",
-        approval_webhook_url=None,
-        labels_snapshot_path=None,
-    ):
-        if backend == "rqlite" and not RQLITE_UP:
-            # Degrade gracefully for unit tests: use sqlite locally so the
-            # test suite can still exercise Python hub logic without a cluster.
-            # This is ONLY acceptable in tests — never in production.
-            backend = "sqlite"
-        self.db_path = db_path
-        self.token = token
-        self.host = host
-        self.port = port
-        self.min_runner_version = min_runner_version
-        self.require_signed_dispatch = require_signed_dispatch
-        self.policy_path = policy_path
-        self.backend = backend
-        self.rqlite_host = rqlite_host
-        self.rqlite_port = rqlite_port
-        self.rqlite_consistency = rqlite_consistency
-        self.approval_webhook_url = approval_webhook_url
-        self.labels_snapshot_path = labels_snapshot_path
-
-    _srv.BlackboardConfig.__init__ = _patched_init  # type: ignore[method-assign]
-except (ImportError, AttributeError):
-    pass
+# SQLite backend was retired in M2.7.3. rqlite is the only valid backend.
+# Hub tests that use create_app() run against rqlite; if rqlite is unavailable
+# the test suite still passes for unit tests that use in-memory mocks.

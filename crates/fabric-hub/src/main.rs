@@ -1,15 +1,13 @@
 //! ForgeWire Fabric native hub daemon entry point.
 //!
-//! Backend: rqlite only. SQLite is not a supported hub backend.
-//!     Removed: FORGEWIRE_HUB_BACKEND — always rqlite (M2.6.7)
+//! rqlite is the only supported backend and is a required fabric dependency.
+//! On startup the hub will attempt to start the rqlite service if it is not
+//! already running (NSSM on Windows, systemd on Linux).
 //!
 //! rqlite connection:
 //!     FORGEWIRE_HUB_RQLITE_HOST      — rqlite host (default: 127.0.0.1)
 //!     FORGEWIRE_HUB_RQLITE_PORT      — rqlite port (default: 4001)
 //!     FORGEWIRE_HUB_RQLITE_CONSISTENCY — "none"|"weak"|"strong" (default: strong)
-//!
-//! SQLite path (used only when backend=sqlite):
-//!     FORGEWIRE_HUB_DB_PATH          — SQLite file path
 //!
 //! Service config:
 //!     FORGEWIRE_HUB_TOKEN_FILE       — bearer token file
@@ -35,10 +33,86 @@ use fabric_hub::state::HubState;
 use fabric_policy::{DispatchGate, FabricPolicy};
 use fabric_store::{CostStore, FabricStore, SchemaStore};
 use fabric_streams::{DurabilityProfile, StreamBuffer};
-use tracing::info;
+use reqwest::Client as ReqwestClient;
+use tracing::{info, warn};
 
 const PROTOCOL_VERSION: i64 = 3;
 const PACKAGE_VERSION: &str = "0.7.0";
+
+/// Ensure rqlite is reachable, starting the OS service if needed.
+///
+/// Probes `http://{host}:{port}/status`. If unreachable, attempts to start:
+///   - Windows: `nssm start ForgeWireRqlite`
+///   - Linux/macOS: `systemctl start forgewire-rqlite` (falls back to `launchctl`)
+///
+/// Waits up to 30 s for the service to become ready. Hard-exits if it never does.
+async fn ensure_rqlite_running(host: &str, port: u16) {
+    let url = format!("http://{host}:{port}/status");
+    if is_rqlite_reachable(&url).await {
+        return;
+    }
+    info!("rqlite not reachable on {host}:{port} — attempting to start service");
+    start_rqlite_service();
+    // Wait up to 30 s in 1 s increments.
+    for attempt in 1..=30 {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        if is_rqlite_reachable(&url).await {
+            info!("rqlite ready after {attempt}s");
+            return;
+        }
+    }
+    eprintln!("FATAL: rqlite did not become ready within 30 s after service start.");
+    eprintln!("  Check: nssm status ForgeWireRqlite  (Windows)");
+    eprintln!("         systemctl status forgewire-rqlite  (Linux)");
+    eprintln!("  rqlite must be running — it is a required ForgeWire Fabric dependency.");
+    eprintln!("  Reinstall with: install-fabric.ps1 (Windows) or install-fabric.sh (Linux)");
+    std::process::exit(1);
+}
+
+async fn is_rqlite_reachable(url: &str) -> bool {
+    let Ok(client) = ReqwestClient::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+    else {
+        return false;
+    };
+    client.get(url).send().await
+        .map(|r| r.status().as_u16() < 500)
+        .unwrap_or(false)
+}
+
+fn start_rqlite_service() {
+    #[cfg(target_os = "windows")]
+    {
+        // Try ForgeWireRqlite first (primary node), then numbered nodes.
+        for svc in &["ForgeWireRqlite", "ForgeWireRqliteNode1", "ForgeWireRqliteNode2"] {
+            let status = std::process::Command::new("nssm")
+                .args(["start", svc])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            if status.map(|s| s.success()).unwrap_or(false) {
+                info!("started rqlite via nssm service {svc}");
+                return;
+            }
+        }
+        warn!("nssm start ForgeWireRqlite* did not succeed — rqlite may already be starting");
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("systemctl")
+            .args(["start", "forgewire-rqlite"])
+            .status();
+        info!("attempted systemctl start forgewire-rqlite");
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("launchctl")
+            .args(["start", "com.forgewire.rqlite"])
+            .status();
+        info!("attempted launchctl start com.forgewire.rqlite");
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -75,8 +149,6 @@ async fn main() {
     }
 
     // ── rqlite backend (only option) ──────────────────────────────────────
-    // SQLite is not a supported hub backend (retired M2.6.7).
-    // Use FORGEWIRE_HUB_BACKEND=sqlite only in unit tests via fabric-store-sqlite directly.
     let rqlite_host = std::env::var("FORGEWIRE_HUB_RQLITE_HOST")
         .unwrap_or_else(|_| "127.0.0.1".into());
     let rqlite_port: u16 = std::env::var("FORGEWIRE_HUB_RQLITE_PORT")
@@ -87,9 +159,16 @@ async fn main() {
         .unwrap_or_else(|_| "strong".into());
 
     let rqlite = fabric_store_rqlite::RqliteStore::new(&rqlite_host, rqlite_port, &consistency);
+
+    // rqlite is a required fabric dependency. If it is not reachable, attempt
+    // to start the NSSM service (Windows) or systemd unit (Linux/macOS) and
+    // wait up to 30 s for it to become ready. Hard-exit if it never comes up.
+    ensure_rqlite_running(&rqlite_host, rqlite_port).await;
+
     rqlite.init_schema().await.unwrap_or_else(|e| {
-        eprintln!("rqlite schema init failed: {e}");
-        eprintln!("Is rqlite running on {rqlite_host}:{rqlite_port}? Check with: curl http://{rqlite_host}:{rqlite_port}/status");
+        eprintln!("rqlite schema init failed after service start attempt: {e}");
+        eprintln!("  host={rqlite_host} port={rqlite_port}");
+        eprintln!("  Check logs: nssm status ForgeWireRqlite");
         std::process::exit(1);
     });
     rqlite.run_additive_migrations().await.unwrap_or_else(|e| {

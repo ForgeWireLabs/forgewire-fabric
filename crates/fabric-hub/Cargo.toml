@@ -16,9 +16,6 @@ fabric-identity = { path = "../fabric-identity" }
 fabric-audit = { path = "../fabric-audit" }
 fabric-store = { path = "../fabric-store" }
 fabric-store-rqlite = { path = "../fabric-store-rqlite" }
-# fabric-store-sqlite is intentionally NOT a hub runtime dependency.
-# SQLite is not a supported hub backend (rqlite-only, M2.6.7).
-# Include it in dev-dependencies for unit tests only if needed.
 fabric-policy = { path = "../fabric-policy" }
 fabric-claim-router = { path = "../fabric-claim-router" }
 fabric-streams = { path = "../fabric-streams" }
@@ -27,6 +24,7 @@ serde_json.workspace = true
 hex.workspace = true
 thiserror.workspace = true
 tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 axum = { version = "0.8", features = ["json"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors"] }

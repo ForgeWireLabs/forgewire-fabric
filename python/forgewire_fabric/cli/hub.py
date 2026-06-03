@@ -32,13 +32,9 @@ def hub() -> None:
 @hub.command("start", help="Start the ForgeWire hub (uvicorn).")
 @click.option("--host", default=None, help="Bind host (default: 127.0.0.1 or $FORGEWIRE_HUB_HOST).")
 @click.option("--port", type=int, default=None, help="Bind port (default: 8765 or $FORGEWIRE_HUB_PORT).")
-@click.option("--db-path", default=None, help="SQLite DB path.")
 @click.option("--token-file", default=None, help="File containing the hub token.")
 @click.option("--mdns", is_flag=True, default=False, help="Advertise via mDNS on the LAN.")
 @click.option("--log-level", default="info")
-@click.option("--backend", type=click.Choice(["sqlite", "rqlite"]), default=None,
-              help="State backend. 'sqlite' = legacy single-node WAL (default). "
-                   "'rqlite' = Raft-replicated cluster.")
 @click.option("--rqlite-host", default=None, help="rqlite cluster member host (any node).")
 @click.option("--rqlite-port", type=int, default=None, help="rqlite HTTP API port (default 4001).")
 @click.option("--rqlite-consistency",
@@ -47,11 +43,9 @@ def hub() -> None:
 def hub_start(
     host: str | None,
     port: int | None,
-    db_path: str | None,
     token_file: str | None,
     mdns: bool,
     log_level: str,
-    backend: str | None,
     rqlite_host: str | None,
     rqlite_port: int | None,
     rqlite_consistency: str | None,
@@ -63,15 +57,11 @@ def hub_start(
         argv += ["--host", host]
     if port is not None:
         argv += ["--port", str(port)]
-    if db_path:
-        argv += ["--db-path", db_path]
     if token_file:
         argv += ["--token-file", token_file]
     if mdns:
         argv += ["--mdns"]
     argv += ["--log-level", log_level]
-    if backend:
-        argv += ["--backend", backend]
     if rqlite_host:
         argv += ["--rqlite-host", rqlite_host]
     if rqlite_port is not None:
@@ -144,23 +134,7 @@ def hub_status(candidates: tuple[str, ...], token_file: str | None) -> None:
         except Exception as exc:  # pragma: no cover
             info["error"] = repr(exc)
         rows.append(info)
-    snap_path = _P_home() / ".forgewire" / "snapshots" / "latest.sqlite3"
-    snap_meta = _P_home() / ".forgewire" / "snapshots" / "latest.meta.json"
-    snap_age: float | None = None
-    if snap_meta.exists():
-        try:
-            meta = json.loads(snap_meta.read_text(encoding="utf-8"))
-            snap_age = _time.time() - float(meta.get("generated_at") or 0)
-        except Exception:
-            pass
-    _print_json({
-        "active": active_url,
-        "candidates": rows,
-        "local_snapshot": {
-            "path": str(snap_path) if snap_path.exists() else None,
-            "age_seconds": snap_age,
-        },
-    })
+    _print_json({"active": active_url, "candidates": rows})
 
 
 @hub.command("snapshot-pull", help="Pull a snapshot from the active hub and store it locally.")
