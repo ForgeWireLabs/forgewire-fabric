@@ -82,12 +82,6 @@ export class HubProvider implements vscode.TreeDataProvider<HubNode> {
             title: "Connect to Hub",
           },
         },
-        {
-          key: "settings",
-          label: "Open Settings\u2026",
-          icon: "gear",
-          command: { command: "forgewire.openSettings", title: "Open Settings" },
-        },
       ];
     }
 
@@ -199,13 +193,6 @@ export class HubProvider implements vscode.TreeDataProvider<HubNode> {
         tooltip: err instanceof Error ? err.message : String(err),
       });
     }
-
-    nodes.push({
-      key: "settings",
-      label: "Settings\u2026",
-      icon: "gear",
-      command: { command: "forgewire.openSettings", title: "Open Settings" },
-    });
 
     return nodes;
   }

@@ -2,7 +2,7 @@
   "name": "forgewire",
   "displayName": "ForgeWire",
   "description": "Unified control surface for the ForgeWire platform — Fabric, Loom, Hub, runners, and future services: signed envelopes, scope-bound capability tokens, live stream output. Run a hub or runner from inside VS Code on Windows, macOS, or Linux.",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "publisher": "DigitalHallucinations",
   "license": "Apache-2.0",
   "icon": "media/icon.png",
@@ -35,7 +35,7 @@
   ],
   "contributes": {
     "configuration": {
-      "title": "ForgeWire",
+      "title": "ForgeWire 0.3",
       "properties": {
         "forgewire.hubUrl": {
           "type": "string",
@@ -454,7 +454,7 @@
       "activitybar": [
         {
           "id": "forgewire",
-          "title": "ForgeWire",
+          "title": "ForgeWire 0.3",
           "icon": "media/sidebar.svg"
         }
       ]
@@ -508,7 +508,7 @@
     "viewsWelcome": [
       {
         "view": "forgewire.hub",
-        "contents": "No hub connection.\n\n[Connect to Hub](command:forgewire.connectHub)\n\n[Open Settings](command:forgewire.openSettings)\n\n[Start a Hub Locally](command:forgewire.startHubHere)",
+        "contents": "No hub connection.\n\n[Connect to Hub](command:forgewire.connectHub)\n\n[Start a Hub Locally](command:forgewire.startHubHere)",
         "when": "!forgewire.connected"
       },
       {
@@ -821,6 +821,9 @@
     "@vscode/vsce": "^2.32.0"
   }
 }
+
+
+
 
 
 
