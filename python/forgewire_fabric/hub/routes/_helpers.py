@@ -100,6 +100,81 @@ def enforce_dispatch_gate(
     raise HTTPException(status_code=428, detail=detail)
 
 
+def enforce_intent_gate(
+    ctx: HubContext,
+    *,
+    task_id: str,
+    kind: str,
+    paths: list[str],
+    hosts: list[str],
+    command: str | None,
+    workspace_root: str | None,
+    branch: str | None,
+    approval_id: str | None = None,
+) -> None:
+    from forgewire_fabric.policy import IntentKind, TaskIntent
+
+    try:
+        intent_kind = IntentKind(kind)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown intent kind: {kind!r}; valid: {[k.value for k in IntentKind]}",
+        ) from exc
+
+    intent = TaskIntent(
+        kind=intent_kind,
+        paths=tuple(paths),
+        hosts=tuple(hosts),
+        command=command,
+        workspace_root=workspace_root,
+        branch=branch,
+    )
+    decision = ctx.gate.evaluate_intent(intent)
+    if decision.allowed:
+        return
+    if decision.denied:
+        raise HTTPException(status_code=403, detail=decision.to_dict())
+
+    blackboard = ctx.blackboard
+    env_hash = blackboard.envelope_hash(
+        scope_globs=list(paths) or [f"intent:{kind}"],
+        branch=branch,
+        task_label=f"intent:{task_id}:{kind}",
+    )
+    if approval_id and blackboard.consume_approval(approval_id, env_hash):
+        return
+    approval_id_new, created = blackboard.create_or_get_pending_approval(
+        envelope_hash=env_hash,
+        decision=decision.to_dict(),
+        task_label=f"intent:{task_id}:{kind}",
+        branch=branch,
+        scope_globs=list(paths) or [f"intent:{kind}"],
+        dispatcher_id=None,
+    )
+    detail = decision.to_dict()
+    detail["approval_id"] = approval_id_new
+    detail["envelope_hash"] = env_hash
+    detail["hint"] = (
+        "runner must pause and re-POST with approval_id=<id> after "
+        f"`forgewire-fabric approvals approve {approval_id_new}`"
+    )
+    if created:
+        fire_approval_webhook(
+            ctx,
+            {
+                "event": "approval.created",
+                "approval_id": approval_id_new,
+                "task_id": task_id,
+                "intent_kind": kind,
+                "paths": paths,
+                "hosts": hosts,
+                "decision": decision.to_dict(),
+            },
+        )
+    raise HTTPException(status_code=428, detail=detail)
+
+
 def enforce_completion_gate(
     ctx: HubContext,
     *,

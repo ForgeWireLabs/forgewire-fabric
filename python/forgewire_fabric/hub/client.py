@@ -342,6 +342,40 @@ class BlackboardClient:
         assert result is not None
         return result
 
+    # ---- M2.5.1: intent gate -----------------------------------------------
+
+    async def post_intent(
+        self,
+        task_id: int,
+        *,
+        worker_id: str,
+        kind: str,
+        paths: list[str] | None = None,
+        hosts: list[str] | None = None,
+        command: str | None = None,
+        workspace_root: str | None = None,
+        branch: str | None = None,
+        approval_id: str | None = None,
+    ) -> dict[str, Any]:
+        """POST intent-to-do event; raises on 403/428."""
+        body: dict[str, Any] = {
+            "worker_id": worker_id,
+            "kind": kind,
+            "paths": paths or [],
+            "hosts": hosts or [],
+        }
+        if command is not None:
+            body["command"] = command
+        if workspace_root is not None:
+            body["workspace_root"] = workspace_root
+        if branch is not None:
+            body["branch"] = branch
+        if approval_id is not None:
+            body["approval_id"] = approval_id
+        result = await self._request("POST", f"/tasks/{task_id}/intent", json=body)
+        assert result is not None
+        return result
+
     # ---- M2.5.3: audit log -------------------------------------------------
 
     async def audit_for_task(self, task_id: int) -> dict[str, Any]:

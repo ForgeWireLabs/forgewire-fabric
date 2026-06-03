@@ -56,6 +56,7 @@ EXPECTED_ROUTES = {
     ("/runners/{runner_id}/drain-by-dispatcher", ("POST",)),
     ("/runners/{runner_id}/undrain-by-dispatcher", ("POST",)),
     ("/tasks/claim-v2", ("POST",)),
+    ("/tasks/{task_id}/intent", ("POST",)),
     ("/tasks/{task_id}/start", ("POST",)),
     ("/tasks/{task_id}/cancel", ("POST",)),
     ("/tasks/{task_id}/progress", ("POST",)),

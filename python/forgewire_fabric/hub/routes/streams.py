@@ -12,6 +12,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from forgewire_fabric.hub.server import (
     PROGRESS_POLL_SECONDS,
+    IntentRequest,
     NoteRequest,
     ProgressRequest,
     ResultRequest,
@@ -20,7 +21,7 @@ from forgewire_fabric.hub.server import (
 )
 
 from ._deps import get_context, require_auth
-from ._helpers import audit_result, enforce_completion_gate
+from ._helpers import audit_result, enforce_completion_gate, enforce_intent_gate
 
 router = APIRouter()
 
@@ -31,6 +32,29 @@ def mark_running(request: Request, task_id: int) -> dict[str, Any]:
         return get_context(request).blackboard.mark_running(task_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="task not found") from exc
+
+
+@router.post("/tasks/{task_id}/intent", dependencies=[Depends(require_auth)])
+def evaluate_intent(request: Request, task_id: int, payload: IntentRequest) -> dict[str, Any]:
+    """M2.5.1 intent gate — runner calls this before performing a gated action.
+
+    Returns ``{"allowed": true}`` on 200, structured ``PolicyDecision`` on 403
+    (denied), or 428 (require_approval) with an ``approval_id`` the runner must
+    re-submit once the operator approves.
+    """
+    ctx = get_context(request)
+    enforce_intent_gate(
+        ctx,
+        task_id=str(task_id),
+        kind=payload.kind,
+        paths=payload.paths,
+        hosts=payload.hosts,
+        command=payload.command,
+        workspace_root=payload.workspace_root,
+        branch=payload.branch,
+        approval_id=payload.approval_id,
+    )
+    return {"allowed": True, "task_id": task_id, "kind": payload.kind}
 
 
 @router.post("/tasks/{task_id}/cancel", dependencies=[Depends(require_auth)])

@@ -2802,6 +2802,25 @@ class ProgressRequest(BaseModel):
     files_touched: list[str] | None = None
 
 
+class IntentRequest(BaseModel):
+    """Body for ``POST /tasks/{task_id}/intent`` (M2.5.1).
+
+    The runner POSTs this before performing a gated action. The hub evaluates
+    the intent against the policy engine and returns 200 (allowed), 403
+    (denied), or 428 (require_approval). The runner must pause on 428 and
+    re-POST with ``approval_id`` once the operator approves.
+    """
+
+    worker_id: str
+    kind: str
+    paths: list[str] = Field(default_factory=list)
+    hosts: list[str] = Field(default_factory=list)
+    command: str | None = None
+    workspace_root: str | None = None
+    branch: str | None = None
+    approval_id: str | None = None
+
+
 class ResultRequest(BaseModel):
     worker_id: str
     status: str
