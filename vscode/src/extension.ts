@@ -15,6 +15,7 @@ import {
   ApprovalNode,
   ApprovalsProvider,
   AuditProvider,
+  CostProvider,
   HostsProvider,
   HubProvider,
   SecretsProvider,
@@ -30,6 +31,7 @@ let statusItem: vscode.StatusBarItem;
 let hubProvider: HubProvider;
 let hostsProvider: HostsProvider;
 let approvalsProvider: ApprovalsProvider;
+let costProvider: CostProvider;
 let auditProvider: AuditProvider;
 let secretsProvider: SecretsProvider;
 let settingsProvider: SettingsProvider;
@@ -71,6 +73,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     getSnoozedApproval,
     approvalAgeBadgeHours
   );
+  costProvider = new CostProvider(getClient);
   auditProvider = new AuditProvider(getClient);
   secretsProvider = new SecretsProvider(getClient);
   settingsProvider = new SettingsProvider();
@@ -79,6 +82,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     vscode.window.registerTreeDataProvider("forgewire.hub", hubProvider),
     vscode.window.registerTreeDataProvider("forgewire.hosts", hostsProvider),
     vscode.window.registerTreeDataProvider("forgewire.approvals", approvalsProvider),
+    vscode.window.registerTreeDataProvider("forgewire.cost", costProvider),
     vscode.window.registerTreeDataProvider("forgewire.audit", auditProvider),
     vscode.window.registerTreeDataProvider("forgewire.secrets", secretsProvider),
     vscode.window.registerTreeDataProvider("forgewire.tasks", tasksProvider),
@@ -94,6 +98,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     vscode.commands.registerCommand("forgewire.startRunnerHere", startRunnerHere),
     vscode.commands.registerCommand("forgewire.dispatchTask", dispatchTask),
     vscode.commands.registerCommand("forgewire.refresh", refreshAll),
+    vscode.commands.registerCommand("forgewire.cost.refresh", () => costProvider?.refresh()),
     vscode.commands.registerCommand("forgewire.streamTask", streamTaskCmd),
     vscode.commands.registerCommand("forgewire.cancelTask", cancelTaskCmd),
     vscode.commands.registerCommand("forgewire.showTask", showTaskCmd),
@@ -225,6 +230,7 @@ async function probeAndRefresh(): Promise<void> {
   tasksProvider?.refresh();
   hostsProvider?.refresh();
   approvalsProvider?.refresh();
+  costProvider?.refresh();
   auditProvider?.refresh();
   secretsProvider?.refresh();
 }

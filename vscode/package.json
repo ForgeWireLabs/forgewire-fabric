@@ -2,7 +2,7 @@
   "name": "forgewire",
   "displayName": "ForgeWire",
   "description": "Unified control surface for the ForgeWire platform — Fabric, Loom, Hub, runners, and future services: signed envelopes, scope-bound capability tokens, live stream output. Run a hub or runner from inside VS Code on Windows, macOS, or Linux.",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "publisher": "DigitalHallucinations",
   "license": "Apache-2.0",
   "icon": "media/icon.png",
@@ -220,6 +220,12 @@
       {
         "command": "forgewire.refresh",
         "title": "Refresh",
+        "category": "ForgeWire",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "forgewire.cost.refresh",
+        "title": "Refresh Cost",
         "category": "ForgeWire",
         "icon": "$(refresh)"
       },
@@ -454,7 +460,7 @@
       "activitybar": [
         {
           "id": "forgewire",
-          "title": "ForgeWire 0.3",
+          "title": "ForgeWire",
           "icon": "media/sidebar.svg"
         }
       ]
@@ -484,6 +490,12 @@
           "name": "Approvals",
           "icon": "$(verified)",
           "contextualTitle": "ForgeWire Approvals"
+        },
+        {
+          "id": "forgewire.cost",
+          "name": "Cost",
+          "icon": "$(graph)",
+          "contextualTitle": "ForgeWire Cost"
         },
         {
           "id": "forgewire.audit",
@@ -523,6 +535,11 @@
       },
       {
         "view": "forgewire.approvals",
+        "contents": "No hub connection.\n\n[Connect to Hub](command:forgewire.connectHub)",
+        "when": "!forgewire.connected"
+      },
+      {
+        "view": "forgewire.cost",
         "contents": "No hub connection.\n\n[Connect to Hub](command:forgewire.connectHub)",
         "when": "!forgewire.connected"
       },

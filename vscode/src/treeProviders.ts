@@ -2064,3 +2064,124 @@ export class SettingsProvider implements vscode.TreeDataProvider<SettingNode> {
     return item;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Cost (M2.5.2) — spend summary + budget bars
+// ---------------------------------------------------------------------------
+
+export type CostNode =
+  | { kind: "period"; label: string; spend: number; budget?: number; alert?: boolean; icon: string }
+  | { kind: "modelRow"; model: string; cost: number; tokens: number }
+  | { kind: "sectionHeader"; label: string }
+  | { kind: "placeholder"; label: string; icon: string };
+
+export class CostProvider implements vscode.TreeDataProvider<CostNode> {
+  private readonly _onDidChange = new vscode.EventEmitter<CostNode | undefined | void>();
+  readonly onDidChangeTreeData = this._onDidChange.event;
+
+  constructor(private readonly client: () => HubClient | undefined) {}
+
+  refresh(): void { this._onDidChange.fire(); }
+
+  getTreeItem(n: CostNode): vscode.TreeItem {
+    if (n.kind === "placeholder") {
+      const item = new vscode.TreeItem(n.label, vscode.TreeItemCollapsibleState.None);
+      item.iconPath = new vscode.ThemeIcon(n.icon);
+      return item;
+    }
+    if (n.kind === "sectionHeader") {
+      const item = new vscode.TreeItem(n.label, vscode.TreeItemCollapsibleState.None);
+      item.iconPath = new vscode.ThemeIcon("list-unordered");
+      item.contextValue = "cost.sectionHeader";
+      return item;
+    }
+    if (n.kind === "period") {
+      const pct = n.budget ? (n.spend / n.budget * 100).toFixed(1) : null;
+      const bar = n.budget ? _budgetBar(n.spend, n.budget) : "";
+      const label = n.budget
+        ? `${n.label}  $${n.spend.toFixed(4)} / $${n.budget.toFixed(2)}${bar}`
+        : `${n.label}  $${n.spend.toFixed(4)}`;
+      const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
+      item.iconPath = new vscode.ThemeIcon(n.alert ? "warning" : n.icon);
+      if (pct) item.description = `${pct}%${n.alert ? " ⚠" : ""}`;
+      item.tooltip = n.budget
+        ? `Spent $${n.spend.toFixed(6)} of $${n.budget.toFixed(4)} (${pct}%)`
+        : `Spent $${n.spend.toFixed(6)}`;
+      item.contextValue = n.alert ? "cost.period.alert" : "cost.period";
+      return item;
+    }
+    // modelRow
+    const item = new vscode.TreeItem(
+      `${n.model || "(unknown)"}`,
+      vscode.TreeItemCollapsibleState.None
+    );
+    item.description = `$${n.cost.toFixed(4)}  ${_fmtTokens(n.tokens)}`;
+    item.iconPath = new vscode.ThemeIcon("symbol-misc");
+    item.tooltip = `Model: ${n.model || "(unknown)"}\nCost: $${n.cost.toFixed(6)}\nTokens: ${n.tokens.toLocaleString()}`;
+    item.contextValue = "cost.modelRow";
+    return item;
+  }
+
+  async getChildren(element?: CostNode): Promise<CostNode[]> {
+    if (element) return [];
+    const c = this.client();
+    if (!c) return [{ kind: "placeholder", label: "Not connected", icon: "plug" }];
+    try {
+      const [summary, budget] = await Promise.all([
+        c.getCostSummary(7).catch(() => null),
+        c.getCostBudget().catch(() => null),
+      ]);
+      const nodes: CostNode[] = [];
+
+      // Period rows
+      const dailySpend = budget?.daily_spend_usd ?? 0;
+      const weeklySpend = budget?.weekly_spend_usd ?? 0;
+      nodes.push({
+        kind: "period",
+        label: `Today (${budget?.today ?? "—"})`,
+        spend: dailySpend,
+        budget: budget?.daily_budget_usd,
+        icon: "calendar",
+      });
+      nodes.push({
+        kind: "period",
+        label: `This week (${budget?.week ?? "—"})`,
+        spend: weeklySpend,
+        budget: budget?.weekly_budget_usd,
+        alert: budget?.weekly_alert,
+        icon: "graph",
+      });
+
+      // By-model breakdown from summary
+      const byModel = summary?.by_model ?? {};
+      const modelEntries = Object.entries(byModel as Record<string, { cost_usd: number; tokens: number }>)
+        .sort((a, b) => b[1].cost_usd - a[1].cost_usd)
+        .slice(0, 8);
+
+      if (modelEntries.length > 0) {
+        nodes.push({ kind: "sectionHeader", label: "By model (last 7d)" });
+        for (const [model, agg] of modelEntries) {
+          nodes.push({ kind: "modelRow", model, cost: agg.cost_usd, tokens: agg.tokens });
+        }
+      } else {
+        nodes.push({ kind: "placeholder", label: "No cost records yet", icon: "info" });
+      }
+
+      return nodes;
+    } catch {
+      return [{ kind: "placeholder", label: "Failed to load cost data", icon: "error" }];
+    }
+  }
+}
+
+function _budgetBar(spend: number, budget: number): string {
+  const pct = Math.min(spend / budget, 1);
+  const filled = Math.round(pct * 8);
+  return "  " + "█".repeat(filled) + "░".repeat(8 - filled);
+}
+
+function _fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M tok`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k tok`;
+  return `${n} tok`;
+}

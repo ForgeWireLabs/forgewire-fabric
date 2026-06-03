@@ -300,6 +300,25 @@ export class HubClient {
     return j.dispatchers ?? [];
   }
 
+  // ---- M2.5.2: cost ledger --------------------------------------------------
+
+  async getCostSummary(sinceDays = 7): Promise<Record<string, unknown>> {
+    return this.request("GET", `/cost/summary?since_days=${sinceDays}`);
+  }
+
+  async getCostBudget(): Promise<{
+    today: string; week: string;
+    daily_spend_usd: number; weekly_spend_usd: number;
+    daily_budget_usd?: number; weekly_budget_usd?: number;
+    daily_pct?: number; weekly_pct?: number;
+    daily_remaining_usd?: number; weekly_remaining_usd?: number;
+    weekly_alert?: boolean;
+  }> {
+    return this.request("GET", "/cost/budget");
+  }
+
+  // ---- approvals ------------------------------------------------------------
+
   async listApprovals(status?: string, limit = 200): Promise<ApprovalInfo[]> {
     const params = new URLSearchParams({ limit: String(limit) });
     if (status) {
