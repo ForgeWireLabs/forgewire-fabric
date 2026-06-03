@@ -27,15 +27,71 @@ def check_skew(timestamp: int) -> None:
         raise HTTPException(status_code=401, detail="timestamp out of skew window")
 
 
+def _fire_generic_webhook(url: str, payload: dict[str, Any]) -> None:
+    with httpx.Client(timeout=5.0) as client:
+        client.post(url, json=payload)
+
+
+def _fire_ntfy(url: str, payload: dict[str, Any]) -> None:
+    approval_id = payload.get("approval_id", "?")
+    task_label = payload.get("task_label", "?")
+    event = payload.get("event", "approval")
+    title = f"ForgeWire approval required: {task_label}"
+    body = (
+        f"Event: {event}\n"
+        f"Approval ID: {approval_id}\n"
+        f"Run: forgewire-fabric approvals approve {approval_id}"
+    )
+    with httpx.Client(timeout=5.0) as client:
+        client.post(
+            url,
+            content=body.encode(),
+            headers={
+                "Title": title,
+                "Priority": "high",
+                "Tags": "warning,forgewire",
+            },
+        )
+
+
+def _fire_slack(url: str, payload: dict[str, Any]) -> None:
+    approval_id = payload.get("approval_id", "?")
+    task_label = payload.get("task_label", "?")
+    event = payload.get("event", "approval")
+    decision = payload.get("decision", {})
+    reason = decision.get("reason", "") if isinstance(decision, dict) else ""
+    text = (
+        f":warning: *ForgeWire approval required*\n"
+        f"*Task:* `{task_label}`  |  *Event:* `{event}`\n"
+        f"*Reason:* {reason or 'policy gate'}\n"
+        f"*Approve:* `forgewire-fabric approvals approve {approval_id}`\n"
+        f"*Deny:* `forgewire-fabric approvals deny {approval_id} --reason \"...\"``"
+    )
+    with httpx.Client(timeout=5.0) as client:
+        client.post(url, json={"text": text})
+
+
 def fire_approval_webhook(ctx: HubContext, payload: dict[str, Any]) -> None:
-    url = ctx.config.approval_webhook_url
-    if not url:
-        return
-    try:
-        with httpx.Client(timeout=5.0) as client:
-            client.post(url, json=payload)
-    except Exception as exc:  # noqa: BLE001 - best-effort notify
-        logging.getLogger(__name__).warning("approval webhook to %s failed: %s", url, exc)
+    log = logging.getLogger(__name__)
+    config = ctx.config
+
+    if config.approval_webhook_url:
+        try:
+            _fire_generic_webhook(config.approval_webhook_url, payload)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("approval webhook to %s failed: %s", config.approval_webhook_url, exc)
+
+    if config.approval_ntfy_url:
+        try:
+            _fire_ntfy(config.approval_ntfy_url, payload)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("ntfy notification to %s failed: %s", config.approval_ntfy_url, exc)
+
+    if config.approval_slack_url:
+        try:
+            _fire_slack(config.approval_slack_url, payload)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Slack notification to %s failed: %s", config.approval_slack_url, exc)
 
 
 def enforce_dispatch_gate(

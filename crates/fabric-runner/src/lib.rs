@@ -13,12 +13,12 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use fabric_client::{
-    ClaimPayload, ClaimResponse, HeartbeatStats, HubClient, RegisterPayload,
-    TaskResult,
+    ClaimPayload, ClaimResponse, HeartbeatStats, HubClient, RegisterPayload, TaskResult,
 };
 use fabric_identity::IdentityFile;
 use fabric_types::KeyPurpose;
@@ -242,6 +242,14 @@ pub async fn claim_loop(
     }
 }
 
+/// Outcome reported by pump_stream when an intent gate fires.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum IntentOutcome {
+    Allowed,
+    Denied { kind: String, detail: String },
+    ApprovalHold { kind: String, approval_id: String },
+}
+
 async fn run_one_task(
     client: Arc<HubClient>,
     identity: Arc<IdentityFile>,
@@ -262,6 +270,11 @@ async fn run_one_task(
         ("bash".to_owned(), vec!["-lc".to_owned(), prompt])
     };
 
+    // Shared flag: set to true by pump_stream when an intent is denied/held.
+    let kill_flag = Arc::new(AtomicBool::new(false));
+    // Channel to receive the intent outcome from pump_stream.
+    let (intent_tx, mut intent_rx) = tokio::sync::mpsc::channel::<IntentOutcome>(4);
+
     let result = match Command::new(&program)
         .args(&args)
         .current_dir(&config.workspace_root)
@@ -276,8 +289,10 @@ async fn run_one_task(
             let stdout_handle = {
                 let c = client.clone();
                 let rid = runner_id.clone();
+                let kf = kill_flag.clone();
+                let tx = intent_tx.clone();
                 tokio::spawn(async move {
-                    pump_stream(c, task_id, &rid, "stdout", stdout).await
+                    pump_stream(c, task_id, &rid, "stdout", stdout, kf, tx).await
                 })
             };
             let stderr_handle = {
@@ -287,6 +302,7 @@ async fn run_one_task(
                     pump_stderr(c, task_id, &rid, stderr).await
                 })
             };
+            drop(intent_tx); // close sender so receiver terminates when pump exits
 
             let rc = child.wait().await.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
 
@@ -301,15 +317,48 @@ async fn run_one_task(
             let tail_start = log_lines.len().saturating_sub(MAX_LOG_TAIL_LINES);
             let tail = log_lines[tail_start..].join("\n");
 
-            TaskResult {
-                worker_id: runner_id,
-                status: if rc == 0 { "done".into() } else { "failed".into() },
-                head_commit: None,
-                commits: vec![],
-                files_touched: vec![],
-                test_summary: None,
-                log_tail: Some(tail),
-                error: if rc == 0 { None } else { Some(format!("exit code {rc}")) },
+            // Check if an intent gate fired.
+            let intent_outcome = intent_rx.recv().await;
+            match intent_outcome {
+                Some(IntentOutcome::Denied { kind, detail }) => {
+                    warn!(task_id, kind, "task killed by policy deny");
+                    TaskResult {
+                        worker_id: runner_id,
+                        status: "failed".into(),
+                        head_commit: None,
+                        commits: vec![],
+                        files_touched: vec![],
+                        test_summary: None,
+                        log_tail: Some(tail),
+                        error: Some(format!("policy_denied: intent {kind} — {detail}")),
+                    }
+                }
+                Some(IntentOutcome::ApprovalHold { kind, approval_id }) => {
+                    warn!(task_id, kind, approval_id, "task held pending approval");
+                    TaskResult {
+                        worker_id: runner_id,
+                        status: "failed".into(),
+                        head_commit: None,
+                        commits: vec![],
+                        files_touched: vec![],
+                        test_summary: None,
+                        log_tail: Some(tail),
+                        error: Some(format!(
+                            "policy_hold: intent {kind} requires approval {approval_id}; \
+                             re-dispatch after: forgewire-fabric approvals approve {approval_id}"
+                        )),
+                    }
+                }
+                _ => TaskResult {
+                    worker_id: runner_id,
+                    status: if rc == 0 { "done".into() } else { "failed".into() },
+                    head_commit: None,
+                    commits: vec![],
+                    files_touched: vec![],
+                    test_summary: None,
+                    log_tail: Some(tail),
+                    error: if rc == 0 { None } else { Some(format!("exit code {rc}")) },
+                },
             }
         }
         Err(e) => TaskResult {
@@ -330,21 +379,97 @@ async fn run_one_task(
     }
 }
 
+/// Intent line prefix emitted by subprocesses to request a policy check.
+/// Format: `FW_INTENT:<kind>[:<key>=<value>...]`
+/// Examples:
+///   FW_INTENT:network_egress:host=api.openai.com
+///   FW_INTENT:fs_write:path=src/foo.py
+///   FW_INTENT:shell_exec:command=rm -rf /tmp/build
+const INTENT_PREFIX: &str = "FW_INTENT:";
+
+/// Parse a `FW_INTENT:<kind>[:<key>=<value>...]` line.
+/// Returns `(kind, paths, hosts, command)`.
+fn parse_intent_line(line: &str) -> (String, Vec<String>, Vec<String>, Option<String>) {
+    let rest = &line[INTENT_PREFIX.len()..];
+    let mut parts = rest.splitn(2, ':');
+    let kind = parts.next().unwrap_or("unknown").trim().to_owned();
+    let mut paths = Vec::new();
+    let mut hosts = Vec::new();
+    let mut command = None;
+    if let Some(kvs) = parts.next() {
+        for kv in kvs.split(':') {
+            if let Some((k, v)) = kv.split_once('=') {
+                match k.trim() {
+                    "path" => paths.push(v.trim().to_owned()),
+                    "host" => hosts.push(v.trim().to_owned()),
+                    "command" | "cmd" => command = Some(v.trim().to_owned()),
+                    _ => {}
+                }
+            }
+        }
+    }
+    (kind, paths, hosts, command)
+}
+
 async fn pump_stream(
     client: Arc<HubClient>,
     task_id: i64,
     runner_id: &str,
     channel: &str,
     pipe: Option<tokio::process::ChildStdout>,
-) -> Vec<String>
-where
-{
+    kill_flag: Arc<AtomicBool>,
+    intent_tx: tokio::sync::mpsc::Sender<IntentOutcome>,
+) -> Vec<String> {
     let mut lines = Vec::new();
     let Some(pipe) = pipe else { return lines };
-    // Safety: ChildStdout and ChildStderr are both AsyncRead.
-    // We read from a BufReader line-by-line.
     let mut reader = BufReader::new(pipe).lines();
     while let Ok(Some(line)) = reader.next_line().await {
+        // Stop forwarding if an intent already killed the task.
+        if kill_flag.load(Ordering::Relaxed) {
+            break;
+        }
+
+        if line.starts_with(INTENT_PREFIX) {
+            let (kind, paths, hosts, command) = parse_intent_line(&line);
+            info!(task_id, kind, "subprocess declared intent");
+            let path_refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+            let host_refs: Vec<&str> = hosts.iter().map(String::as_str).collect();
+            let cmd_ref = command.as_deref();
+            match client
+                .post_intent(task_id, runner_id, &kind, &path_refs, &host_refs, cmd_ref, None, None, None)
+                .await
+            {
+                Ok(_) => {
+                    info!(task_id, kind, "intent allowed by hub");
+                    let _ = client
+                        .append_stream(task_id, runner_id, channel, &format!("[intent:{kind}] allowed"))
+                        .await;
+                }
+                Err(ref e) if e.is_policy_denied() => {
+                    warn!(task_id, kind, "intent denied by policy");
+                    kill_flag.store(true, Ordering::Relaxed);
+                    let _ = intent_tx
+                        .send(IntentOutcome::Denied { kind, detail: e.to_string() })
+                        .await;
+                    break;
+                }
+                Err(ref e) if e.is_approval_required() => {
+                    let approval_id = e.approval_id().unwrap_or_else(|| "unknown".into());
+                    warn!(task_id, kind, approval_id, "intent requires approval — halting task");
+                    kill_flag.store(true, Ordering::Relaxed);
+                    let _ = intent_tx
+                        .send(IntentOutcome::ApprovalHold { kind, approval_id })
+                        .await;
+                    break;
+                }
+                Err(e) => {
+                    warn!(task_id, error = %e, "intent POST failed — allowing (best-effort)");
+                }
+            }
+            // Do not forward FW_INTENT lines to the hub stream.
+            continue;
+        }
+
         if let Err(e) = client.append_stream(task_id, runner_id, channel, &line).await {
             warn!(task_id, channel, error = %e, "stream append failed");
         }

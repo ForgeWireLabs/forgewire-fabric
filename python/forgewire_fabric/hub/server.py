@@ -169,6 +169,14 @@ class BlackboardConfig:
     # branch, scope_globs}`` to this URL with a 5s timeout. Failures are
     # logged but never block the dispatch path.
     approval_webhook_url: str | None = None
+    # M2.5.1: ntfy.sh topic URL (e.g. "https://ntfy.sh/my-forgewire-topic").
+    # The hub fires a mobile-push-friendly notification on every new approval.
+    # Set via --approval-ntfy or FORGEWIRE_HUB_APPROVAL_NTFY env var.
+    approval_ntfy_url: str | None = None
+    # M2.5.1: Slack incoming webhook URL. The hub fires a Slack message with
+    # approval_id and a CLI hint on every new approval.
+    # Set via --approval-slack or FORGEWIRE_HUB_APPROVAL_SLACK env var.
+    approval_slack_url: str | None = None
     # Labels snapshot sidecar. The hub mirrors the contents of the
     # ``labels`` table (``hub_name`` + ``runner_alias:<runner_id>`` rows)
     # to this JSON file on every successful write, and re-applies the
@@ -3216,6 +3224,24 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--approval-ntfy",
+        default=os.environ.get("FORGEWIRE_HUB_APPROVAL_NTFY"),
+        help=(
+            "ntfy.sh topic URL (e.g. https://ntfy.sh/my-forgewire-topic). "
+            "The hub pushes a mobile notification on every new approval hold. "
+            "Failures are logged, never blocking."
+        ),
+    )
+    parser.add_argument(
+        "--approval-slack",
+        default=os.environ.get("FORGEWIRE_HUB_APPROVAL_SLACK"),
+        help=(
+            "Slack incoming webhook URL. The hub posts a message with the "
+            "approval_id and CLI hint on every new approval hold. "
+            "Failures are logged, never blocking."
+        ),
+    )
+    parser.add_argument(
         "--labels-snapshot",
         default=os.environ.get("FORGEWIRE_HUB_LABELS_SNAPSHOT"),
         help=(
@@ -3248,6 +3274,8 @@ def main(argv: list[str] | None = None) -> None:
         rqlite_consistency=args.rqlite_consistency,
         policy_path=Path(args.policy_file).expanduser() if args.policy_file else None,
         approval_webhook_url=args.approval_webhook,
+        approval_ntfy_url=args.approval_ntfy,
+        approval_slack_url=args.approval_slack,
         labels_snapshot_path=(
             None
             if args.labels_snapshot is None

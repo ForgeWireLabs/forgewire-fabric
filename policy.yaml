@@ -1,0 +1,145 @@
+# ForgeWire Fabric — policy.yaml
+#
+# Commit this file at the root of any repository that ForgeWire dispatches
+# into. The hub loads it at startup via --policy-file (or
+# FORGEWIRE_HUB_POLICY_FILE) and evaluates it on every state transition:
+#   dispatch_task  → enforce_dispatch_gate
+#   intent stream  → enforce_intent_gate  (POST /tasks/{id}/intent)
+#   complete_task  → enforce_completion_gate
+#
+# All fields are optional. Omitting a field uses the permissive default
+# (allow everything). The hub still emits structured PolicyDecision records
+# for every gate even when this file is absent.
+#
+# Schema version: 1 (M2.5.1)
+# -------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Branch protection
+# ---------------------------------------------------------------------------
+
+# Branches that require an explicit approval before any task may target them.
+# Glob patterns are supported (fnmatch). A task whose `branch` field matches
+# any entry here receives a REQUIRE_APPROVAL decision at dispatch time.
+#
+# Type: list[str]   Default: []
+protected_branches:
+  - main
+  - "release/*"
+
+# ---------------------------------------------------------------------------
+# Path restrictions
+# ---------------------------------------------------------------------------
+
+# Paths whose modification is unconditionally denied. Any task whose
+# scope_globs overlap these patterns is rejected with a DENY decision.
+# Glob patterns (fnmatch) relative to the workspace root.
+#
+# Type: list[str]   Default: []
+forbidden_paths:
+  - ".github/workflows/**"
+  - "forgewire_core/**"
+  - "secrets/**"
+  - "*.pem"
+  - "*.key"
+
+# ---------------------------------------------------------------------------
+# Diff size limit
+# ---------------------------------------------------------------------------
+
+# Maximum number of changed lines accepted at complete_task time.
+# Tasks whose result diff exceeds this are rejected with a DENY decision.
+# Set to 0 or omit to disable.
+#
+# Type: int   Default: 0 (unlimited)
+max_diff_lines: 2000
+
+# ---------------------------------------------------------------------------
+# Require-approval intents
+# ---------------------------------------------------------------------------
+
+# Intent kinds that pause the task and require operator approval before the
+# runner may proceed. The runner POSTs a FW_INTENT:<kind> line; the hub
+# evaluates it here and returns 428 with an approval_id if approval is needed.
+#
+# Supported kinds:
+#   fs_write        — any file write outside the declared scope
+#   network_egress  — any outbound network connection
+#   shell_exec      — any shell command execution
+#   destructive_fs  — rm -rf, truncate, overwrite operations
+#   merge           — git merge
+#   push            — git push
+#
+# Type: list[str]   Default: []
+require_approval:
+  - merge
+  - push
+  - network_egress
+
+# ---------------------------------------------------------------------------
+# Egress allowlist
+# ---------------------------------------------------------------------------
+
+# When set, network_egress intents targeting hosts NOT in this list receive
+# a DENY decision (no approval path — they are hard-blocked). Hosts in the
+# list are allowed without approval (unless network_egress is also in
+# require_approval above, in which case even listed hosts need approval).
+#
+# Glob patterns supported (fnmatch). Omit to allow all outbound connections.
+#
+# Type: list[str]   Default: null (no allowlist — all egress allowed)
+egress_allowlist:
+  - "pypi.org"
+  - "*.pypi.org"
+  - "github.com"
+  - "*.github.com"
+  - "*.githubusercontent.com"
+  - "api.anthropic.com"
+  - "huggingface.co"
+  - "*.huggingface.co"
+
+# ---------------------------------------------------------------------------
+# Approval notification
+# ---------------------------------------------------------------------------
+
+# Who receives approval notifications. Currently informational — the hub
+# fires webhooks to the configured transport (--approval-webhook,
+# --approval-ntfy, --approval-slack) regardless of this list.
+# Will be used for role-token scoping in M2.5.6.
+#
+# Type: list[str]   Default: []
+approvers:
+  - "github:DigitalHallucinations"
+
+# Minimum number of approvers required before a held task resumes.
+# Currently enforced as "at least one consume_approval call succeeds."
+# Multi-approver quorum lands in M2.5.6.
+#
+# Type: int   Default: 1
+reviewers_required: 1
+
+# ---------------------------------------------------------------------------
+# Scope restrictions (dispatch-time)
+# ---------------------------------------------------------------------------
+
+# scope_globs in the dispatch brief must be a subset of these allowed
+# prefixes. A brief that declares a scope outside this list is denied.
+# Omit to allow any scope.
+#
+# Type: list[str]   Default: null (unrestricted)
+# allowed_scope_prefixes:
+#   - "src/**"
+#   - "tests/**"
+#   - "docs/**"
+
+# ---------------------------------------------------------------------------
+# Host allowlist (dispatch-time)
+# ---------------------------------------------------------------------------
+
+# Dispatch is only accepted from runners on these hostnames.
+# Omit to allow dispatch from any registered runner.
+#
+# Type: list[str]   Default: null (unrestricted)
+# allowed_runner_hosts:
+#   - "DESKTOP-38GVF8D"
+#   - "DESKTOP-228U8GL"

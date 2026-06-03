@@ -40,6 +40,33 @@ impl ClientError {
         matches!(self, Self::Hub { status: 426, .. })
     }
 
+    /// True when the hub rejected an intent with a hard policy deny (403).
+    pub fn is_policy_denied(&self) -> bool {
+        matches!(self, Self::Hub { status: 403, .. })
+    }
+
+    /// True when the hub requires operator approval before continuing (428).
+    pub fn is_approval_required(&self) -> bool {
+        matches!(self, Self::Hub { status: 428, .. })
+    }
+
+    /// Extract the `approval_id` from a 428 response body JSON, if present.
+    pub fn approval_id(&self) -> Option<String> {
+        if let Self::Hub { status: 428, body } = self {
+            serde_json::from_str::<serde_json::Value>(body)
+                .ok()
+                .and_then(|v| {
+                    v.get("detail")
+                        .and_then(|d| d.get("approval_id"))
+                        .or_else(|| v.get("approval_id"))
+                        .and_then(|id| id.as_str())
+                        .map(|s| s.to_owned())
+                })
+        } else {
+            None
+        }
+    }
+
     pub fn status_code(&self) -> u16 {
         match self {
             Self::Hub { status, .. } => *status,
@@ -311,6 +338,37 @@ impl HubClient {
     pub async fn mark_running(&self, task_id: i64) -> Result<Value, ClientError> {
         self.post(&format!("/tasks/{task_id}/start"), &json!({}))
             .await
+    }
+
+    /// M2.5.1 — POST an intent-to-do event and return the hub decision.
+    ///
+    /// Returns `Ok(value)` on 200 (allowed).
+    /// Returns `Err(e)` where `e.is_policy_denied()` on 403 (hard deny).
+    /// Returns `Err(e)` where `e.is_approval_required()` on 428; use
+    /// `e.approval_id()` to retrieve the approval_id for the re-POST.
+    pub async fn post_intent(
+        &self,
+        task_id: i64,
+        worker_id: &str,
+        kind: &str,
+        paths: &[&str],
+        hosts: &[&str],
+        command: Option<&str>,
+        workspace_root: Option<&str>,
+        branch: Option<&str>,
+        approval_id: Option<&str>,
+    ) -> Result<Value, ClientError> {
+        let body = json!({
+            "worker_id": worker_id,
+            "kind": kind,
+            "paths": paths,
+            "hosts": hosts,
+            "command": command,
+            "workspace_root": workspace_root,
+            "branch": branch,
+            "approval_id": approval_id,
+        });
+        self.post(&format!("/tasks/{task_id}/intent"), &body).await
     }
 
     pub async fn append_stream(
