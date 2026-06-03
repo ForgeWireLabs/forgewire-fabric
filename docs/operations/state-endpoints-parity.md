@@ -1,4 +1,4 @@
-# `/state/snapshot` and `/state/import` — parity-only endpoints
+﻿# `/state/snapshot` and `/state/import` — parity-only endpoints
 
 > **Status:** PARITY-ONLY. Under the production rqlite backend, these
 > endpoints are kept as exit hatches and are not part of the routine

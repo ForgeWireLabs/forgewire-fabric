@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,9 +21,7 @@ class ScenarioPolicy:
 
 
 DEFAULT_VARIANCE_POLICY: dict[tuple[str, str], VarianceBound] = {
-    ("match_middle", "sqlite"): VarianceBound(0.35, 0.00),
     ("match_middle", "rqlite"): VarianceBound(0.45, 0.00),
-    ("full_scan_no_match", "sqlite"): VarianceBound(0.40, 0.00),
     ("full_scan_no_match", "rqlite"): VarianceBound(0.50, 0.00),
 }
 

@@ -1,4 +1,4 @@
-"""v0.4: hub-side observability for runner claim/heartbeat failures.
+﻿"""v0.4: hub-side observability for runner claim/heartbeat failures.
 
 Exercises the additive heartbeat fields (claim_failures_total,
 claim_failures_consecutive, last_claim_error, heartbeat_failures_total)
@@ -29,7 +29,7 @@ def _canonical(body: dict) -> bytes:
 
 def _make_app(tmp_path: Path):
     cfg = BlackboardConfig(
-        db_path=tmp_path / "hub.sqlite3",
+        db_path=tmp_path / "hub.db",
         token=HUB_TOKEN,
         host="127.0.0.1",
         port=0,

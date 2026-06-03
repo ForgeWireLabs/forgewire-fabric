@@ -1,4 +1,4 @@
-"""ForgeWire stream-counter facade.
+﻿"""ForgeWire stream-counter facade.
 
 Resolves at import time to the Rust-accelerated
 `forgewire_runtime.StreamCounter` when available, otherwise falls back to a
@@ -9,7 +9,7 @@ Operators can force the Python path with ``FORGEWIRE_FORCE_PYTHON=1``.
 Lineage: Stage C.3 of the forgewire-runtime extraction (formerly PhrenForge todo 113).
 
 The counter assigns strictly-increasing per-task sequence numbers in-memory.
-SQLite still owns durability (the hub still INSERTs every line); the counter
+rqlite owns durability (the hub still INSERTs every line); the counter
 just eliminates the per-call ``BEGIN IMMEDIATE`` + ``SELECT MAX(seq)``
 round-trip.
 """

@@ -1,9 +1,9 @@
-//! Stream-sequence accounting and bounded write buffering for ForgeWire task streams.
+﻿//! Stream-sequence accounting and bounded write buffering for ForgeWire task streams.
 //!
 //! # StreamCounter
 //!
 //! Moves per-task seq assignment into a process-local `parking_lot::Mutex` map.
-//! SQLite/rqlite still owns durability but the `BEGIN IMMEDIATE + SELECT MAX(seq)`
+//! rqlite owns durability but the `BEGIN IMMEDIATE + SELECT MAX(seq)`
 //! round-trip is eliminated — seq is assigned in-memory, store writes are fire-and-go.
 //!
 //! # StreamBuffer + DurabilityProfile

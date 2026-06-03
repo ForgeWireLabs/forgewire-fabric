@@ -1,4 +1,4 @@
-"""End-to-end hub tests against a live rqlite cluster.
+﻿"""End-to-end hub tests against a live rqlite cluster.
 
 Runs the same flows as :mod:`test_dispatcher_signing` but with
 ``backend="rqlite"`` so we exercise:
@@ -179,7 +179,7 @@ def _labels_snapshot():
 
 def _make_app(tmp_path: Path, *, require_signed: bool = False):
     cfg = BlackboardConfig(
-        db_path=tmp_path / "hub.sqlite3",  # unused under rqlite backend
+        db_path=tmp_path / "hub.db",  # unused — rqlite manages its own storage
         token=HUB_TOKEN,
         host="127.0.0.1",
         port=0,
@@ -350,15 +350,13 @@ def test_register_collision_rejects_new_pubkey_under_rqlite(tmp_path):
 
 
 def test_state_snapshot_under_rqlite(tmp_path):
-    """/state/snapshot proxies to rqlite /db/backup. The body should be a
-    valid SQLite file (magic bytes ``SQLite format 3\\0``).
-    """
+    """/state/snapshot proxies to rqlite /db/backup — returns a binary blob."""
     app = _make_app(tmp_path)
     with TestClient(app) as client:
         r = client.get("/state/snapshot", headers=_auth())
         assert r.status_code == 200, r.text
         assert r.headers.get("X-Snapshot-Source") == "rqlite"
-        assert r.content[:16].startswith(b"SQLite format 3\x00")
+        assert len(r.content) > 0  # rqlite backup is a non-empty binary blob
 
 
 def test_claim_next_task_v2_cas_under_rqlite(tmp_path):

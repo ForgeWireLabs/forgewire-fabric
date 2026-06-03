@@ -1,4 +1,4 @@
-"""Regression: hub-side aliases + runner routing intent must survive
+﻿"""Regression: hub-side aliases + runner routing intent must survive
 code updates, schema upgrades, and hardware migrations.
 
 The persistence model this file locks in:
@@ -71,7 +71,7 @@ def _auth() -> dict[str, str]:
 
 def _make_cfg(tmp_path: Path) -> BlackboardConfig:
     return BlackboardConfig(
-        db_path=tmp_path / "hub.sqlite3",
+        db_path=tmp_path / "hub.db",
         token=HUB_TOKEN,
         host="127.0.0.1",
         port=0,
@@ -117,13 +117,11 @@ def _register(
 
 
 def _backdate_heartbeat(db_path: Path, runner_id: str, seconds_ago: int) -> None:
-    import sqlite3
-
+    
     cutoff = time.strftime(
         "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - seconds_ago)
     )
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(
+    # NOTE: rqlite backend — direct DB modification via rqlite HTTP
             "UPDATE runners SET last_heartbeat = ? WHERE runner_id = ?",
             (cutoff, runner_id),
         )
@@ -178,7 +176,7 @@ def test_runners_endpoint_includes_hub_name_and_aliases(tmp_path: Path) -> None:
 def test_labels_survive_schema_reinit(tmp_path: Path) -> None:
     """``_init_schema`` runs at every Blackboard construction; the
     ``CREATE TABLE IF NOT EXISTS labels`` statement must not drop rows."""
-    db_path = tmp_path / "hub.sqlite3"
+    db_path = tmp_path / "hub.db"
     bb = Blackboard(db_path)
     bb.set_hub_name("alpha-hub")
     bb.set_runner_alias("11111111-1111-1111-1111-111111111111", "precision")
@@ -262,7 +260,7 @@ def test_labels_snapshot_writethrough_on_every_label_change(
     sidecar. The sidecar is the operator's lifeboat against an
     accidental rqlite table wipe.
     """
-    db_path = tmp_path / "hub.sqlite3"
+    db_path = tmp_path / "hub.db"
     snap = tmp_path / "labels.snapshot.json"
     bb = Blackboard(db_path)
     assert not snap.exists()
@@ -297,7 +295,7 @@ def test_labels_snapshot_restore_re_applies_after_table_wipe(
     ``restore_labels_from_snapshot`` must repopulate hub_name +
     aliases from the on-disk sidecar.
     """
-    db_path = tmp_path / "hub.sqlite3"
+    db_path = tmp_path / "hub.db"
     bb = Blackboard(db_path)
     bb.set_hub_name("Test hub 1")
     bb.set_host_alias("HOST-A", "Precision 5520")
@@ -429,7 +427,7 @@ def test_labels_snapshot_disabled_via_empty_path(tmp_path: Path) -> None:
     write-through and the startup restore.
     """
     cfg = BlackboardConfig(
-        db_path=tmp_path / "hub.sqlite3",
+        db_path=tmp_path / "hub.db",
         token=HUB_TOKEN,
         host="127.0.0.1",
         port=0,
@@ -450,7 +448,7 @@ def test_labels_snapshot_disabled_via_empty_path(tmp_path: Path) -> None:
 def test_labels_snapshot_rejects_unknown_schema(tmp_path: Path) -> None:
     """Unknown-schema sidecars must be skipped, not blindly imported.
     Same contract as the ``labels import`` CLI."""
-    db_path = tmp_path / "hub.sqlite3"
+    db_path = tmp_path / "hub.db"
     snap = tmp_path / "labels.snapshot.json"
     snap.write_text(
         json.dumps(
@@ -470,7 +468,7 @@ def test_labels_snapshot_rejects_unknown_schema(tmp_path: Path) -> None:
 def test_labels_snapshot_tolerates_bare_payload(tmp_path: Path) -> None:
     """Tolerate a bare ``{hub_name, runner_aliases}`` JSON (no envelope)
     so hand-edited sidecars still work, matching ``labels import``."""
-    db_path = tmp_path / "hub.sqlite3"
+    db_path = tmp_path / "hub.db"
     snap = tmp_path / "labels.snapshot.json"
     snap.write_text(
         json.dumps(
@@ -494,7 +492,7 @@ def test_labels_snapshot_unreadable_is_logged_not_fatal(
     """A corrupt sidecar must not crash startup. Operators can re-export
     via the CLI to recover; the worst case is that operator names are
     not auto-restored on this boot."""
-    db_path = tmp_path / "hub.sqlite3"
+    db_path = tmp_path / "hub.db"
     snap = tmp_path / "labels.snapshot.json"
     snap.write_text("{not valid json", encoding="utf-8")
     bb = Blackboard(db_path)
@@ -1037,7 +1035,7 @@ def test_cluster_health_sqlite_reports_backend_and_sidecar(tmp_path: Path) -> No
     a stale or missing sidecar without rereading the file itself."""
     snapshot_path = tmp_path / "labels.snapshot.json"
     cfg = BlackboardConfig(
-        db_path=tmp_path / "hub.sqlite3",
+        db_path=tmp_path / "hub.db",
         token=HUB_TOKEN,
         host="127.0.0.1",
         port=0,
@@ -1061,7 +1059,7 @@ def test_cluster_health_sqlite_reports_backend_and_sidecar(tmp_path: Path) -> No
 
 def test_cluster_health_unauthorized(tmp_path: Path) -> None:
     cfg = BlackboardConfig(
-        db_path=tmp_path / "hub.sqlite3",
+        db_path=tmp_path / "hub.db",
         token=HUB_TOKEN,
         host="127.0.0.1",
         port=0,

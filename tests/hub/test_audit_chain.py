@@ -1,6 +1,6 @@
-"""Tests for the M2.5.3 hash-chained audit log, replay, and export.
+﻿"""Tests for the M2.5.3 hash-chained audit log, replay, and export.
 
-Exercises the real FastAPI hub against a real on-disk SQLite blackboard.
+Exercises the real FastAPI hub against rqlite.
 Verifies that:
 
 * dispatch + claim + result each emit one chain-linked audit_event row;
@@ -124,8 +124,7 @@ def test_chain_break_detected_when_payload_tampered() -> None:
     _result(client, task["id"])
 
     # Tamper the result row's payload directly.
-    import sqlite3
-
+    
     with sqlite3.connect(db_path) as conn:
         conn.execute(
             "UPDATE audit_event SET payload_json = ? WHERE kind = 'result'",

@@ -1,4 +1,4 @@
-"""Regression: one physical host must map to exactly one runner row.
+﻿"""Regression: one physical host must map to exactly one runner row.
 
 Covers two structural defenses that together make the "duplicate runner
 per host" symptom impossible:
@@ -47,7 +47,7 @@ def _auth() -> dict[str, str]:
 
 def _make_app(tmp_path: Path):
     cfg = BlackboardConfig(
-        db_path=tmp_path / "hub.sqlite3",
+        db_path=tmp_path / "hub.db",
         token=HUB_TOKEN,
         host="127.0.0.1",
         port=0,
@@ -100,8 +100,7 @@ def _register(
 
 def _backdate_heartbeat(db_path: Path, runner_id: str, seconds_ago: int) -> None:
     """Force a runner row's ``last_heartbeat`` into the past."""
-    import sqlite3
-
+    
     iso = time.strftime(
         "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - seconds_ago)
     )
@@ -118,7 +117,7 @@ def _backdate_heartbeat(db_path: Path, runner_id: str, seconds_ago: int) -> None
 
 def test_register_prunes_stale_same_host_runner(tmp_path: Path) -> None:
     app = _make_app(tmp_path)
-    db_path = tmp_path / "hub.sqlite3"
+    db_path = tmp_path / "hub.db"
     ghost = load_or_create(tmp_path / "ghost.json")
     fresh = load_or_create(tmp_path / "fresh.json")
     assert ghost.runner_id != fresh.runner_id
@@ -161,7 +160,7 @@ def test_register_keeps_fresh_same_host_runner(tmp_path: Path) -> None:
 
 def test_register_does_not_prune_different_host(tmp_path: Path) -> None:
     app = _make_app(tmp_path)
-    db_path = tmp_path / "hub.sqlite3"
+    db_path = tmp_path / "hub.db"
     a = load_or_create(tmp_path / "a.json")
     b = load_or_create(tmp_path / "b.json")
 

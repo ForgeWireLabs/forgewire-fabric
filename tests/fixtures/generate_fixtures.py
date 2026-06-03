@@ -1,4 +1,4 @@
-"""M2.7.0 golden-fixture generator.
+﻿"""M2.7.0 golden-fixture generator.
 
 Run from the repo root:
 
@@ -910,9 +910,9 @@ CREATE TABLE IF NOT EXISTS secrets (
 
 | Scenario | Safe? | Notes |
 |---|---|---|
-| Python hub reads Rust-written SQLite | ✅ Yes | Rust uses same schema; additive columns only |
-| Rust hub reads Python-written SQLite | ✅ Yes | Rust must run additive migrations before reads |
-| Python hub reads Rust-written SQLite after rollback | ✅ Yes | No columns removed; old Python code sees new columns as nullable |
+| REMOVED — rqlite only since M2.7.3
+| REMOVED — rqlite only since M2.7.3
+| REMOVED — rqlite only since M2.7.3
 | Rust hub reads schema_v1 (before additive columns) | ✅ Yes | Additive columns absent; Rust applies `ALTER TABLE ADD COLUMN IF NOT EXISTS` |
 
 ## Additive columns (applied at runtime by Python hub)
@@ -962,7 +962,7 @@ not RFC3339 with offset. Explicit UTC only.
 
 ## rqlite compatibility notes
 
-The following SQLite patterns used by the Python hub are prohibited under rqlite:
+The following patterns are prohibited (always use explicit UTC strings):
 - `SELECT` inside `BEGIN` / `COMMIT` (rqlite shim contract)
 - Cross-statement transactions relying on statement ordering
 - `datetime('now')` (SQLite-local, use explicit UTC string instead)

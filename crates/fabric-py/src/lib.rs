@@ -1,4 +1,4 @@
-//! PyO3 bindings exposing the ForgeWire Rust runtime to Python.
+﻿//! PyO3 bindings exposing the ForgeWire Rust runtime to Python.
 //!
 //! Stage C.1 surface:
 //! - `verify_signature(public_key_hex: str, payload: bytes, signature_hex: str) -> bool`
@@ -239,7 +239,7 @@ impl PyStreamCounter {
         }
     }
 
-    /// Prime a task's counter from SQLite's current `MAX(seq)`.
+    /// Prime a task's counter from rqlite's current `MAX(seq)`.
     fn prime(&self, task_id: i64, current_max: u64) {
         self.inner.prime(task_id, current_max);
     }

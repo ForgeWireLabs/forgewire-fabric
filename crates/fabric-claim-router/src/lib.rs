@@ -1,4 +1,4 @@
-//! Capability-aware claim routing for ForgeWire.
+﻿//! Capability-aware claim routing for ForgeWire.
 //!
 //! Mirrors the Python `Blackboard.claim_next_task_v2` per-task match loop in
 //! `scripts/remote/hub/server.py`. The pre-checks (drain, concurrency cap,
@@ -18,7 +18,7 @@
 //!    the runner's `last_known_commit` must equal the task's `base_commit`.
 //!
 //! `pick_task` returns the first candidate index that passes all six checks,
-//! or `None` if every candidate is rejected. It does not own the SQLite
+//! or `None` if every candidate is rejected. It does not own the rqlite
 //! transaction — the caller does.
 
 #[derive(Debug, Clone)]

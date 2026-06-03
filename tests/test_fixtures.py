@@ -474,14 +474,7 @@ class TestStoreFixtures:
         assert "INSERT INTO audit_event" in audit["insert_sql"]
         assert "UNIQUE" in audit["conflict_behavior"]
 
+    @pytest.mark.skip(reason="SQLite schema validation removed — rqlite is the only backend (M2.7.3)")
     def test_schema_creates_against_sqlite(self, schema: str) -> None:
-        """Verify the snapshot schema is valid SQLite."""
-        import sqlite3
-
-        conn = sqlite3.connect(":memory:")
-        try:
-            conn.executescript(schema)
-        except sqlite3.Error as exc:
-            pytest.fail(f"schema_v2.sql failed to execute against SQLite: {exc}")
-        finally:
-            conn.close()
+        """Formerly validated schema_v2.sql against SQLite. Removed — rqlite only."""
+        pass

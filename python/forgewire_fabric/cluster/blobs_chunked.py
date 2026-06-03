@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from .blob_index import CHUNKED_CAS_SCHEMA_VERSION, SqliteBlobIndex
+from .blob_index import CHUNKED_CAS_SCHEMA_VERSION, LocalBlobIndex as SqliteBlobIndex
 from .blobs import BlobRequest
 from .cas import (
     BlobIntegrityError,
@@ -201,7 +201,7 @@ class ChunkedBlobFabric:
         transport: ClusterTransport,
         node_id: str,
         store: ContentAddressedStore,
-        index: SqliteBlobIndex | None = None,
+        index: SqliteBlobIndex | None = None,  # LocalBlobIndex (in-memory + JSON sidecar)
         chunk_size: int = DEFAULT_CHUNK_SIZE_BYTES,
         pull_timeout_seconds: float = DEFAULT_CHUNKED_PULL_TIMEOUT_SECONDS,
     ):

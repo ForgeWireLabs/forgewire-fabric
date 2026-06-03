@@ -1,4 +1,4 @@
-"""sqlite3-compatible adapter for rqlite over HTTP.
+﻿"""rqlite HTTP adapter — provides the minimal connection interface used by the hub.
 
 Provides ``connect()`` returning a ``Connection`` whose API is a drop-in
 subset of :mod:`sqlite3` sufficient for ``forgewire_fabric.hub.server``:
@@ -215,7 +215,7 @@ _RETURNING_RE = re.compile(r"\bRETURNING\b", re.IGNORECASE)
 
 
 class Connection:
-    """rqlite Connection with a sqlite3-shaped surface.
+    """rqlite HTTP connection.
 
     Thread-safe at the request boundary: each HTTP call uses its own
     httpx.Client transaction, but the buffered-transaction state is

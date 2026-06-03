@@ -1,3 +1,7 @@
+﻿# NOTE: This benchmark was written against the SQLite Blackboard which has been retired.
+# It is kept for reference only and will not run without modification.
+# rqlite is the only supported backend.
+
 """Bench `Blackboard.append_stream` before/after the in-memory seq counter.
 
 The naive bench is "lines per second per task". Real runners stream output

@@ -1,4 +1,4 @@
-# forgewire-runtime — Rust workspace
+﻿# forgewire-runtime — Rust workspace
 
 Native Rust hub and runner substrate for ForgeWire Fabric. As of M2.7 (2026-06-02)
 the Rust binaries are the **normal deployed runtime**. Python remains available as a
@@ -24,7 +24,7 @@ Binaries live at `C:\ProgramData\forgewire\bin\` on installed hosts.
 | `fabric-audit` | Hash-chained audit log, GENESIS hash, expected-tail CAS, chain verify | ✅ |
 | `fabric-policy` | Allow/deny/require-approval evaluation, budget enforcement | ✅ |
 | `fabric-store` | Store trait definitions (TaskStore, StreamStore, AuditStore, …) | ✅ |
-| `fabric-store-sqlite` | SQLite backend (unit tests / single-node fallback) | ✅ |
+| `fabric-store-sqlite — Removed M2.7.3 — rqlite only
 | `fabric-store-rqlite` | rqlite HA backend, leader redirect, quorum-loss detection | ✅ |
 | `fabric-claim-router` | Capability-aware task routing, structured rejection diagnostics | ✅ |
 | `fabric-streams` | Per-task seq counter + bounded write buffer + named durability profiles | ✅ |

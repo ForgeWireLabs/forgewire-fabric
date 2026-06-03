@@ -1,4 +1,4 @@
-//! rqlite HA backend for the ForgeWire Fabric store contract.
+﻿//! rqlite HA backend for the ForgeWire Fabric store contract.
 //!
 //! Implements `FabricStore` over the rqlite HTTP API, matching the Python
 //! `_rqlite_db.py` adapter's behavior: single-statement writes, no cross-
@@ -121,7 +121,7 @@ impl RqliteStore {
     ///
     /// rqlite returns `last_insert_id` in the execute result directly — do NOT
     /// use `SELECT last_insert_rowid()` as a follow-up query; it always returns 0
-    /// over HTTP because it is connection-local in SQLite and rqlite uses a new
+    /// over HTTP because it rqlite uses a new
     /// connection per request.
     async fn execute_insert(&self, sql: &str, params: &[Value]) -> Result<i64, RqliteError> {
         let resp = self.execute(&[(sql, params)]).await?;

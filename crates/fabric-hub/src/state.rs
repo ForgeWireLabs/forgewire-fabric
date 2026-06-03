@@ -1,4 +1,4 @@
-//! Shared hub state — passed to all route handlers via axum State.
+﻿//! Shared hub state — passed to all route handlers via axum State.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -18,7 +18,7 @@ pub struct HubState {
     pub protocol_version: i64,
     pub package_version: String,
     pub sidecar_integrity: String,
-    /// "sqlite" | "rqlite"
+    /// "rqlite" (only supported backend)
     pub backend: String,
     /// Bounded write buffer for task stream lines.
     pub stream_buffer: Arc<StreamBuffer>,

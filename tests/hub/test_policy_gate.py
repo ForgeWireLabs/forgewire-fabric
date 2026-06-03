@@ -1,4 +1,4 @@
-"""End-to-end tests for the M2.5.1+M2.5.2 hub-side dispatch/completion gate.
+﻿"""End-to-end tests for the M2.5.1+M2.5.2 hub-side dispatch/completion gate.
 
 These exercise the substrate-owned ``HubDispatchGate`` through the FastAPI
 app built by :func:`forgewire_fabric.hub.server.create_app`. The goal is to
@@ -6,7 +6,7 @@ prove the wiring: a policy.yaml loaded via ``BlackboardConfig.policy_path``
 must convert FabricPolicyEngine / BudgetEnforcer decisions into HTTP responses
 on the legacy ``POST /tasks`` and ``POST /tasks/{id}/result`` endpoints.
 
-Mocking policy: none. The hub is built with a real on-disk SQLite blackboard
+Mocking policy: none. The hub is built with a real hub via rqlite
 and a real policy file in a tempdir — these are the actual collaborators the
 hub uses in production.
 """

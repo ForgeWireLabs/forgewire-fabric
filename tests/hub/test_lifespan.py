@@ -1,4 +1,4 @@
-"""M2.6.4 regression coverage for FastAPI lifespan startup.
+﻿"""M2.6.4 regression coverage for FastAPI lifespan startup.
 
 The hub used to register startup hooks with deprecated ``@app.on_event``.
 Booting the app through ``TestClient`` should no longer emit FastAPI's
@@ -20,7 +20,7 @@ HUB_TOKEN = "test-hub-token-lifespan-aaaaaaaa"
 
 def _make_app(tmp_path: Path):
     cfg = BlackboardConfig(
-        db_path=tmp_path / "hub.sqlite3",
+        db_path=tmp_path / "hub.db",
         token=HUB_TOKEN,
         host="127.0.0.1",
         port=0,

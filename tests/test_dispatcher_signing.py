@@ -1,7 +1,7 @@
-"""M2.4: dispatcher-side envelope signing tests.
+﻿"""M2.4: dispatcher-side envelope signing tests.
 
 These tests exercise the hub server end-to-end via FastAPI's TestClient.
-No mocking: a real SQLite blackboard, a real ed25519 key pair, and the real
+No mocking: a real rqlite blackboard, a real ed25519 key pair, and the real
 HTTP routing layer.
 """
 
@@ -23,7 +23,7 @@ HUB_TOKEN = "test-hub-token-aaaaaaaaaaaaaaaaa"
 
 def _make_app(tmp_path: Path, *, require_signed: bool = False):
     cfg = BlackboardConfig(
-        db_path=tmp_path / "hub.sqlite3",
+        db_path=tmp_path / "hub.db",
         token=HUB_TOKEN,
         host="127.0.0.1",
         port=0,

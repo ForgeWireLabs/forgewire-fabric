@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import importlib
 from pathlib import Path
@@ -94,7 +94,7 @@ def test_route_modules_export_exactly_one_router() -> None:
 
 def test_create_app_route_surface_matches_pre_split_snapshot(tmp_path: Path) -> None:
     cfg = BlackboardConfig(
-        db_path=tmp_path / "hub.sqlite3",
+        db_path=tmp_path / "hub.db",
         token="x" * 16,
         host="127.0.0.1",
         port=8765,

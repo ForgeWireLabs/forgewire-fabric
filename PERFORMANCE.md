@@ -1,4 +1,4 @@
-# forgewire-runtime — Performance
+﻿# forgewire-runtime — Performance
 
 Locked benchmark numbers for the Rust acceleration core. Numbers are wall-clock
 medians over 5 runs of N iterations, with the venv warm and the system idle.
@@ -122,7 +122,7 @@ sub-µs intersection). The shipped C.2 surface is the simpler **single-runner
 loop** that mirrors the existing Python contract one-for-one, because:
 
 1. The Python hub already calls `claim_next_task_v2` per-runner inside a
-   per-request SQLite transaction. There's no fan-out point to optimize.
+   per-request rqlite write. There's no fan-out point to optimize.
 2. Stage C.2 is a strict drop-in replacement for the loop body, so the new
    crate is by-construction parity-safe (verified by 10 000-case fuzz).
 3. The "fan-out across all queued runners" optimization belongs at the SQL
@@ -170,7 +170,7 @@ Speedup: ~3.5× on the counter call itself.
 | rust    | ~34 lines/sec |
 | python  | ~34 lines/sec |
 
-End-to-end is **dominated by SQLite WAL fsync** (`isolation_level=None` autocommit on each INSERT). The counter optimization eliminates the per-call `BEGIN IMMEDIATE` + `SELECT MAX(seq)` round-trip — measurable, but invisible behind disk fsync at this rate. The counter is **available, correct, and free**; the actual hub-throughput win will only be visible once we batch INSERTs (deferred, see follow-up).
+End-to-end is **dominated by rqlite Raft write** (`isolation_level=None` autocommit on each INSERT). The counter optimization eliminates the per-call `BEGIN IMMEDIATE` + `SELECT MAX(seq)` round-trip — measurable, but invisible behind disk fsync at this rate. The counter is **available, correct, and free**; the actual hub-throughput win will only be visible once we batch INSERTs (deferred, see follow-up).
 
 **Honest follow-up (deferred):**
 - Batch streams into per-task ring buffers and flush every ~50 ms in a background thread (or Tokio task). This is the original C.3 ambition; it requires reworking the HTTP path, not just the counter.

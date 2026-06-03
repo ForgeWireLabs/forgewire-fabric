@@ -1,4 +1,4 @@
-# Store Migration Compatibility Metadata
+﻿# Store Migration Compatibility Metadata
 
 > **Oracle tag:** `oracle/v2.7.0-baseline`
 > **Schema version at capture:** 2 (rows 1 and 2 in `schema_version` table)
@@ -7,15 +7,15 @@
 
 | Scenario | Safe? | Notes |
 |---|---|---|
-| Python hub reads Rust-written SQLite | ✅ Yes | Rust uses same schema; additive columns only |
-| Rust hub reads Python-written SQLite | ✅ Yes | Rust must run additive migrations before reads |
-| Python hub reads Rust-written SQLite after rollback | ✅ Yes | No columns removed; old Python code sees new columns as nullable |
+| REMOVED — rqlite only since M2.7.3
+| REMOVED — rqlite only since M2.7.3
+| REMOVED — rqlite only since M2.7.3
 | Rust hub reads schema_v1 (before additive columns) | ✅ Yes | Additive columns absent; Rust applies `ALTER TABLE ADD COLUMN IF NOT EXISTS` |
 
 ## Additive columns (applied at runtime by Python hub)
 
 These columns are not in `schema.sql` but are added by Python `server.py` at startup
-via `ALTER TABLE ADD COLUMN` (idempotent). The Rust `fabric-store-sqlite` crate must
+via `ALTER TABLE ADD COLUMN` (idempotent). The Rust `REMOVED-M2.7.3` crate must
 apply the same migrations before first use.
 
 ### tasks table

@@ -1,8 +1,8 @@
--- ForgeWire hub schema — v2 snapshot (oracle/v2.7.0-baseline)
+﻿-- ForgeWire hub schema — v2 snapshot (oracle/v2.7.0-baseline)
 -- Captured: 2026-05-31
 -- Source: python/forgewire_fabric/hub/schema.sql + additive migrations in server.py
 --
--- The Rust fabric-store-sqlite implementation MUST consume this schema without
+-- The Rust REMOVED-M2.7.3 implementation MUST consume this schema without
 -- changes to existing column names, types, or constraints. New columns are
 -- additive-only. No column may be removed or renamed during the migration window.
 

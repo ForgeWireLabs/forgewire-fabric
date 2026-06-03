@@ -1,4 +1,4 @@
-"""Host role summaries for the primary Hosts pane.
+﻿"""Host role summaries for the primary Hosts pane.
 
 Exercises the real hub API: installer-reported host role facts, runner
 heartbeats, dispatcher registration, and active hub/control identity all fuse
@@ -26,7 +26,7 @@ HUB_TOKEN = "test-hub-token-aaaaaaaaaaaaaaaaa"
 
 def _make_app(tmp_path: Path):
     cfg = BlackboardConfig(
-        db_path=tmp_path / "hub.sqlite3",
+        db_path=tmp_path / "hub.db",
         token=HUB_TOKEN,
         host="127.0.0.1",
         port=0,

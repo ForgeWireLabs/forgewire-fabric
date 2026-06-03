@@ -1472,7 +1472,7 @@ class Blackboard:
                 raise KeyError(task_id)
             if row["worker_id"] != worker_id:
                 raise PermissionError("worker mismatch on stream append")
-            # Lazy-prime the in-memory seq counter from SQLite. Idempotent:
+            # Lazy-prime the in-memory seq counter from rqlite. Idempotent:
             # the counter only accepts a higher floor, so concurrent racers
             # can't push it backwards.
             if not self._stream_counter.is_primed(task_id):

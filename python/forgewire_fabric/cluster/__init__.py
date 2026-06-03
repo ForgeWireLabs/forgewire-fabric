@@ -20,7 +20,8 @@ from __future__ import annotations
 
 from forgewire_fabric.cluster.blob_index import (
     CHUNKED_CAS_SCHEMA_VERSION,
-    SqliteBlobIndex,
+    LocalBlobIndex,
+    SqliteBlobIndex,  # backward-compat alias for LocalBlobIndex
 )
 from forgewire_fabric.cluster.blobs import (
     DEFAULT_BLOB_PULL_TIMEOUT_SECONDS,
@@ -118,9 +119,9 @@ __all__ = [
     "BlobUnavailable",
     "ContentAddressedStore",
     "sha256_hex",
-    # SQLite index
     "CHUNKED_CAS_SCHEMA_VERSION",
-    "SqliteBlobIndex",
+    "LocalBlobIndex",
+    "SqliteBlobIndex",  # backward-compat alias
     # Small-blob fabric
     "DEFAULT_BLOB_PULL_TIMEOUT_SECONDS",
     "BlobAnnouncement",

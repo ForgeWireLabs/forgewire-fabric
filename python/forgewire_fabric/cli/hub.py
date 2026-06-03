@@ -137,7 +137,7 @@ def hub_status(candidates: tuple[str, ...], token_file: str | None) -> None:
     _print_json({"active": active_url, "candidates": rows})
 
 
-@hub.command("snapshot-pull", help="Pull a snapshot from the active hub and store it locally.")
+@hub.command("snapshot-pull", help="Pull a rqlite backup from the active hub and store it locally.")
 @click.option("--candidate", "candidates", multiple=True)
 @click.option("--token-file", default=None)
 def hub_snapshot_pull(candidates: tuple[str, ...], token_file: str | None) -> None:
@@ -158,17 +158,19 @@ def hub_snapshot_pull(candidates: tuple[str, ...], token_file: str | None) -> No
                 async with _BC(u, token) as c:
                     return await c.fetch_snapshot()
             blob, headers = _async(_do())
-            (snap_dir / "latest.sqlite3").write_bytes(blob)
+            snap_file = snap_dir / "latest.backup"
+            snap_file.write_bytes(blob)
             (snap_dir / "latest.meta.json").write_text(
                 json.dumps({
                     "source_url": url,
                     "generated_at": float(headers.get("x-snapshot-generated-at", _time.time())),
                     "hub_started_at": float(headers.get("x-hub-started-at", 0) or 0),
                     "bytes": len(blob),
+                    "backend": "rqlite",
                 }, indent=2),
                 encoding="utf-8",
             )
-            click.echo(f"Pulled {len(blob)} bytes from {url} -> {snap_dir / 'latest.sqlite3'}")
+            click.echo(f"Pulled {len(blob)} bytes from {url} -> {snap_file}")
             return
         except _BE as exc:
             last_err = f"{url}: {exc}"
@@ -190,15 +192,12 @@ def hub_snapshot_pull(candidates: tuple[str, ...], token_file: str | None) -> No
 @click.option("--port", type=int, default=8765, show_default=True)
 @click.option("--bind-host", default="0.0.0.0", show_default=True)
 @click.option("--token", default=None, help="Hub token. Uses existing one if a hub.token file exists.")
-@click.option("--import-snapshot/--no-import-snapshot", default=True, show_default=True,
-              help="Import ~/.forgewire/snapshots/latest.sqlite3 before starting (atomic).")
 @click.option("--force", is_flag=True, default=False, help="Skip split-brain guard.")
 def hub_promote(
     candidates: tuple[str, ...],
     port: int,
     bind_host: str,
     token: str | None,
-    import_snapshot: bool,
     force: bool,
 ) -> None:
     from forgewire_fabric.hub.client import BlackboardClient as _BC
@@ -227,17 +226,7 @@ def hub_promote(
         token = token_file.read_text(encoding="utf-8").strip()
     if not token:
         token = secrets.token_hex(16)
-    # Snapshot import (offline, file-level: copy to db_path before service starts)
-    if import_snapshot:
-        snap = _P_home() / ".forgewire" / "snapshots" / "latest.sqlite3"
-        if snap.exists():
-            db_path = _P_home() / ".forgewire" / "hub.sqlite3"
-            db_path.parent.mkdir(parents=True, exist_ok=True)
-            db_path.write_bytes(snap.read_bytes())
-            click.echo(f"Imported snapshot: {snap} -> {db_path}")
-        else:
-            click.echo("No local snapshot to import (expected at ~/.forgewire/snapshots/latest.sqlite3); promoting empty.")
-    # Install + start the hub service.
+    # Install + start the hub service (rqlite manages its own state; no file import needed).
     from forgewire_fabric.install import install_hub
     install_hub(port=port, host=bind_host, token=token)
     click.echo("Promoted: hub service running on this node.")

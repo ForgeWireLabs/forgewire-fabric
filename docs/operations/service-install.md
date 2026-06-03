@@ -1,4 +1,4 @@
-# Operations: install hub & runner as a service
+﻿# Operations: install hub & runner as a service
 
 > **As of M2.7 (2026-06-02) the standard deployment uses the native Rust binaries.**
 > The Python hub/runner remain available as a fallback during the migration window.
@@ -193,7 +193,7 @@ curl -o hub-backup-$(date -u +%Y%m%dT%H%M%SZ).db \
     "http://localhost:4001/db/snapshot"
 ```
 
-For single-node SQLite fallback (non-production):
+For single-node SQLite fallback removed M2.7.3 — rqlite only.
 
 ```bash
 sqlite3 /var/lib/forgewire/hub.sqlite3 \

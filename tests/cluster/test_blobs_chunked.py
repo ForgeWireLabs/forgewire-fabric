@@ -1,4 +1,4 @@
-"""Tests for the chunked blob fabric over the in-memory cluster transport."""
+﻿"""Tests for the chunked blob fabric over the in-memory cluster transport."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from forgewire_fabric.cluster import (
     ContentAddressedStore,
     FabricEnvelope,
     InMemoryClusterTransport,
-    SqliteBlobIndex,
+    LocalBlobIndex,
     configure_chunked_blob_channels,
 )
 
@@ -31,12 +31,12 @@ def _digest(data: bytes) -> str:
 
 
 # ---------------------------------------------------------------------------
-# SqliteBlobIndex
+# LocalBlobIndex (in-memory + JSON sidecar)
 # ---------------------------------------------------------------------------
 
 
-async def test_sqlite_index_round_trip(tmp_path: Path) -> None:
-    index = SqliteBlobIndex(tmp_path / "cas.sqlite3")
+async def test_local_index_round_trip(tmp_path: Path) -> None:
+    index = LocalBlobIndex.from_db_path(tmp_path / "cas.json")
     try:
         index.upsert(digest="abc123", size=42, namespace="weights")
         record = index.get("abc123")
@@ -50,13 +50,13 @@ async def test_sqlite_index_round_trip(tmp_path: Path) -> None:
         index.close()
 
 
-async def test_sqlite_index_persists_across_reopens(tmp_path: Path) -> None:
-    db_path = tmp_path / "cas.sqlite3"
-    index = SqliteBlobIndex(db_path)
+async def test_local_index_persists_across_reopens(tmp_path: Path) -> None:
+    db_path = tmp_path / "cas.json"
+    index = LocalBlobIndex.from_db_path(db_path)
     index.upsert(digest="deadbeef", size=128, namespace="lora")
     index.close()
 
-    reopened = SqliteBlobIndex(db_path)
+    reopened = LocalBlobIndex.from_db_path(db_path)
     try:
         record = reopened.get("deadbeef")
         assert record is not None
@@ -66,8 +66,8 @@ async def test_sqlite_index_persists_across_reopens(tmp_path: Path) -> None:
         reopened.close()
 
 
-async def test_sqlite_index_least_recently_accessed_order(tmp_path: Path) -> None:
-    index = SqliteBlobIndex(tmp_path / "cas.sqlite3")
+async def test_local_index_least_recently_accessed_order(tmp_path: Path) -> None:
+    index = LocalBlobIndex.from_db_path(tmp_path / "cas.json")
     try:
         index.upsert(digest="aaa", size=1, last_accessed_at=100.0)
         index.upsert(digest="bbb", size=2, last_accessed_at=50.0)
@@ -103,7 +103,7 @@ async def test_chunked_pull_round_trip_multiple_chunks(tmp_path: Path) -> None:
             store=holder_store,
             chunk_size=10,
         )
-        requestor_index = SqliteBlobIndex(tmp_path / "cas.sqlite3")
+        requestor_index = LocalBlobIndex.from_db_path(tmp_path / "cas.json")
         requestor = ChunkedBlobFabric(
             transport=transport,
             node_id="requestor",

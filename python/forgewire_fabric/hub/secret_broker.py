@@ -1,4 +1,4 @@
-"""M2.5.5: hub-side sealed secret broker.
+﻿"""M2.5.5: hub-side sealed secret broker.
 
 Stores caller-supplied secrets (think ``GITHUB_TOKEN``, ``OPENAI_API_KEY``)
 encrypted at rest with a hub-local master key, and decrypts them on demand
@@ -51,7 +51,6 @@ import base64
 import logging
 import os
 import secrets as _stdlib_secrets
-import sqlite3
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -112,7 +111,7 @@ class FileKeyProvider:
 
     Sets POSIX 0600 perms on creation; on Windows the inherited NTFS ACL
     of the parent directory is left untouched (typical hub deployment
-    puts the key alongside the SQLite DB which already lives in a
+    puts the key alongside the data directory which lives in a
     user-scoped directory).
     """
 
@@ -227,8 +226,8 @@ def _coerce_ciphertext(stored: Any) -> bytes:
 
     Ciphertext is written as base64-encoded TEXT so it round-trips over
     the rqlite JSON wire (which cannot carry Python ``bytes`` params).
-    SQLite stores the value with TEXT affinity in that case. Older or
-    direct-SQLite rows that were written as a ``BLOB`` come back as
+    rqlite stores the value with TEXT affinity in that case. Older or
+    legacy rows that were written as a ``BLOB`` come back as
     ``bytes``/``memoryview``; accept those too for forward compatibility.
     """
     if isinstance(stored, (bytes, bytearray, memoryview)):
@@ -277,10 +276,10 @@ class SecretBroker:
             ) from exc
         return pt.decode("utf-8")
 
-    # ----- crud (operates on caller-provided sqlite3 connection) -----
+    # ----- crud (operates on caller-provided rqlite connection) -----
 
     @staticmethod
-    def init_schema(conn: sqlite3.Connection) -> None:
+    def init_schema(conn: Any) -> None:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS secrets (
@@ -296,7 +295,7 @@ class SecretBroker:
 
     def put(
         self,
-        conn: sqlite3.Connection,
+        conn: Any,
         *,
         name: str,
         value: str,
@@ -337,7 +336,7 @@ class SecretBroker:
 
     def rotate(
         self,
-        conn: sqlite3.Connection,
+        conn: Any,
         *,
         name: str,
         value: str,
@@ -362,7 +361,7 @@ class SecretBroker:
         self._value_cache = None
         return {"name": name, "version": version, "last_rotated_at": now_iso}
 
-    def delete(self, conn: sqlite3.Connection, *, name: str) -> bool:
+    def delete(self, conn: Any, *, name: str) -> bool:
         cur = conn.execute("DELETE FROM secrets WHERE name = ?", (name,))
         deleted = (cur.rowcount or 0) > 0
         if deleted:
@@ -370,7 +369,7 @@ class SecretBroker:
         return deleted
 
     @staticmethod
-    def list_metadata(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    def list_metadata(conn: Any) -> list[dict[str, Any]]:
         rows = conn.execute(
             "SELECT name, version, created_at, updated_at, last_rotated_at "
             "FROM secrets ORDER BY name ASC"
@@ -379,7 +378,7 @@ class SecretBroker:
 
     def resolve(
         self,
-        conn: sqlite3.Connection,
+        conn: Any,
         *,
         names: list[str],
     ) -> dict[str, str]:
@@ -407,7 +406,7 @@ class SecretBroker:
     # ----- redaction -----
 
     def _load_value_cache(
-        self, conn_factory: Callable[[], sqlite3.Connection]
+        self, conn_factory: Callable[[], Any]
     ) -> dict[str, str]:
         if self._value_cache is not None:
             return self._value_cache
@@ -427,7 +426,7 @@ class SecretBroker:
         self,
         text: str | None,
         *,
-        conn_factory: Callable[[], sqlite3.Connection],
+        conn_factory: Callable[[], Any],
     ) -> str | None:
         """Replace any stored secret value substring with ``***SECRET:NAME***``.
 

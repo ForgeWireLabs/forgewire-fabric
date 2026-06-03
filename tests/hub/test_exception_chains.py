@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
@@ -27,7 +27,7 @@ def test_dispatch_task_preserves_storage_http_error_cause(
 ) -> None:
     app = create_app(
         BlackboardConfig(
-            db_path=tmp_path / "hub.sqlite3",
+            db_path=tmp_path / "hub.db",
             token=HUB_TOKEN,
             host="127.0.0.1",
             port=0,

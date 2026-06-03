@@ -1,4 +1,4 @@
-"""Async HTTP client for the blackboard REST API.
+﻿"""Async HTTP client for the blackboard REST API.
 
 Used by both MCP servers (dispatcher and runner). Single source of truth for
 endpoints, auth, and error mapping.
@@ -236,7 +236,7 @@ class BlackboardClient:
         return result
 
     async def fetch_snapshot(self) -> tuple[bytes, dict[str, str]]:
-        """Pull an atomic SQLite snapshot from the active hub.
+        """Pull a rqlite backup from the active hub.
 
         Returns ``(body, headers)`` so callers can stamp the snapshot with the
         ``X-Snapshot-Generated-At`` / ``X-Hub-Started-At`` metadata when

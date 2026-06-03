@@ -1,24 +1,14 @@
-"""M2.5.5a: sealed secret broker — broker unit tests + HTTP integration.
+﻿"""M2.5.5a: sealed secret broker — HTTP integration tests (rqlite only).
 
-The broker is *new* code so we cover it from two angles:
+SQLite-backed unit tests for SecretBroker internals were removed when SQLite
+was retired (M2.7.3). The HTTP integration tests below cover the same surface
+via the FastAPI layer against a real rqlite instance.
 
-* ``test_broker_*`` — direct calls against ``SecretBroker`` over a real
-  on-disk SQLite. Verifies seal/open, version bumps, rotation,
-  deletion, redaction, and tamper detection.
-* ``test_http_*`` and ``test_e2e_*`` — the FastAPI surface
-  (``POST/GET/DELETE /secrets``) plus an end-to-end dispatch → claim-v2
-  → submit_result round-trip showing secret injection on claim,
-  audit-name-only on the chain, and value redaction in
-  ``log_tail`` / ``error`` / progress / stream payloads.
-
-Mocking policy: none. Real AES-GCM, real SQLite, real FastAPI app.
+These tests require a live rqlite — see tests/hub/conftest.py.
 """
 
 from __future__ import annotations
 
-import json
-import secrets as _stdlib_secrets
-import sqlite3
 import tempfile
 import time
 from pathlib import Path
@@ -41,181 +31,8 @@ HUB_TOKEN = "z" * 32
 BEARER = {"Authorization": f"Bearer {HUB_TOKEN}"}
 
 
-# ---------------------------------------------------------------- helpers
-
-
-def _conn(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
 def _now_iso(offset: int = 0) -> str:
-    return time.strftime(
-        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + offset)
-    )
-
-
-def _broker(tmp_path: Path) -> tuple[SecretBroker, Path]:
-    db = tmp_path / "secrets.db"
-    conn = _conn(db)
-    SecretBroker.init_schema(conn)
-    conn.commit()
-    conn.close()
-    key_path = tmp_path / "master.key"
-    return SecretBroker(FileKeyProvider(path=key_path)), db
-
-
-# ---------------------------------------------------------------- unit
-
-
-def test_broker_put_resolve_roundtrip(tmp_path: Path) -> None:
-    broker, db = _broker(tmp_path)
-    with _conn(db) as conn:
-        broker.put(conn, name="GITHUB_TOKEN", value="ghp_abc123", now_iso=_now_iso())
-        conn.commit()
-    with _conn(db) as conn:
-        resolved = broker.resolve(conn, names=["GITHUB_TOKEN"])
-    assert resolved == {"GITHUB_TOKEN": "ghp_abc123"}
-
-
-def test_broker_put_bumps_version_on_overwrite(tmp_path: Path) -> None:
-    broker, db = _broker(tmp_path)
-    with _conn(db) as conn:
-        broker.put(conn, name="API_KEY", value="v1", now_iso=_now_iso())
-        broker.put(conn, name="API_KEY", value="v2", now_iso=_now_iso(1))
-        conn.commit()
-    with _conn(db) as conn:
-        rows = SecretBroker.list_metadata(conn)
-        resolved = broker.resolve(conn, names=["API_KEY"])
-    assert len(rows) == 1
-    assert rows[0]["name"] == "API_KEY"
-    assert rows[0]["version"] == 2
-    assert resolved["API_KEY"] == "v2"
-
-
-def test_broker_rotate_requires_existing(tmp_path: Path) -> None:
-    broker, db = _broker(tmp_path)
-    with _conn(db) as conn, pytest.raises(KeyError):
-        broker.rotate(conn, name="NOPE", value="v1", now_iso=_now_iso())
-
-
-def test_broker_rotate_sets_last_rotated(tmp_path: Path) -> None:
-    broker, db = _broker(tmp_path)
-    with _conn(db) as conn:
-        broker.put(conn, name="ROTATABLE", value="v1", now_iso=_now_iso())
-        broker.rotate(conn, name="ROTATABLE", value="v2", now_iso=_now_iso(1))
-        conn.commit()
-    with _conn(db) as conn:
-        rows = SecretBroker.list_metadata(conn)
-    assert rows[0]["last_rotated_at"] is not None
-    assert rows[0]["version"] == 2
-
-
-def test_broker_delete_removes_row(tmp_path: Path) -> None:
-    broker, db = _broker(tmp_path)
-    with _conn(db) as conn:
-        broker.put(conn, name="DELME", value="x", now_iso=_now_iso())
-        conn.commit()
-    with _conn(db) as conn:
-        assert broker.delete(conn, name="DELME") is True
-        conn.commit()
-        assert broker.delete(conn, name="DELME") is False
-        assert SecretBroker.list_metadata(conn) == []
-
-
-def test_broker_resolve_skips_missing_names(tmp_path: Path) -> None:
-    broker, db = _broker(tmp_path)
-    with _conn(db) as conn:
-        broker.put(conn, name="PRESENT", value="v", now_iso=_now_iso())
-        conn.commit()
-    with _conn(db) as conn:
-        out = broker.resolve(conn, names=["PRESENT", "GHOST"])
-    assert out == {"PRESENT": "v"}
-
-
-def test_broker_list_metadata_never_exposes_ciphertext(tmp_path: Path) -> None:
-    broker, db = _broker(tmp_path)
-    with _conn(db) as conn:
-        broker.put(conn, name="SHHH", value="topsecret", now_iso=_now_iso())
-        conn.commit()
-    with _conn(db) as conn:
-        meta = SecretBroker.list_metadata(conn)
-    keys = set(meta[0].keys())
-    assert "ciphertext" not in keys
-    assert {"name", "version", "created_at", "updated_at", "last_rotated_at"} <= keys
-    blob = json.dumps(meta).encode("utf-8")
-    assert b"topsecret" not in blob
-
-
-def test_broker_tampered_ciphertext_raises(tmp_path: Path) -> None:
-    broker, db = _broker(tmp_path)
-    with _conn(db) as conn:
-        broker.put(conn, name="GUARDED", value="hunter2", now_iso=_now_iso())
-        conn.commit()
-    # Flip a byte in the stored ciphertext (past the 12-byte nonce so we
-    # corrupt the ciphertext+tag and force an AES-GCM verification fail).
-    # Ciphertext is stored base64-encoded for rqlite wire compatibility.
-    import base64 as _b64
-    with _conn(db) as conn:
-        row = conn.execute("SELECT ciphertext FROM secrets WHERE name = ?", ("GUARDED",)).fetchone()
-        blob = bytearray(_b64.b64decode(row["ciphertext"]))
-        blob[15] ^= 0xFF
-        tampered = _b64.b64encode(bytes(blob)).decode("ascii")
-        conn.execute("UPDATE secrets SET ciphertext = ? WHERE name = ?", (tampered, "GUARDED"))
-        conn.commit()
-    with _conn(db) as conn, pytest.raises(PermissionError):
-        broker.resolve(conn, names=["GUARDED"])
-
-
-def test_broker_wrong_master_key_fails_decrypt(tmp_path: Path) -> None:
-    broker, db = _broker(tmp_path)
-    with _conn(db) as conn:
-        broker.put(conn, name="ENC", value="value", now_iso=_now_iso())
-        conn.commit()
-    # New broker pointed at a fresh, unrelated key file.
-    other = SecretBroker(FileKeyProvider(path=tmp_path / "other.key"))
-    with _conn(db) as conn, pytest.raises(PermissionError):
-        other.resolve(conn, names=["ENC"])
-
-
-def test_broker_redact_replaces_values_and_skips_when_empty(tmp_path: Path) -> None:
-    broker, db = _broker(tmp_path)
-    with _conn(db) as conn:
-        broker.put(conn, name="TOK", value="shhh-9999", now_iso=_now_iso())
-        broker.put(conn, name="SHORT", value="abc", now_iso=_now_iso(1))
-        conn.commit()
-
-    def factory() -> sqlite3.Connection:
-        return _conn(db)
-
-    out = broker.redact("log: shhh-9999 leaked; also abc", conn_factory=factory)
-    assert "shhh-9999" not in out
-    assert REDACTION_MARKER.format(name="TOK") in out
-    assert REDACTION_MARKER.format(name="SHORT") in out
-    # None and empty pass through.
-    assert broker.redact(None, conn_factory=factory) is None
-    assert broker.redact("", conn_factory=factory) == ""
-
-
-def test_broker_redact_invalidated_after_rotation(tmp_path: Path) -> None:
-    broker, db = _broker(tmp_path)
-
-    def factory() -> sqlite3.Connection:
-        return _conn(db)
-
-    with _conn(db) as conn:
-        broker.put(conn, name="ROT", value="old-value", now_iso=_now_iso())
-        conn.commit()
-    assert "old-value" not in (broker.redact("contains old-value", conn_factory=factory) or "")
-    with _conn(db) as conn:
-        broker.rotate(conn, name="ROT", value="new-value", now_iso=_now_iso(1))
-        conn.commit()
-    # rotate() should have dropped the cache; new value redacts, old
-    # value no longer matches.
-    out = broker.redact("contains new-value and old-value", conn_factory=factory)
-    assert "new-value" not in out
-    assert "old-value" in out  # old value is no longer in the store
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + offset))
 
 
 def test_env_key_provider_validates_hex_length() -> None:
@@ -229,7 +46,6 @@ def test_env_key_provider_validates_hex_length() -> None:
             p.load()
     finally:
         os.environ.pop("FW_TEST_KEY", None)
-
 
 # ---------------------------------------------------------------- http
 

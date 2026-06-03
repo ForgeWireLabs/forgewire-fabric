@@ -1,6 +1,6 @@
-//! Store trait definitions for ForgeWire Fabric hub persistence.
+﻿//! Store trait definitions for ForgeWire Fabric hub persistence.
 //!
-//! These traits define the durable state contract shared by SQLite and rqlite
+//! These traits define the durable state contract for the rqlite backend
 //! backends. The hub daemon programs against these traits; the backend is
 //! selected at startup.
 //!

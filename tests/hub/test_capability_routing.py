@@ -1,4 +1,4 @@
-"""M2.5.4: capability matcher + smart routing.
+﻿"""M2.5.4: capability matcher + smart routing.
 
 Two layers:
 
@@ -8,7 +8,7 @@ Two layers:
   ``required_capabilities``, verify the right runner claims it and the
   wrong one gets ``waiting_for_capability``.
 
-Mocking policy: none. Real hub, real on-disk SQLite.
+Mocking policy: none. Real hub, real rqlite.
 """
 
 from __future__ import annotations
