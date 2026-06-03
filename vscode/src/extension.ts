@@ -1477,7 +1477,7 @@ async function openSettings(): Promise<void> {
     return;
   }
   const panel = vscode.window.createWebviewPanel(
-    "forgewire.settings",
+    "forgewire.settingsWebview",
     "ForgeWire Settings",
     vscode.ViewColumn.Active,
     { enableScripts: true, retainContextWhenHidden: true }
@@ -1497,6 +1497,10 @@ async function openSettings(): Promise<void> {
     refreshIntervalSeconds: cfg.get<number>("refreshIntervalSeconds") ?? 10,
     autoStartHubPort: cfg.get<number>("autoStartHubPort") ?? 8765,
     workspaceRoot: wsRoot,
+    staleQueuedMinutes: cfg.get<number>("tasks.staleQueuedMinutes") ?? 30,
+    approvalAgeBadgeHours: cfg.get<number>("approvals.ageBadgeHours") ?? 24,
+    clusterRepoRoot: cfg.get<string>("cluster.repoRoot") ?? "",
+    clusterPreferredNode: cfg.get<string>("cluster.preferredNode") ?? "",
   };
 
   panel.webview.html = settingsHtml(initial);
@@ -1510,6 +1514,10 @@ async function openSettings(): Promise<void> {
         await c.update("pythonPath", String(msg.pythonPath ?? "").trim(), vscode.ConfigurationTarget.Global);
         await c.update("refreshIntervalSeconds", Number(msg.refreshIntervalSeconds) || 10, vscode.ConfigurationTarget.Global);
         await c.update("autoStartHubPort", Number(msg.autoStartHubPort) || 8765, vscode.ConfigurationTarget.Global);
+        await c.update("tasks.staleQueuedMinutes", Number(msg.staleQueuedMinutes) ?? 30, vscode.ConfigurationTarget.Global);
+        await c.update("approvals.ageBadgeHours", Number(msg.approvalAgeBadgeHours) || 24, vscode.ConfigurationTarget.Global);
+        await c.update("cluster.repoRoot", String(msg.clusterRepoRoot ?? "").trim(), vscode.ConfigurationTarget.Global);
+        await c.update("cluster.preferredNode", String(msg.clusterPreferredNode ?? "").trim(), vscode.ConfigurationTarget.Global);
         const tok = String(msg.hubToken ?? "").trim();
         if (tok) {
           await c.update("hubToken", tok, vscode.ConfigurationTarget.Global);
@@ -1660,12 +1668,30 @@ function settingsHtml(init: Record<string, unknown>): string {
 <label for="autoStartHubPort">Hub port</label>
 <input type="number" id="autoStartHubPort" min="1" max="65535" />
 
+<h2>Tasks</h2>
+<label for="staleQueuedMinutes">Stale queue threshold (minutes)</label>
+<div class="hint">Tasks queued longer than this turn yellow with a Cancel button. Set to <code>0</code> to disable — useful for long-running queues.</div>
+<input type="number" id="staleQueuedMinutes" min="0" max="10080" />
+
+<label for="approvalAgeBadgeHours">Approval age badge (hours)</label>
+<div class="hint">Show a warning badge on approvals pending longer than this many hours.</div>
+<input type="number" id="approvalAgeBadgeHours" min="1" max="720" />
+
+<h2>Cluster &amp; DR</h2>
+<label for="clusterRepoRoot">Repo root (optional)</label>
+<div class="hint">Path to the forgewire-fabric checkout containing <code>config/cluster.yaml</code>. Auto-detected from open workspace if empty.</div>
+<input type="text" id="clusterRepoRoot" />
+
+<label for="clusterPreferredNode">Preferred rqlite node (optional)</label>
+<div class="hint">Override <code>cluster.yaml preferred_node</code> for DR operations on this machine. Empty = use cluster.yaml.</div>
+<input type="text" id="clusterPreferredNode" />
+
 <h2>Other</h2>
 <label for="pythonPath">Python interpreter (optional)</label>
 <div class="hint">Empty = auto-detect (uses python.defaultInterpreterPath, then python3, then python).</div>
 <input type="text" id="pythonPath" />
 
-<label for="refreshIntervalSeconds">Refresh interval (seconds)</label>
+<label for="refreshIntervalSeconds">Sidebar refresh interval (seconds)</label>
 <input type="number" id="refreshIntervalSeconds" min="2" max="600" />
 
 <div class="actions">
@@ -1686,6 +1712,10 @@ function settingsHtml(init: Record<string, unknown>): string {
   f('refreshIntervalSeconds').value = init.refreshIntervalSeconds || 10;
   f('autoStartHubPort').value = init.autoStartHubPort || 8765;
   f('workspaceRoot').value = init.workspaceRoot || '';
+  f('staleQueuedMinutes').value = init.staleQueuedMinutes ?? 30;
+  f('approvalAgeBadgeHours').value = init.approvalAgeBadgeHours || 24;
+  f('clusterRepoRoot').value = init.clusterRepoRoot || '';
+  f('clusterPreferredNode').value = init.clusterPreferredNode || '';
 
   function payload() {
     return {
@@ -1696,6 +1726,10 @@ function settingsHtml(init: Record<string, unknown>): string {
       refreshIntervalSeconds: f('refreshIntervalSeconds').value,
       autoStartHubPort: f('autoStartHubPort').value,
       workspaceRoot: f('workspaceRoot').value,
+      staleQueuedMinutes: f('staleQueuedMinutes').value,
+      approvalAgeBadgeHours: f('approvalAgeBadgeHours').value,
+      clusterRepoRoot: f('clusterRepoRoot').value,
+      clusterPreferredNode: f('clusterPreferredNode').value,
       role: (document.querySelector('input[name=role]:checked') || {}).value || 'runner',
     };
   }
