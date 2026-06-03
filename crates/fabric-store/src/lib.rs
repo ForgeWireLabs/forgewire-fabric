@@ -380,6 +380,46 @@ pub trait NoteStore: Send + Sync {
     async fn read_notes(&self, task_id: i64, after_id: i64) -> StoreResult<Vec<NoteRow>>;
 }
 
+// -- Cost ledger (M2.5.2) ----------------------------------------------------
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CostRow {
+    pub id: i64,
+    pub task_id: String,
+    pub dispatcher_id: Option<String>,
+    pub runner_id: Option<String>,
+    pub model_id: String,
+    pub prompt_tokens: i64,
+    pub completion_tokens: i64,
+    pub cost_usd: f64,
+    pub wall_seconds: f64,
+    pub runner_cpu_seconds: f64,
+    pub created_at: String,
+}
+
+#[async_trait]
+pub trait CostStore: Send + Sync {
+    async fn record_cost(
+        &self,
+        task_id: &str,
+        dispatcher_id: Option<&str>,
+        runner_id: Option<&str>,
+        model_id: &str,
+        prompt_tokens: i64,
+        completion_tokens: i64,
+        cost_usd: f64,
+        wall_seconds: f64,
+        runner_cpu_seconds: f64,
+        now: &str,
+    ) -> StoreResult<CostRow>;
+
+    async fn query_cost(
+        &self,
+        since_iso: Option<&str>,
+        limit: i64,
+    ) -> StoreResult<Vec<CostRow>>;
+}
+
 // -- Composite trait ---------------------------------------------------------
 
 /// The full store contract. A backend implements all sub-traits.
@@ -399,6 +439,7 @@ pub trait FabricStore:
     + HostRoleStore
     + NoteStore
     + SchemaStore
+    + CostStore
     + Send
     + Sync
 {

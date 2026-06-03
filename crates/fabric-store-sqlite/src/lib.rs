@@ -1374,6 +1374,22 @@ impl HostRoleStore for SqliteStore {
 
 impl FabricStore for SqliteStore {}
 
+// -- Cost ledger stub (SQLite hub path retired M2.7.3 — rqlite only) ---------
+// SqliteStore satisfies the FabricStore composite trait but cost operations
+// are not implemented. Production hub always uses RqliteStore.
+#[async_trait]
+impl CostStore for SqliteStore {
+    async fn record_cost(&self, _task_id: &str, _dispatcher_id: Option<&str>,
+        _runner_id: Option<&str>, _model_id: &str, _prompt_tokens: i64,
+        _completion_tokens: i64, _cost_usd: f64, _wall_seconds: f64,
+        _runner_cpu_seconds: f64, _now: &str) -> StoreResult<CostRow> {
+        Err(StoreError::Backend("cost_ledger not available on retired SQLite hub path — use rqlite".into()))
+    }
+    async fn query_cost(&self, _since_iso: Option<&str>, _limit: i64) -> StoreResult<Vec<CostRow>> {
+        Err(StoreError::Backend("cost_ledger not available on retired SQLite hub path — use rqlite".into()))
+    }
+}
+
 // -- Notes -------------------------------------------------------------------
 
 #[async_trait]

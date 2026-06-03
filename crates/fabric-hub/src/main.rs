@@ -30,10 +30,10 @@ use axum::middleware;
 use axum::routing::{delete, get, post, put};
 use axum::Router;
 use fabric_hub::auth::require_bearer;
-use fabric_hub::routes::{approvals, audit, cluster, dispatchers, health, labels, runners, secrets, streams, tasks};
+use fabric_hub::routes::{approvals, audit, cluster, cost, dispatchers, health, labels, runners, secrets, streams, tasks};
 use fabric_hub::state::HubState;
 use fabric_policy::{DispatchGate, FabricPolicy};
-use fabric_store::{FabricStore, SchemaStore};
+use fabric_store::{CostStore, FabricStore, SchemaStore};
 use fabric_streams::{DurabilityProfile, StreamBuffer};
 use tracing::info;
 
@@ -169,6 +169,10 @@ async fn main() {
         .route("/audit/tasks/{task_id}", get(audit::audit_for_task))
         .route("/audit/tail", get(audit::audit_tail))
         .route("/audit/day/{day}", get(cluster::audit_day))
+        // --- Cost (M2.5.2 — rqlite only) ---
+        .route("/cost/summary", get(cost::cost_summary))
+        .route("/cost/records", get(cost::cost_records))
+        .route("/cost/budget", get(cost::cost_budget))
         // --- Secrets ---
         .route("/secrets", post(secrets::put_or_rotate_secret))
         .route("/secrets", get(secrets::list_secrets))

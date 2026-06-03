@@ -1197,6 +1197,99 @@ impl NoteStore for RqliteStore {
     }
 }
 
+#[async_trait]
+impl CostStore for RqliteStore {
+    async fn record_cost(
+        &self,
+        task_id: &str,
+        dispatcher_id: Option<&str>,
+        runner_id: Option<&str>,
+        model_id: &str,
+        prompt_tokens: i64,
+        completion_tokens: i64,
+        cost_usd: f64,
+        wall_seconds: f64,
+        runner_cpu_seconds: f64,
+        now: &str,
+    ) -> StoreResult<CostRow> {
+        let sql = "INSERT INTO cost_ledger \
+            (task_id, dispatcher_id, runner_id, model_id, prompt_tokens, completion_tokens, \
+             cost_usd, wall_seconds, runner_cpu_seconds, created_at) \
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+        let params = [
+            serde_json::Value::String(task_id.to_owned()),
+            dispatcher_id.map_or(serde_json::Value::Null, |v| serde_json::Value::String(v.to_owned())),
+            runner_id.map_or(serde_json::Value::Null, |v| serde_json::Value::String(v.to_owned())),
+            serde_json::Value::String(model_id.to_owned()),
+            serde_json::json!(prompt_tokens),
+            serde_json::json!(completion_tokens),
+            serde_json::json!(cost_usd),
+            serde_json::json!(wall_seconds),
+            serde_json::json!(runner_cpu_seconds),
+            serde_json::Value::String(now.to_owned()),
+        ];
+        let id = self.execute_insert(sql, &params).await?;
+        Ok(CostRow {
+            id,
+            task_id: task_id.to_owned(),
+            dispatcher_id: dispatcher_id.map(str::to_owned),
+            runner_id: runner_id.map(str::to_owned),
+            model_id: model_id.to_owned(),
+            prompt_tokens,
+            completion_tokens,
+            cost_usd,
+            wall_seconds,
+            runner_cpu_seconds,
+            created_at: now.to_owned(),
+        })
+    }
+
+    async fn query_cost(
+        &self,
+        since_iso: Option<&str>,
+        limit: i64,
+    ) -> StoreResult<Vec<CostRow>> {
+        let rows = if let Some(since) = since_iso {
+            let params = [serde_json::Value::String(since.to_owned()), serde_json::json!(limit)];
+            self.query(
+                "SELECT id, task_id, dispatcher_id, runner_id, model_id, \
+                 prompt_tokens, completion_tokens, cost_usd, wall_seconds, \
+                 runner_cpu_seconds, created_at \
+                 FROM cost_ledger WHERE created_at >= ? \
+                 ORDER BY created_at DESC LIMIT ?",
+                &params,
+            ).await?
+        } else {
+            let params = [serde_json::json!(limit)];
+            self.query(
+                "SELECT id, task_id, dispatcher_id, runner_id, model_id, \
+                 prompt_tokens, completion_tokens, cost_usd, wall_seconds, \
+                 runner_cpu_seconds, created_at \
+                 FROM cost_ledger ORDER BY created_at DESC LIMIT ?",
+                &params,
+            ).await?
+        };
+        Ok(rows
+            .iter()
+            .filter_map(|r| {
+                Some(CostRow {
+                    id: r.get("id").and_then(|v| v.as_i64()).unwrap_or(0),
+                    task_id: r.get("task_id").and_then(|v| v.as_str()).unwrap_or("").to_owned(),
+                    dispatcher_id: r.get("dispatcher_id").and_then(|v| v.as_str()).map(str::to_owned),
+                    runner_id: r.get("runner_id").and_then(|v| v.as_str()).map(str::to_owned),
+                    model_id: r.get("model_id").and_then(|v| v.as_str()).unwrap_or("").to_owned(),
+                    prompt_tokens: r.get("prompt_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
+                    completion_tokens: r.get("completion_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
+                    cost_usd: r.get("cost_usd").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                    wall_seconds: r.get("wall_seconds").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                    runner_cpu_seconds: r.get("runner_cpu_seconds").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                    created_at: r.get("created_at").and_then(|v| v.as_str()).unwrap_or("").to_owned(),
+                })
+            })
+            .collect())
+    }
+}
+
 impl FabricStore for RqliteStore {}
 
 fn utc_offset(offset_secs: i64) -> String {

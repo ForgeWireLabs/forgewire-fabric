@@ -1,6 +1,7 @@
 pub mod approvals;
 pub mod audit;
 pub mod cluster;
+pub mod cost;
 pub mod dispatchers;
 pub mod health;
 pub mod labels;
