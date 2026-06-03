@@ -18,6 +18,7 @@ import {
   HostsProvider,
   HubProvider,
   SecretsProvider,
+  SettingsProvider,
   TasksProvider,
 } from "./treeProviders";
 
@@ -31,6 +32,7 @@ let hostsProvider: HostsProvider;
 let approvalsProvider: ApprovalsProvider;
 let auditProvider: AuditProvider;
 let secretsProvider: SecretsProvider;
+let settingsProvider: SettingsProvider;
 let tasksProvider: TasksProvider;
 let refreshTimer: NodeJS.Timeout | undefined;
 let context: vscode.ExtensionContext;
@@ -71,6 +73,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   );
   auditProvider = new AuditProvider(getClient);
   secretsProvider = new SecretsProvider(getClient);
+  settingsProvider = new SettingsProvider();
   tasksProvider = new TasksProvider(getClient, 100, ctx);
   ctx.subscriptions.push(
     vscode.window.registerTreeDataProvider("forgewire.hub", hubProvider),
@@ -78,7 +81,8 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     vscode.window.registerTreeDataProvider("forgewire.approvals", approvalsProvider),
     vscode.window.registerTreeDataProvider("forgewire.audit", auditProvider),
     vscode.window.registerTreeDataProvider("forgewire.secrets", secretsProvider),
-    vscode.window.registerTreeDataProvider("forgewire.tasks", tasksProvider)
+    vscode.window.registerTreeDataProvider("forgewire.tasks", tasksProvider),
+    vscode.window.registerTreeDataProvider("forgewire.settings", settingsProvider)
   );
 
   ctx.subscriptions.push(
@@ -133,6 +137,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
         updateStatus();
         scheduleRefresh();
         refreshAll();
+        settingsProvider.refresh();
       }
     })
   );

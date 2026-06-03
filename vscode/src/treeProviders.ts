@@ -1929,3 +1929,151 @@ export class SecretsProvider implements vscode.TreeDataProvider<SecretNode> {
     return item;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+// A sidebar tree that exposes every ForgeWire VS Code setting grouped by
+// category. Each leaf shows the current value as its description and opens
+// the standard Settings editor focused on that exact key when clicked.
+
+export type SettingNode =
+  | { kind: "category"; id: string; label: string; icon: string }
+  | { kind: "setting"; key: string; label: string; description: string; tooltip: string };
+
+interface SettingDef {
+  key: string;           // the forgewire.* key (without "forgewire." prefix)
+  label: string;
+  tooltip: string;
+  sensitive?: boolean;   // mask the value in the description
+}
+
+const SETTING_CATEGORIES: Array<{ id: string; label: string; icon: string; settings: SettingDef[] }> = [
+  {
+    id: "connection",
+    label: "Connection",
+    icon: "plug",
+    settings: [
+      { key: "hubUrl",       label: "Hub URL",          tooltip: "Base URL of the active ForgeWire hub." },
+      { key: "hubTokenFile", label: "Token file",       tooltip: "Path to a file containing the hub bearer token.", sensitive: true },
+      { key: "hubToken",     label: "Token (inline)",   tooltip: "Bearer token stored in VS Code SecretStorage. Use 'Set Hub Token…' command instead of typing here.", sensitive: true },
+      { key: "hubName",      label: "Hub name",         tooltip: "Friendly display name shown in the sidebar." },
+      { key: "hubPin",       label: "Pinned hub URL",   tooltip: "When set, the extension always dispatches to this URL. Clear with 'Unpin Hub'." },
+    ],
+  },
+  {
+    id: "failover",
+    label: "Failover candidates",
+    icon: "server-environment",
+    settings: [
+      { key: "hubCandidates",     label: "Candidates",         tooltip: "Ordered list of hub URLs probed for failover." },
+      { key: "runnerAliases",     label: "Runner aliases",     tooltip: "Map of runner_id → friendly display name." },
+      { key: "refreshIntervalSeconds", label: "Refresh interval (s)", tooltip: "How often the sidebar refreshes runners and tasks." },
+    ],
+  },
+  {
+    id: "tasks",
+    label: "Tasks",
+    icon: "tasklist",
+    settings: [
+      { key: "tasks.staleQueuedMinutes", label: "Stale queue threshold (min)", tooltip: "Minutes before a queued task turns yellow and gets a Cancel button. Set to 0 to disable. Increase for long-running queues." },
+      { key: "autoStartHubPort",         label: "Auto-start hub port",         tooltip: "Default port used by 'Start Hub Here'." },
+    ],
+  },
+  {
+    id: "approvals",
+    label: "Approvals",
+    icon: "verified",
+    settings: [
+      { key: "approvals.ageBadgeHours", label: "Age badge threshold (h)", tooltip: "Show a warning badge on approvals pending longer than this many hours." },
+    ],
+  },
+  {
+    id: "cluster",
+    label: "Cluster & DR",
+    icon: "database",
+    settings: [
+      { key: "cluster.repoRoot",              label: "Repo root",                    tooltip: "Path to the forgewire-fabric checkout containing config/cluster.yaml." },
+      { key: "cluster.preferredNode",         label: "Preferred rqlite node",        tooltip: "Override cluster.yaml preferred_node for DR operations on this machine." },
+      { key: "dr.backup.cadenceMinutes",      label: "Backup cadence (min)",         tooltip: "How often the rqlite backup task runs. 0 = use cluster.yaml default (5)." },
+      { key: "dr.backup.retentionHours",      label: "Backup retention (h)",         tooltip: "How long to keep backup snapshots. 0 = use cluster.yaml default (24)." },
+      { key: "dr.chaos.cadenceMinutes",       label: "Chaos drill cadence (min)",    tooltip: "How often chaos drills run. 0 = use cluster.yaml default (1440). ⚠ Lower values cause hub latency spikes." },
+      { key: "dr.chaos.drills",               label: "Chaos drill set",              tooltip: "Comma-separated drills: kill-leader, lose-quorum, partition-recovery." },
+      { key: "dr.chaos.retentionDays",        label: "Chaos log retention (days)",   tooltip: "Days of chaos JSONL logs to keep. 0 = use cluster.yaml default (30)." },
+      { key: "dr.chaos.principal",            label: "Chaos task principal",         tooltip: "Windows principal the chaos scheduled task runs as (SYSTEM recommended)." },
+    ],
+  },
+  {
+    id: "python",
+    label: "Python / CLI",
+    icon: "terminal",
+    settings: [
+      { key: "pythonPath", label: "Python interpreter", tooltip: "Python used to install / launch the forgewire CLI. Empty = auto-detect." },
+    ],
+  },
+];
+
+export class SettingsProvider implements vscode.TreeDataProvider<SettingNode> {
+  private readonly _onDidChange = new vscode.EventEmitter<SettingNode | undefined | void>();
+  readonly onDidChangeTreeData = this._onDidChange.event;
+
+  refresh(): void { this._onDidChange.fire(); }
+
+  getChildren(element?: SettingNode): SettingNode[] {
+    if (!element) {
+      return SETTING_CATEGORIES.map((c) => ({
+        kind: "category" as const,
+        id: c.id,
+        label: c.label,
+        icon: c.icon,
+      }));
+    }
+    if (element.kind !== "category") { return []; }
+    const cat = SETTING_CATEGORIES.find((c) => c.id === element.id);
+    if (!cat) { return []; }
+    const cfg = vscode.workspace.getConfiguration("forgewire");
+    return cat.settings.map((s) => {
+      const raw = cfg.get(s.key);
+      let valueStr: string;
+      if (s.sensitive) {
+        valueStr = raw ? "••••••" : "(not set)";
+      } else if (raw === undefined || raw === null || raw === "") {
+        valueStr = "(not set)";
+      } else if (typeof raw === "object") {
+        const arr = Array.isArray(raw) ? raw : Object.keys(raw as object);
+        valueStr = arr.length === 0 ? "(empty)" : `${arr.length} item${arr.length !== 1 ? "s" : ""}`;
+      } else {
+        valueStr = String(raw);
+      }
+      return {
+        kind: "setting" as const,
+        key: `forgewire.${s.key}`,
+        label: s.label,
+        description: valueStr,
+        tooltip: `**${s.label}**\n\n${s.tooltip}\n\nKey: \`forgewire.${s.key}\``,
+      };
+    });
+  }
+
+  getTreeItem(n: SettingNode): vscode.TreeItem {
+    if (n.kind === "category") {
+      const item = new vscode.TreeItem(n.label, vscode.TreeItemCollapsibleState.Expanded);
+      item.id = `settings:cat:${n.id}`;
+      item.iconPath = new vscode.ThemeIcon(n.icon);
+      item.contextValue = "settings.category";
+      return item;
+    }
+    const item = new vscode.TreeItem(n.label, vscode.TreeItemCollapsibleState.None);
+    item.id = `settings:${n.key}`;
+    item.description = n.description;
+    item.iconPath = new vscode.ThemeIcon("gear");
+    item.tooltip = new vscode.MarkdownString(n.tooltip);
+    item.contextValue = "settings.item";
+    item.command = {
+      command: "workbench.action.openSettings",
+      title: "Open Setting",
+      arguments: [n.key],
+    };
+    return item;
+  }
+}

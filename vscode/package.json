@@ -2,7 +2,7 @@
   "name": "forgewire",
   "displayName": "ForgeWire",
   "description": "Unified control surface for the ForgeWire platform — Fabric, Loom, Hub, runners, and future services: signed envelopes, scope-bound capability tokens, live stream output. Run a hub or runner from inside VS Code on Windows, macOS, or Linux.",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "publisher": "DigitalHallucinations",
   "license": "Apache-2.0",
   "icon": "media/icon.png",
@@ -810,6 +810,8 @@
     "@vscode/vsce": "^2.32.0"
   }
 }
+
+
 
 
 
