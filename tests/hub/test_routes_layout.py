@@ -67,6 +67,9 @@ EXPECTED_ROUTES = {
     ("/tasks/{task_id}/notes", ("GET",)),
     ("/tasks/{task_id}/notes", ("POST",)),
     ("/tasks/{task_id}/events", ("GET",)),
+    ("/cost/summary", ("GET",)),
+    ("/cost/records", ("GET",)),
+    ("/cost/budget", ("GET",)),
 }
 
 
@@ -77,6 +80,7 @@ def test_route_modules_export_exactly_one_router() -> None:
         "audit",
         "auth",
         "cluster",
+        "cost",
         "runners",
         "secrets",
         "streams",

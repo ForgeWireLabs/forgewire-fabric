@@ -40,6 +40,7 @@ def dispatch_task(request: Request, payload: DispatchTaskRequest) -> dict[str, A
         scope_globs=payload.scope_globs,
         branch=payload.branch,
         approval_id=payload.approval_id,
+        max_cost_usd=payload.max_cost_usd,
     )
     try:
         task = blackboard.create_task(

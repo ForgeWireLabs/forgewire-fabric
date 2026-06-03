@@ -563,6 +563,36 @@ class Blackboard:
             "CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_event(created_at)"
         )
 
+        # M2.5.2: cost ledger — one row per reported task completion.
+        # Runner POSTs actual token/cost/wall figures at submit_result time.
+        # The hub reads these for budget enforcement and CLI reporting.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS cost_ledger (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id             TEXT NOT NULL,
+                dispatcher_id       TEXT,
+                runner_id           TEXT,
+                model_id            TEXT NOT NULL DEFAULT '',
+                prompt_tokens       INTEGER NOT NULL DEFAULT 0,
+                completion_tokens   INTEGER NOT NULL DEFAULT 0,
+                cost_usd            REAL NOT NULL DEFAULT 0.0,
+                wall_seconds        REAL NOT NULL DEFAULT 0.0,
+                runner_cpu_seconds  REAL NOT NULL DEFAULT 0.0,
+                created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cost_task ON cost_ledger(task_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cost_created ON cost_ledger(created_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cost_model ON cost_ledger(model_id, created_at)"
+        )
+
         # M2.5.5a: sealed secret broker storage.
         SecretBroker.init_schema(conn)
 
@@ -1155,6 +1185,126 @@ class Blackboard:
                 )
             prev = ev["event_id_hash"]
         return True, None
+
+    # --------------------------------------------------------------- cost ledger (M2.5.2)
+
+    def record_cost(
+        self,
+        *,
+        task_id: str,
+        dispatcher_id: str | None = None,
+        runner_id: str | None = None,
+        model_id: str = "",
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        cost_usd: float = 0.0,
+        wall_seconds: float = 0.0,
+        runner_cpu_seconds: float = 0.0,
+    ) -> dict[str, Any]:
+        """Insert one row into ``cost_ledger`` and mirror to the in-memory ledger."""
+        from forgewire_fabric.policy.budget import CostRecord
+        now = _now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO cost_ledger
+                    (task_id, dispatcher_id, runner_id, model_id,
+                     prompt_tokens, completion_tokens, cost_usd,
+                     wall_seconds, runner_cpu_seconds, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    task_id, dispatcher_id, runner_id, model_id,
+                    prompt_tokens, completion_tokens, cost_usd,
+                    wall_seconds, runner_cpu_seconds, now,
+                ),
+            )
+        # Mirror to in-memory ledger for fast gate evaluation.
+        import time as _time
+        ledger = getattr(self, "_cost_ledger_ref", None)
+        if ledger is not None:
+            ledger.record(
+                CostRecord(
+                    task_id=str(task_id),
+                    dispatch_id=dispatcher_id or "",
+                    model=model_id,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    cost_usd=cost_usd,
+                    wall_seconds=wall_seconds,
+                    recorded_at=_time.time(),
+                )
+            )
+        return {
+            "task_id": task_id, "cost_usd": cost_usd,
+            "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
+            "created_at": now,
+        }
+
+    def query_cost(
+        self,
+        *,
+        since_iso: str | None = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        """Return cost_ledger rows newest-first, optionally filtered by ``created_at >= since_iso``."""
+        if since_iso:
+            sql = (
+                "SELECT * FROM cost_ledger WHERE created_at >= ? "
+                "ORDER BY created_at DESC LIMIT ?"
+            )
+            params: tuple = (since_iso, limit)
+        else:
+            sql = "SELECT * FROM cost_ledger ORDER BY created_at DESC LIMIT ?"
+            params = (limit,)
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    def cost_summary(self, *, since_iso: str | None = None) -> dict[str, Any]:
+        """Aggregate cost_ledger rows grouped by model_id and by day."""
+        base = "SELECT * FROM cost_ledger"
+        if since_iso:
+            rows_raw = self.query_cost(since_iso=since_iso, limit=100_000)
+        else:
+            rows_raw = self.query_cost(limit=100_000)
+
+        by_model: dict[str, dict[str, Any]] = {}
+        by_day: dict[str, dict[str, Any]] = {}
+        total_cost = 0.0
+        total_tokens = 0
+        total_wall = 0.0
+
+        for r in rows_raw:
+            cost = float(r.get("cost_usd") or 0)
+            pt = int(r.get("prompt_tokens") or 0)
+            ct = int(r.get("completion_tokens") or 0)
+            ws = float(r.get("wall_seconds") or 0)
+            model = r.get("model_id") or ""
+            day = str(r.get("created_at") or "")[:10]
+
+            total_cost += cost
+            total_tokens += pt + ct
+            total_wall += ws
+
+            if model not in by_model:
+                by_model[model] = {"cost_usd": 0.0, "tokens": 0}
+            by_model[model]["cost_usd"] += cost
+            by_model[model]["tokens"] += pt + ct
+
+            if day not in by_day:
+                by_day[day] = {"cost_usd": 0.0, "tokens": 0}
+            by_day[day]["cost_usd"] += cost
+            by_day[day]["tokens"] += pt + ct
+
+        return {
+            "total_cost_usd": round(total_cost, 6),
+            "total_tokens": total_tokens,
+            "total_wall_seconds": round(total_wall, 2),
+            "record_count": len(rows_raw),
+            "by_model": {k: {"cost_usd": round(v["cost_usd"], 6), "tokens": v["tokens"]} for k, v in sorted(by_model.items())},
+            "by_day": {k: {"cost_usd": round(v["cost_usd"], 6), "tokens": v["tokens"]} for k, v in sorted(by_day.items())},
+        }
 
     # --------------------------------------------------------------- secrets
 
@@ -2704,6 +2854,10 @@ class DispatchTaskRequest(BaseModel):
     # against the canonical envelope hash and bypasses the gate. Excluded
     # from the v2 canonical signed payload (out-of-band, bearer-gated).
     approval_id: str | None = None
+    # M2.5.2: per-task spend cap. Hub rejects dispatch if the projected cost
+    # would exceed this value given current ledger totals. Passed to
+    # BudgetEnforcer at dispatch time.
+    max_cost_usd: float | None = Field(default=None, ge=0.0)
 
 
 class ApprovalDecisionRequest(BaseModel):
@@ -2838,6 +2992,13 @@ class ResultRequest(BaseModel):
     test_summary: str | None = None
     log_tail: str | None = None
     error: str | None = None
+    # M2.5.2: optional actuals reported by the runner/agent at completion.
+    model_id: str | None = None
+    prompt_tokens: int | None = Field(default=None, ge=0)
+    completion_tokens: int | None = Field(default=None, ge=0)
+    cost_usd: float | None = Field(default=None, ge=0.0)
+    wall_seconds: float | None = Field(default=None, ge=0.0)
+    runner_cpu_seconds: float | None = Field(default=None, ge=0.0)
 
 
 class NoteRequest(BaseModel):
@@ -3062,6 +3223,7 @@ def create_app(config: BlackboardConfig) -> FastAPI:
     else:
         fabric_policy = FabricPolicy()
     app.state.cost_ledger = CostLedger()
+    blackboard._cost_ledger_ref = app.state.cost_ledger  # mirror for record_cost()
     app.state.gate = HubDispatchGate(
         policy_engine=FabricPolicyEngine(fabric_policy),
         budget_enforcer=BudgetEnforcer(
@@ -3076,6 +3238,7 @@ def create_app(config: BlackboardConfig) -> FastAPI:
         audit,
         auth,
         cluster,
+        cost,
         runners,
         secrets,
         streams,
@@ -3094,6 +3257,7 @@ def create_app(config: BlackboardConfig) -> FastAPI:
         tasks,
         approvals,
         audit,
+        cost,
         secrets,
         runners,
         auth,

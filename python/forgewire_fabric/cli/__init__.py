@@ -50,6 +50,7 @@ def cli() -> None:
 from . import dispatch as _dispatch  # noqa: E402,F401
 from . import approvals as _approvals  # noqa: E402,F401
 from . import audit as _audit  # noqa: E402,F401
+from . import cost as _cost  # noqa: E402,F401
 from . import hub as _hub  # noqa: E402,F401
 from . import identity as _identity  # noqa: E402,F401
 from . import runner as _runner  # noqa: E402,F401

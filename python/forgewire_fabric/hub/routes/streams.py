@@ -156,6 +156,27 @@ def submit_result(request: Request, task_id: int, payload: ResultRequest) -> dic
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     audit_result(ctx, task, worker_id=payload.worker_id)
+    # M2.5.2: record actuals to cost_ledger if the runner reported any cost data.
+    if any(
+        v is not None
+        for v in (payload.cost_usd, payload.prompt_tokens, payload.completion_tokens, payload.wall_seconds)
+    ):
+        try:
+            dispatcher_id = task.get("dispatcher_id") or task.get("todo_id")
+            blackboard.record_cost(
+                task_id=str(task_id),
+                dispatcher_id=str(dispatcher_id) if dispatcher_id else None,
+                runner_id=payload.worker_id,
+                model_id=payload.model_id or "",
+                prompt_tokens=payload.prompt_tokens or 0,
+                completion_tokens=payload.completion_tokens or 0,
+                cost_usd=payload.cost_usd or 0.0,
+                wall_seconds=payload.wall_seconds or 0.0,
+                runner_cpu_seconds=payload.runner_cpu_seconds or 0.0,
+            )
+        except Exception as exc:  # noqa: BLE001 — cost recording must never block result
+            import logging
+            logging.getLogger(__name__).warning("cost record failed task=%s: %s", task_id, exc)
     return task
 
 

@@ -342,6 +342,23 @@ class BlackboardClient:
         assert result is not None
         return result
 
+    # ---- M2.5.2: cost ledger -----------------------------------------------
+
+    async def cost_summary(self, since_days: int = 7) -> dict[str, Any]:
+        result = await self._request("GET", f"/cost/summary?since_days={since_days}")
+        assert result is not None
+        return result
+
+    async def cost_records(self, since_days: int = 30, limit: int = 500) -> dict[str, Any]:
+        result = await self._request("GET", f"/cost/records?since_days={since_days}&limit={limit}")
+        assert result is not None
+        return result
+
+    async def cost_budget(self) -> dict[str, Any]:
+        result = await self._request("GET", "/cost/budget")
+        assert result is not None
+        return result
+
     # ---- M2.5.1: intent gate -----------------------------------------------
 
     async def post_intent(

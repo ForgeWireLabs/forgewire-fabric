@@ -111,6 +111,8 @@ class BudgetPolicy:
     """Hub-wide budget policy."""
 
     daily_budget_usd: float | None = None
+    weekly_budget_usd: float | None = None
+    weekly_alert_threshold: float = 0.8
     default_task_budget: TaskBudget = field(default_factory=TaskBudget)
 
     @classmethod
@@ -119,6 +121,8 @@ class BudgetPolicy:
             return cls()
         return cls(
             daily_budget_usd=_opt_float(data.get("daily_budget_usd")),
+            weekly_budget_usd=_opt_float(data.get("weekly_budget_usd")),
+            weekly_alert_threshold=float(data.get("weekly_alert_threshold", 0.8)),
             default_task_budget=TaskBudget.from_mapping(
                 data.get("default_task_budget")
             ),
@@ -147,6 +151,7 @@ class CostLedger:
         self._records: list[CostRecord] = []
         self._task_totals: dict[str, _Aggregate] = defaultdict(_Aggregate)
         self._day_totals: dict[str, _Aggregate] = defaultdict(_Aggregate)
+        self._week_totals: dict[str, _Aggregate] = defaultdict(_Aggregate)
         self._lock = threading.Lock()
 
     def record(self, entry: CostRecord) -> None:
@@ -154,6 +159,7 @@ class CostLedger:
             self._records.append(entry)
             self._task_totals[entry.task_id].add(entry)
             self._day_totals[entry.day].add(entry)
+            self._week_totals[_to_week(entry.recorded_at)].add(entry)
 
     def records(self) -> tuple[CostRecord, ...]:
         with self._lock:
@@ -172,11 +178,41 @@ class CostLedger:
         key = day or _today()
         return self._day_totals[key].cost_usd
 
+    def weekly_total_cost(self, week: str | None = None) -> float:
+        """Return total cost for the ISO week string ``YYYY-WNN`` (default: current week)."""
+        key = week or _this_week()
+        return self._week_totals[key].cost_usd
+
+    def summary(self, since_days: int = 7) -> dict[str, Any]:
+        """Aggregate spend for the last *since_days* UTC days."""
+        cutoff = time.time() - since_days * 86400
+        with self._lock:
+            filtered = [r for r in self._records if r.recorded_at >= cutoff]
+        by_model: dict[str, _Aggregate] = defaultdict(_Aggregate)
+        by_runner: dict[str, _Aggregate] = defaultdict(_Aggregate)
+        by_day: dict[str, _Aggregate] = defaultdict(_Aggregate)
+        total = _Aggregate()
+        for r in filtered:
+            by_model[r.model].add(r)
+            by_runner[r.dispatch_id].add(r)
+            by_day[r.day].add(r)
+            total.add(r)
+        return {
+            "since_days": since_days,
+            "total_cost_usd": round(total.cost_usd, 6),
+            "total_tokens": total.tokens,
+            "total_wall_seconds": round(total.wall_seconds, 2),
+            "record_count": len(filtered),
+            "by_model": {k: {"cost_usd": round(v.cost_usd, 6), "tokens": v.tokens} for k, v in sorted(by_model.items())},
+            "by_day": {k: {"cost_usd": round(v.cost_usd, 6), "tokens": v.tokens} for k, v in sorted(by_day.items())},
+        }
+
     def clear(self) -> None:
         with self._lock:
             self._records.clear()
             self._task_totals.clear()
             self._day_totals.clear()
+            self._week_totals.clear()
 
 
 @dataclass
@@ -288,6 +324,22 @@ class BudgetEnforcer:
                     )
                 )
 
+        if self.policy.weekly_budget_usd is not None:
+            week_key = _this_week()
+            projected_week = self.ledger.weekly_total_cost(week_key) + estimated_cost_usd
+            if projected_week > self.policy.weekly_budget_usd:
+                violations.append(
+                    BudgetViolation(
+                        rule="budget.weekly_budget_usd",
+                        value=self.policy.weekly_budget_usd,
+                        observed=projected_week,
+                        message=(
+                            f"week {week_key!r} would exceed weekly_budget_usd"
+                            f" (projected={projected_week:.4f} > cap={self.policy.weekly_budget_usd:.4f})"
+                        ),
+                    )
+                )
+
         if violations:
             return PolicyDecision(
                 decision=DecisionKind.DENY,
@@ -368,6 +420,22 @@ class BudgetEnforcer:
                     )
                 )
 
+        if self.policy.weekly_budget_usd is not None:
+            week_key = _this_week()
+            actual_week = self.ledger.weekly_total_cost(week_key)
+            if actual_week > self.policy.weekly_budget_usd:
+                violations.append(
+                    BudgetViolation(
+                        rule="budget.weekly_budget_usd",
+                        value=self.policy.weekly_budget_usd,
+                        observed=actual_week,
+                        message=(
+                            f"week {week_key!r} exceeded weekly_budget_usd"
+                            f" (actual={actual_week:.4f} > cap={self.policy.weekly_budget_usd:.4f})"
+                        ),
+                    )
+                )
+
         if violations:
             return PolicyDecision(
                 decision=DecisionKind.DENY,
@@ -389,6 +457,17 @@ def _today() -> str:
 
 def _to_day(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%d")
+
+
+def _this_week() -> str:
+    return _to_week(time.time())
+
+
+def _to_week(ts: float) -> str:
+    """Return ISO week string ``YYYY-WNN`` for the given timestamp."""
+    dt = datetime.fromtimestamp(ts, tz=UTC)
+    iso = dt.isocalendar()
+    return f"{iso.year}-W{iso.week:02d}"
 
 
 def _opt_float(value: Any) -> float | None:

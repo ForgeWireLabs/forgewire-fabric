@@ -102,17 +102,21 @@ def enforce_dispatch_gate(
     branch: str | None,
     dispatcher_id: str | None = None,
     approval_id: str | None = None,
+    max_cost_usd: float | None = None,
 ) -> None:
     from forgewire_fabric.policy import DispatchRequest
+    from forgewire_fabric.policy.budget import TaskBudget
 
     blackboard = ctx.blackboard
+    task_budget = TaskBudget(max_cost_usd=max_cost_usd) if max_cost_usd is not None else None
     decision = ctx.gate.evaluate_dispatch(
         DispatchRequest(
             task_id=str(task_id),
             scope_globs=list(scope_globs),
             target_branch=branch,
             dispatcher_id=dispatcher_id,
-        )
+        ),
+        task_budget=task_budget,
     )
     if decision.allowed:
         return
