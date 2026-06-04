@@ -202,11 +202,14 @@ pub async fn claim_loop(
     mut shutdown: watch::Receiver<bool>,
     stats: Arc<tokio::sync::Mutex<HeartbeatStats>>,
 ) {
-    let claim = build_claim_payload(&config);
+    let mut claim = build_claim_payload(&config);
     loop {
         if *shutdown.borrow() {
             return;
         }
+        // Report the workspace HEAD so the hub can match tasks that set
+        // require_base_commit (e.g. replays, which run at an exact commit).
+        claim.last_known_commit = git_head_commit(&config.workspace_root).await;
         match client.claim_v2(&identity, &claim).await {
             Ok(ClaimResponse { task: Some(task), .. }) => {
                 {

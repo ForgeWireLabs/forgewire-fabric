@@ -163,8 +163,16 @@ impl RqliteStore {
     }
 
     /// Execute a single write and return rows_affected.
+    ///
+    /// rqlite reports per-statement SQL errors inside `results[0].error` even on
+    /// HTTP 200. Surface those instead of silently treating them as 0 rows —
+    /// swallowing them once masked a missing-column bug that broke signed
+    /// dispatch.
     async fn execute_one(&self, sql: &str, params: &[Value]) -> Result<i64, RqliteError> {
         let resp = self.execute(&[(sql, params)]).await?;
+        if let Some(err) = resp["results"][0]["error"].as_str() {
+            return Err(RqliteError::Status { status: 200, body: err.to_owned() });
+        }
         let rows = resp["results"][0]["rows_affected"]
             .as_i64()
             .unwrap_or(0);
@@ -287,7 +295,7 @@ impl SchemaStore for RqliteStore {
             "CREATE TABLE IF NOT EXISTS workers (worker_id TEXT PRIMARY KEY, hostname TEXT, capabilities TEXT NOT NULL DEFAULT '{}', first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, current_task_id INTEGER)",
             "CREATE TABLE IF NOT EXISTS runners (runner_id TEXT PRIMARY KEY, public_key TEXT NOT NULL, hostname TEXT NOT NULL, os TEXT NOT NULL, arch TEXT NOT NULL, cpu_model TEXT, cpu_count INTEGER, ram_mb INTEGER, gpu TEXT, tools TEXT NOT NULL DEFAULT '[]', tags TEXT NOT NULL DEFAULT '[]', scope_prefixes TEXT NOT NULL DEFAULT '[]', tenant TEXT, workspace_root TEXT, runner_version TEXT NOT NULL, protocol_version INTEGER NOT NULL, max_concurrent INTEGER NOT NULL DEFAULT 1, state TEXT NOT NULL DEFAULT 'online', drain_requested INTEGER NOT NULL DEFAULT 0, cpu_load_pct REAL, ram_free_mb INTEGER, battery_pct INTEGER, on_battery INTEGER NOT NULL DEFAULT 0, last_known_commit TEXT, metadata TEXT NOT NULL DEFAULT '{}', first_seen TEXT NOT NULL, last_heartbeat TEXT NOT NULL, last_nonce TEXT)",
             "CREATE TABLE IF NOT EXISTS task_streams (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, seq INTEGER NOT NULL, channel TEXT NOT NULL, line TEXT NOT NULL, created_at TEXT NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS dispatchers (dispatcher_id TEXT PRIMARY KEY, public_key TEXT NOT NULL, label TEXT NOT NULL, hostname TEXT, metadata TEXT NOT NULL DEFAULT '{}', first_seen TEXT NOT NULL, last_seen TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS dispatchers (dispatcher_id TEXT PRIMARY KEY, public_key TEXT NOT NULL, label TEXT NOT NULL, hostname TEXT, metadata TEXT NOT NULL DEFAULT '{}', first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, last_nonce TEXT)",
             "CREATE TABLE IF NOT EXISTS dispatcher_nonces (dispatcher_id TEXT NOT NULL, nonce TEXT NOT NULL, used_at TEXT NOT NULL, PRIMARY KEY (dispatcher_id, nonce))",
             "CREATE TABLE IF NOT EXISTS runner_nonces (runner_id TEXT NOT NULL, nonce TEXT NOT NULL, used_at TEXT NOT NULL, PRIMARY KEY (runner_id, nonce))",
             "CREATE TABLE IF NOT EXISTS audit_event (seq INTEGER PRIMARY KEY AUTOINCREMENT, event_id_hash TEXT NOT NULL UNIQUE, prev_event_id_hash TEXT NOT NULL, kind TEXT NOT NULL, task_id INTEGER, payload_json TEXT NOT NULL, created_at TEXT NOT NULL)",
@@ -360,6 +368,9 @@ impl SchemaStore for RqliteStore {
             ("runners", "last_claim_error", "TEXT"),
             ("runners", "last_claim_error_at", "TEXT"),
             ("runners", "heartbeat_failures_total", "INTEGER NOT NULL DEFAULT 0"),
+            // dispatchers.last_nonce: consume_dispatcher_nonce updates it; absent
+            // on older Rust-created schemas, which broke all signed dispatch.
+            ("dispatchers", "last_nonce", "TEXT"),
         ];
 
         for (table, column, col_type) in &additive {
