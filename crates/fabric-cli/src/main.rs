@@ -9,6 +9,7 @@
 //!     forgewire-fabric-cli identity show [--path PATH]
 //!     forgewire-fabric-cli audit tail [--hub-url URL]
 //!     forgewire-fabric-cli audit verify --task-id ID [--hub-url URL]
+//!     forgewire-fabric-cli audit export --day YYYY-MM-DD [--hub-url URL]
 //!     forgewire-fabric-cli doctor [--hub-url URL]
 //!     forgewire-fabric-cli version
 
@@ -90,6 +91,20 @@ enum AuditAction {
     Verify {
         #[arg(long)]
         task_id: i64,
+        #[arg(long, env = "FORGEWIRE_HUB_URL", default_value = "http://127.0.0.1:8765")]
+        hub_url: String,
+        #[arg(long, env = "FORGEWIRE_HUB_TOKEN_FILE")]
+        token_file: Option<String>,
+    },
+    /// Export one UTC day's audit events as JSONL to stdout (self-verifying).
+    ///
+    /// Pipe to a compressor if desired, e.g.:
+    ///   forgewire-fabric-cli audit export --day 2026-06-04 | zstd > audit.jsonl.zst
+    /// Exits non-zero if the hub reports the chain does not verify.
+    Export {
+        /// UTC day to export, formatted YYYY-MM-DD.
+        #[arg(long)]
+        day: String,
         #[arg(long, env = "FORGEWIRE_HUB_URL", default_value = "http://127.0.0.1:8765")]
         hub_url: String,
         #[arg(long, env = "FORGEWIRE_HUB_TOKEN_FILE")]
@@ -191,24 +206,66 @@ async fn main() {
             let (hub_url, token_file) = match &action {
                 AuditAction::Tail { hub_url, token_file } => (hub_url.clone(), token_file.clone()),
                 AuditAction::Verify { hub_url, token_file, .. } => (hub_url.clone(), token_file.clone()),
+                AuditAction::Export { hub_url, token_file, .. } => (hub_url.clone(), token_file.clone()),
             };
             let token = load_token(token_file.as_deref());
             let client = HubClient::new(&hub_url, &token);
 
             match action {
-                AuditAction::Tail { .. } => {
-                    match client.healthz().await {
-                        Ok(_) => println!("(audit tail requires authenticated endpoint — use the hub API directly)"),
-                        Err(e) => {
-                            eprintln!("hub unreachable: {e}");
+                AuditAction::Tail { .. } => match client.audit_tail().await {
+                    Ok(v) => println!("{}", v["chain_tail"].as_str().unwrap_or("(none)")),
+                    Err(e) => {
+                        eprintln!("audit tail failed: {e}");
+                        std::process::exit(1);
+                    }
+                },
+                AuditAction::Verify { task_id, .. } => match client.audit_for_task(task_id).await {
+                    Ok(v) => {
+                        let verified = v["verified"].as_bool().unwrap_or(false);
+                        let count = v["events"].as_array().map_or(0, |a| a.len());
+                        if verified {
+                            println!("VERIFIED: task {task_id} chain intact ({count} events)");
+                        } else {
+                            let err = v["error"].as_str().unwrap_or("unknown");
+                            eprintln!("BROKEN: task {task_id} chain failed verification: {err}");
                             std::process::exit(1);
                         }
                     }
-                }
-                AuditAction::Verify { task_id, .. } => {
-                    println!("Verifying audit chain for task {task_id}...");
-                    println!("(requires authenticated endpoint — use the hub API directly)");
-                }
+                    Err(e) => {
+                        eprintln!("audit verify failed: {e}");
+                        std::process::exit(1);
+                    }
+                },
+                AuditAction::Export { day, .. } => match client.audit_day(&day).await {
+                    Ok(v) => {
+                        // One JSON object per line to stdout (pipe to a compressor).
+                        if let Some(events) = v["events"].as_array() {
+                            for ev in events {
+                                println!("{}", serde_json::to_string(ev).unwrap_or_default());
+                            }
+                            // Verification verdict goes to stderr so stdout stays
+                            // clean JSONL. Non-zero exit if the chain is broken.
+                            let verified = v["verified"].as_bool().unwrap_or(false);
+                            if verified {
+                                eprintln!(
+                                    "exported {} event(s) for {day}; chain VERIFIED",
+                                    events.len()
+                                );
+                            } else {
+                                let err = v["error"].as_str().unwrap_or("unknown");
+                                eprintln!("WARNING: chain did NOT verify for {day}: {err}");
+                                std::process::exit(1);
+                            }
+                        } else {
+                            eprintln!("unexpected response (no events array)");
+                            std::process::exit(1);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("audit export failed: {e}");
+                        std::process::exit(1);
+                    }
+                },
             }
         }
 

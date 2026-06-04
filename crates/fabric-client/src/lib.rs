@@ -160,6 +160,24 @@ impl HubClient {
             .await
     }
 
+    // -- Audit (auth) --------------------------------------------------------
+
+    /// Fetch the audit events for a UTC day (`YYYY-MM-DD`) plus the hub's
+    /// chain-verification verdict. Returns the raw `/audit/day/{day}` body.
+    pub async fn audit_day(&self, day: &str) -> Result<Value, ClientError> {
+        self.get(&format!("/audit/day/{day}")).await
+    }
+
+    /// Fetch the audit events for a single task plus chain verification.
+    pub async fn audit_for_task(&self, task_id: i64) -> Result<Value, ClientError> {
+        self.get(&format!("/audit/tasks/{task_id}")).await
+    }
+
+    /// Fetch the current audit chain tail hash.
+    pub async fn audit_tail(&self) -> Result<Value, ClientError> {
+        self.get("/audit/tail").await
+    }
+
     // -- Healthz (no auth) ---------------------------------------------------
 
     pub async fn healthz(&self) -> Result<Value, ClientError> {
