@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use fabric_identity::IdentityFile;
-use fabric_protocol::{canonicalize, sign_payload_hex};
+use fabric_protocol::{canonicalize, sign_envelope_hex, sign_payload_hex};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use thiserror::Error;
@@ -167,10 +167,48 @@ impl HubClient {
         self.get(&format!("/tasks/{task_id}")).await
     }
 
-    /// Dispatch a task via the unsigned POST /tasks path. Used by replay to
-    /// re-issue a reconstructed brief.
-    pub async fn dispatch_unsigned(&self, brief: &Value) -> Result<Value, ClientError> {
-        self.post("/tasks", brief).await
+    /// Dispatch a task via the signed POST /tasks/v2 path.
+    ///
+    /// `brief` carries the dispatch fields (title, prompt, scope_globs,
+    /// base_commit, branch, and any optional routing/metadata). The dispatcher
+    /// identity signs the canonical envelope over the security-relevant subset
+    /// the hub verifies; the signed envelope, nonce, and timestamp are attached
+    /// to the request body. There is no unsigned dispatch path — every
+    /// state-changing dispatch is ed25519-signed (hard rule #6).
+    pub async fn dispatch_signed(
+        &self,
+        identity: &IdentityFile,
+        brief: &Value,
+    ) -> Result<Value, ClientError> {
+        let ts = unix_timestamp();
+        let nonce = random_nonce();
+
+        // The hub verifies exactly this envelope (op + the brief's signed core
+        // + timestamp + nonce). Keep field set and order identical to the hub's
+        // POST /tasks/v2 verification in fabric-hub::routes::tasks.
+        let envelope = json!({
+            "op": "dispatch",
+            "dispatcher_id": identity.id,
+            "title": brief.get("title").cloned().unwrap_or(Value::Null),
+            "prompt": brief.get("prompt").cloned().unwrap_or(Value::Null),
+            "scope_globs": brief.get("scope_globs").cloned().unwrap_or_else(|| json!([])),
+            "base_commit": brief.get("base_commit").cloned().unwrap_or(Value::Null),
+            "branch": brief.get("branch").cloned().unwrap_or(Value::Null),
+            "timestamp": ts,
+            "nonce": nonce,
+        });
+        let signature = sign_envelope_hex(&identity.secret_key_hex, &envelope)
+            .map_err(|e| ClientError::Transport { attempts: 0, message: format!("sign: {e}") })?;
+
+        // Request body = the full brief (flattened) + dispatcher auth fields.
+        let mut body = brief.clone();
+        if let Some(obj) = body.as_object_mut() {
+            obj.insert("dispatcher_id".into(), json!(identity.id));
+            obj.insert("timestamp".into(), json!(ts));
+            obj.insert("nonce".into(), json!(nonce));
+            obj.insert("signature".into(), json!(signature));
+        }
+        self.post("/tasks/v2", &body).await
     }
 
     // -- Audit (auth) --------------------------------------------------------

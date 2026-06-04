@@ -10,7 +10,7 @@
 //!     forgewire-fabric-cli audit tail [--hub-url URL]
 //!     forgewire-fabric-cli audit verify --task-id ID [--hub-url URL]
 //!     forgewire-fabric-cli audit export --day YYYY-MM-DD [--hub-url URL]
-//!     forgewire-fabric-cli replay TASK_ID [--with-model M] [--on RUNNER] [--dry-run]
+//!     forgewire-fabric-cli replay TASK_ID --identity KEY [--with-model M] [--on RUNNER] [--dry-run]
 //!     forgewire-fabric-cli doctor [--hub-url URL]
 //!     forgewire-fabric-cli version
 
@@ -69,6 +69,10 @@ enum Commands {
         /// Reconstruct and print the brief without dispatching.
         #[arg(long)]
         dry_run: bool,
+        /// Dispatcher identity file (ed25519 secret key). Required unless
+        /// --dry-run; the replay is re-dispatched over the SIGNED /tasks/v2 path.
+        #[arg(long, short)]
+        identity: Option<PathBuf>,
         #[arg(long, env = "FORGEWIRE_HUB_URL", default_value = "http://127.0.0.1:8765")]
         hub_url: String,
         #[arg(long, env = "FORGEWIRE_HUB_TOKEN_FILE")]
@@ -147,7 +151,7 @@ async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Replay { task_id, with_model, on, dry_run, hub_url, token_file } => {
+        Commands::Replay { task_id, with_model, on, dry_run, identity, hub_url, token_file } => {
             let token = load_token(token_file.as_deref());
             let client = HubClient::new(&hub_url, &token);
 
@@ -207,8 +211,23 @@ async fn main() {
                 return;
             }
 
-            // 4. Re-dispatch.
-            match client.dispatch_unsigned(&brief).await {
+            // 4. Re-dispatch over the SIGNED path. A dispatcher identity is
+            //    mandatory — there is no unsigned dispatch.
+            let identity_path = match identity {
+                Some(p) => p,
+                None => {
+                    eprintln!("--identity <dispatcher key file> is required to dispatch a replay (or use --dry-run)");
+                    std::process::exit(2);
+                }
+            };
+            let dispatcher = match fabric_identity::load(&identity_path) {
+                Ok(id) => id,
+                Err(e) => {
+                    eprintln!("failed to load dispatcher identity {}: {e}", identity_path.display());
+                    std::process::exit(1);
+                }
+            };
+            match client.dispatch_signed(&dispatcher, &brief).await {
                 Ok(new_task) => {
                     let new_id = new_task.get("id").and_then(|v| v.as_i64());
                     match new_id {
