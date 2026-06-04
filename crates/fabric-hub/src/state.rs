@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use fabric_policy::DispatchGate;
+use fabric_policy::{BudgetPolicy, DispatchGate};
 use fabric_store::FabricStore;
 use fabric_streams::StreamBuffer;
 
@@ -13,6 +13,9 @@ pub struct HubState {
     pub started_at: Instant,
     pub started_at_unix: f64,
     pub gate: DispatchGate,
+    /// Cost caps enforced natively on every dispatch, read from the persistent
+    /// `budget_state` accumulators (M2.5.3). Empty = no caps configured.
+    pub budget_caps: BudgetPolicy,
     pub host: String,
     pub port: u16,
     pub protocol_version: i64,

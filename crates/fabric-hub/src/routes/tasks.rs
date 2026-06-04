@@ -20,7 +20,7 @@ use fabric_store::{
 };
 
 use crate::state::HubState;
-use crate::utils::{audit_append, check_skew, runner_kind_from_tags, utc_now, verify_sig};
+use crate::utils::{audit_append, budget_denial, check_skew, runner_kind_from_tags, utc_now, verify_sig};
 
 // ---- Shared request types --------------------------------------------------
 
@@ -124,6 +124,18 @@ pub async fn dispatch_task(
     Json(payload): Json<DispatchPayload>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let now = utc_now();
+
+    // Native budget gate (M2.5.3): reject before creating the task if a cost cap
+    // is already met. Reads the persistent budget_state accumulators.
+    if let Some(reason) = budget_denial(&*state.store, &state.budget_caps, &now).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    {
+        let _ = audit_append(&*state.store, "dispatch_denied", None, &json!({
+            "reason": "budget_exceeded", "detail": reason, "signed": false,
+        })).await;
+        return Err((StatusCode::PAYMENT_REQUIRED, reason));
+    }
+
     let p = dispatch_params(&payload, None);
     let task = state.store.create_task(p, &now).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -180,6 +192,19 @@ pub async fn dispatch_task_signed(
         })?;
 
     let now = utc_now();
+
+    // Native budget gate (M2.5.3): reject before creating the task if a cost cap
+    // is already met. Reads the persistent budget_state accumulators.
+    if let Some(reason) = budget_denial(&*state.store, &state.budget_caps, &now).await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    {
+        let _ = audit_append(&*state.store, "dispatch_denied", None, &json!({
+            "reason": "budget_exceeded", "detail": reason, "signed": true,
+            "dispatcher_id": payload.dispatcher_id,
+        })).await;
+        return Err((StatusCode::PAYMENT_REQUIRED, reason));
+    }
+
     let p = dispatch_params(&payload.base, Some(&payload.dispatcher_id));
     let task = state.store.create_task(p, &now).await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;

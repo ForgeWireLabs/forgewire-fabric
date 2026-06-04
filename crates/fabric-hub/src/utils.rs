@@ -1,7 +1,8 @@
 //! Shared utilities for hub route handlers.
 
 use fabric_audit::{audit_event_hash, AUDIT_GENESIS_HASH};
-use fabric_store::{AuditAppendResult, AuditStore, StoreError};
+use fabric_policy::BudgetPolicy;
+use fabric_store::{AuditAppendResult, AuditStore, BudgetStore, StoreError};
 use serde_json::Value;
 
 /// Returns the current UTC time as "YYYY-MM-DD HH:MM:SS".
@@ -32,6 +33,30 @@ fn epoch_secs_to_iso(total_secs: i64) -> String {
         days -= m;
     }
     format!("{year:04}-{:02}-{:02} {hours:02}:{mins:02}:{secs:02}", month + 1, days + 1)
+}
+
+/// Native budget gate (M2.5.3): deny a dispatch when the current daily or
+/// weekly accumulated spend has reached its configured cap. Reads the persistent
+/// `budget_state` accumulators (point lookups), so it is correct across hub
+/// restarts. Returns `Some(reason)` to deny, `None` to allow. Skips the store
+/// read entirely when no caps are configured.
+pub async fn budget_denial(
+    store: &(dyn BudgetStore + Send + Sync),
+    caps: &BudgetPolicy,
+    now: &str,
+) -> Result<Option<String>, StoreError> {
+    if !caps.has_cost_caps() {
+        return Ok(None);
+    }
+    let budget = store.current_budget(now).await?;
+    let decision = caps.check_cost(budget.daily_spend_usd, budget.weekly_spend_usd);
+    if decision.denied {
+        Ok(Some(decision.reasons.into_iter().next().unwrap_or_else(|| {
+            "budget exceeded".to_owned()
+        })))
+    } else {
+        Ok(None)
+    }
 }
 
 /// Derive task kind from runner tags ("kind:command" → "command", else "agent").

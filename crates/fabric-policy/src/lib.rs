@@ -34,7 +34,39 @@ pub struct BudgetPolicy {
     #[serde(default)]
     pub weekly_task_cap: Option<i64>,
     #[serde(default)]
+    pub daily_cost_cap_usd: Option<f64>,
+    #[serde(default)]
     pub weekly_cost_cap_usd: Option<f64>,
+}
+
+impl BudgetPolicy {
+    /// True if any cost cap is configured (lets callers skip the store read
+    /// entirely when no caps apply).
+    pub fn has_cost_caps(&self) -> bool {
+        self.daily_cost_cap_usd.is_some() || self.weekly_cost_cap_usd.is_some()
+    }
+
+    /// Evaluate the current accumulated spend against the configured cost caps.
+    /// Denies a new dispatch when a period's spend has already reached its cap.
+    /// `daily_spend_usd` / `weekly_spend_usd` come from the persistent
+    /// `budget_state` accumulators, so this is correct across hub restarts.
+    pub fn check_cost(&self, daily_spend_usd: f64, weekly_spend_usd: f64) -> PolicyDecision {
+        if let Some(cap) = self.daily_cost_cap_usd {
+            if daily_spend_usd >= cap {
+                return PolicyDecision::deny(format!(
+                    "daily budget exceeded: ${daily_spend_usd:.4} of ${cap:.4} cap"
+                ));
+            }
+        }
+        if let Some(cap) = self.weekly_cost_cap_usd {
+            if weekly_spend_usd >= cap {
+                return PolicyDecision::deny(format!(
+                    "weekly budget exceeded: ${weekly_spend_usd:.4} of ${cap:.4} cap"
+                ));
+            }
+        }
+        PolicyDecision::allow()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -232,6 +264,42 @@ mod tests {
         };
         let d = gate.evaluate_dispatch(&req);
         assert!(d.needs_approval);
+    }
+
+    #[test]
+    fn cost_cap_allows_under_budget() {
+        let b = BudgetPolicy {
+            daily_cost_cap_usd: Some(10.0),
+            weekly_cost_cap_usd: Some(50.0),
+            ..Default::default()
+        };
+        assert!(b.has_cost_caps());
+        assert!(b.check_cost(5.0, 20.0).allowed);
+    }
+
+    #[test]
+    fn cost_cap_denies_at_or_over_daily() {
+        let b = BudgetPolicy { daily_cost_cap_usd: Some(10.0), ..Default::default() };
+        let d = b.check_cost(10.0, 0.0); // at the cap denies (>=)
+        assert!(d.denied);
+        assert!(d.reasons[0].contains("daily budget exceeded"));
+        assert!(b.check_cost(12.5, 0.0).denied);
+        assert!(b.check_cost(9.99, 0.0).allowed);
+    }
+
+    #[test]
+    fn cost_cap_denies_over_weekly() {
+        let b = BudgetPolicy { weekly_cost_cap_usd: Some(50.0), ..Default::default() };
+        let d = b.check_cost(0.0, 55.0);
+        assert!(d.denied);
+        assert!(d.reasons[0].contains("weekly budget exceeded"));
+    }
+
+    #[test]
+    fn no_caps_means_no_store_read_and_always_allows() {
+        let b = BudgetPolicy::default();
+        assert!(!b.has_cost_caps());
+        assert!(b.check_cost(1_000_000.0, 1_000_000.0).allowed);
     }
 
     #[test]

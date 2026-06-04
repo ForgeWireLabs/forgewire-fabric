@@ -16,6 +16,8 @@
 //!
 //! Stream durability profile:
 //!     FORGEWIRE_HUB_STREAM_PROFILE   — "strict" | "balanced" | "throughput" (default: strict)
+//!     FORGEWIRE_HUB_DAILY_BUDGET_USD — native daily cost cap (default: none)
+//!     FORGEWIRE_HUB_WEEKLY_BUDGET_USD — native weekly cost cap (default: none)
 //!       strict     — every line written to store before HTTP response (default, strongest)
 //!       balanced   — buffer 50 lines, flush to store as a batch
 //!       throughput — buffer 200 lines, flush to store as a batch (operator opt-in only)
@@ -30,7 +32,7 @@ use axum::Router;
 use fabric_hub::auth::require_bearer;
 use fabric_hub::routes::{approvals, audit, cluster, cost, dispatchers, health, labels, runners, secrets, streams, tasks};
 use fabric_hub::state::HubState;
-use fabric_policy::{DispatchGate, FabricPolicy};
+use fabric_policy::{BudgetPolicy, DispatchGate, FabricPolicy};
 use fabric_store::{FabricStore, SchemaStore};
 use fabric_streams::{DurabilityProfile, StreamBuffer};
 use reqwest::Client as ReqwestClient;
@@ -184,6 +186,26 @@ async fn main() {
     );
     info!("stream_profile={}", stream_profile.as_str());
 
+    // Native cost caps (M2.5.3) — Rust owns budget enforcement; read from env.
+    // Absent vars mean "no cap". Enforced against the persistent budget_state
+    // accumulators on every dispatch.
+    let budget_caps = BudgetPolicy {
+        daily_cost_cap_usd: std::env::var("FORGEWIRE_HUB_DAILY_BUDGET_USD")
+            .ok()
+            .and_then(|v| v.parse().ok()),
+        weekly_cost_cap_usd: std::env::var("FORGEWIRE_HUB_WEEKLY_BUDGET_USD")
+            .ok()
+            .and_then(|v| v.parse().ok()),
+        ..Default::default()
+    };
+    if budget_caps.has_cost_caps() {
+        tracing::info!(
+            daily = ?budget_caps.daily_cost_cap_usd,
+            weekly = ?budget_caps.weekly_cost_cap_usd,
+            "native budget enforcement enabled"
+        );
+    }
+
     let state = Arc::new(HubState {
         store,
         token,
@@ -193,6 +215,7 @@ async fn main() {
             .unwrap_or_default()
             .as_secs_f64(),
         gate: DispatchGate::new(FabricPolicy::default()),
+        budget_caps,
         host: host.clone(),
         port,
         protocol_version: PROTOCOL_VERSION,

@@ -2,7 +2,7 @@
 //!
 //! GET /cost/summary[?since_days=7]     — aggregated spend by model + day
 //! GET /cost/records[?since_days=30&limit=500] — raw rows newest-first
-//! GET /cost/budget                      — current period spend (no caps — hub policy in Python)
+//! GET /cost/budget                      — current period spend vs. native caps
 
 use std::collections::HashMap;
 use std::sync::Arc;
