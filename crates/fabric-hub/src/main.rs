@@ -150,6 +150,33 @@ async fn main() {
         std::process::exit(1);
     }
 
+    // ── LAN discovery beacon ──────────────────────────────────────────────
+    // Broadcast our presence so runners and the VS Code extension find this hub
+    // by identity, not a pinned address. Survives DHCP/subnet changes; the token
+    // is never sent (only its hash). Opt out with FORGEWIRE_BEACON_DISABLE=1.
+    if std::env::var("FORGEWIRE_BEACON_DISABLE").ok().as_deref() != Some("1") {
+        let beacon_port: u16 = std::env::var("FORGEWIRE_BEACON_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(fabric_beacon::DEFAULT_BEACON_PORT);
+        let hostname = std::env::var("COMPUTERNAME")
+            .or_else(|_| std::env::var("HOSTNAME"))
+            .unwrap_or_else(|_| "forgewire-hub".into());
+        let advert = fabric_beacon::HubAdvert {
+            hub_id: hostname.clone(),
+            http_port: port,
+            proto: PROTOCOL_VERSION,
+            name: hostname,
+            token_hash: fabric_beacon::token_hash(&token),
+        };
+        std::thread::spawn(move || {
+            if let Err(e) = fabric_beacon::serve(advert, beacon_port, std::time::Duration::from_secs(5)) {
+                tracing::warn!("discovery beacon disabled: cannot bind UDP {beacon_port}: {e}");
+            }
+        });
+        tracing::info!("discovery beacon broadcasting on udp/{beacon_port}");
+    }
+
     // ── rqlite backend (only option) ──────────────────────────────────────
     let rqlite_host = std::env::var("FORGEWIRE_HUB_RQLITE_HOST")
         .unwrap_or_else(|_| "127.0.0.1".into());

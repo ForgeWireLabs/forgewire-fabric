@@ -2,7 +2,7 @@
   "name": "forgewire",
   "displayName": "ForgeWire",
   "description": "Unified control surface for the ForgeWire platform — Fabric, Loom, Hub, runners, and future services: signed envelopes, scope-bound capability tokens, live stream output. Run a hub or runner from inside VS Code on Windows, macOS, or Linux.",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "publisher": "DigitalHallucinations",
   "license": "Apache-2.0",
   "icon": "media/icon.png",
@@ -117,6 +117,11 @@
           "type": "number",
           "default": 8765,
           "description": "Default port used by 'ForgeWire: Start Hub Here'."
+        },
+        "forgewire.beaconPort": {
+          "type": "number",
+          "default": 48765,
+          "description": "UDP port for LAN hub discovery. The extension broadcasts a query here and elects whichever hub replies, so the active hub follows the network with no static address. Must match the hub's FORGEWIRE_BEACON_PORT."
         },
         "forgewire.cluster.repoRoot": {
           "type": "string",

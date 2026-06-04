@@ -37,6 +37,8 @@ const MAX_LOG_TAIL_LINES: usize = 50;
 
 #[derive(Debug, Clone)]
 pub struct RunnerConfig {
+    /// Optional pinned hub URL. Empty means "discover on the LAN". Even when set,
+    /// the runner falls back to discovery if it is unreachable.
     pub hub_url: String,
     pub token: String,
     pub workspace_root: PathBuf,
@@ -47,12 +49,19 @@ pub struct RunnerConfig {
     pub tenant: Option<String>,
     pub max_concurrent: i64,
     pub poll_interval: Duration,
+    /// UDP port for the LAN discovery beacon.
+    pub beacon_port: u16,
 }
 
 impl RunnerConfig {
     pub fn from_env() -> Result<Self, String> {
-        let hub_url = std::env::var("FORGEWIRE_HUB_URL")
-            .map_err(|_| "FORGEWIRE_HUB_URL not set")?;
+        // FORGEWIRE_HUB_URL is now optional: empty triggers LAN discovery so the
+        // runner finds the hub by identity, not a pinned address.
+        let hub_url = std::env::var("FORGEWIRE_HUB_URL").unwrap_or_default();
+        let beacon_port = std::env::var("FORGEWIRE_BEACON_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(fabric_beacon::DEFAULT_BEACON_PORT);
         let token_file = std::env::var("FORGEWIRE_HUB_TOKEN_FILE")
             .unwrap_or_else(|_| {
                 if cfg!(windows) {
@@ -109,7 +118,40 @@ impl RunnerConfig {
             tenant: std::env::var("FORGEWIRE_RUNNER_TENANT").ok(),
             max_concurrent,
             poll_interval: Duration::from_secs_f64(poll_secs),
+            beacon_port,
         })
+    }
+}
+
+/// Resolve a working hub URL: prefer a reachable configured URL, otherwise
+/// discover the hub on the LAN by token hash (retrying forever with backoff).
+/// This is what makes the runner survive hub address changes and reboots
+/// without any static configuration beyond the token.
+pub async fn resolve_hub_url(config: &RunnerConfig) -> String {
+    if !config.hub_url.is_empty() {
+        let c = HubClient::new(&config.hub_url, &config.token);
+        if c.healthz().await.is_ok() {
+            return config.hub_url.clone();
+        }
+        warn!(hub = %config.hub_url, "configured hub unreachable -- falling back to LAN discovery");
+    }
+    let want = fabric_beacon::token_hash(&config.token);
+    let port = config.beacon_port;
+    let mut delay = Duration::from_secs(1);
+    loop {
+        let want2 = want.clone();
+        let found = tokio::task::spawn_blocking(move || {
+            fabric_beacon::discover(port, Duration::from_secs(3), Some(&want2)).unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default();
+        if let Some(hub) = found.into_iter().next() {
+            info!(hub = %hub.url, hub_id = %hub.hub_id, "discovered hub via LAN beacon");
+            return hub.url;
+        }
+        warn!(retry_in = ?delay, "no hub discovered on the LAN -- retrying");
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(Duration::from_secs(15));
     }
 }
 

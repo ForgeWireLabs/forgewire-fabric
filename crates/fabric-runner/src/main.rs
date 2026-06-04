@@ -22,13 +22,18 @@ async fn main() {
         )
         .init();
 
-    let config = match RunnerConfig::from_env() {
+    let mut config = match RunnerConfig::from_env() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("configuration error: {e}");
             std::process::exit(1);
         }
     };
+
+    // Resolve the hub dynamically: a reachable configured URL wins, otherwise we
+    // discover it on the LAN by token hash. No pinned address required.
+    let resolved = fabric_runner::resolve_hub_url(&config).await;
+    config.hub_url = resolved;
 
     info!(
         hub = %config.hub_url,

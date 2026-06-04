@@ -19,6 +19,7 @@ fabric-store-rqlite = { path = "../fabric-store-rqlite" }
 fabric-policy = { path = "../fabric-policy" }
 fabric-claim-router = { path = "../fabric-claim-router" }
 fabric-streams = { path = "../fabric-streams" }
+fabric-beacon = { path = "../fabric-beacon" }
 serde.workspace = true
 serde_json.workspace = true
 hex.workspace = true

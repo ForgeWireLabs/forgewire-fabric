@@ -14,6 +14,7 @@ fabric-types = { path = "../fabric-types" }
 fabric-protocol = { path = "../fabric-protocol" }
 fabric-identity = { path = "../fabric-identity" }
 fabric-client = { path = "../fabric-client" }
+fabric-beacon = { path = "../fabric-beacon" }
 serde.workspace = true
 serde_json.workspace = true
 hex.workspace = true

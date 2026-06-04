@@ -10,7 +10,94 @@
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
+import * as dgram from "dgram";
+import * as crypto from "crypto";
 import * as vscode from "vscode";
+
+// LAN discovery beacon (matches crates/fabric-beacon). Zero dependencies — Node
+// has dgram + crypto built in.
+const BEACON_MAGIC = "FWBEACON";
+const BEACON_VERSION = 1;
+const DEFAULT_BEACON_PORT = 48765;
+
+/** sha256(token)[..16] — same cluster fingerprint the hub advertises. */
+function beaconTokenHash(token: string): string {
+  return crypto.createHash("sha256").update(token).digest("hex").slice(0, 16);
+}
+
+interface DiscoveredBeaconHub {
+  url: string;
+  name: string;
+  proto: number;
+  tokenHash: string;
+}
+
+/**
+ * Discover ForgeWire hubs on the LAN by broadcasting a query and collecting
+ * beacon replies. The hub URL is built from the *source address* of each reply,
+ * so it always reflects the hub's current address — no pinned config, immune to
+ * DHCP/subnet changes. If `wantTokenHash` is given, only same-cluster hubs are
+ * returned.
+ */
+function discoverBeacons(
+  port: number,
+  timeoutMs: number,
+  wantTokenHash?: string
+): Promise<DiscoveredBeaconHub[]> {
+  return new Promise((resolve) => {
+    const found = new Map<string, DiscoveredBeaconHub>();
+    let sock: dgram.Socket;
+    try {
+      sock = dgram.createSocket({ type: "udp4", reuseAddr: true });
+    } catch {
+      resolve([]);
+      return;
+    }
+    const done = () => {
+      try {
+        sock.close();
+      } catch {
+        /* ignore */
+      }
+      resolve([...found.values()]);
+    };
+    const query = Buffer.from(
+      JSON.stringify({ magic: BEACON_MAGIC, v: BEACON_VERSION, role: "query" })
+    );
+    sock.on("error", () => done());
+    sock.on("message", (msg, rinfo) => {
+      try {
+        const b = JSON.parse(msg.toString("utf8"));
+        if (b.magic !== BEACON_MAGIC || b.v !== BEACON_VERSION || b.role !== "hub" || !b.port) {
+          return;
+        }
+        if (wantTokenHash && b.token_hash && b.token_hash !== wantTokenHash) {
+          return; // different cluster
+        }
+        const url = `http://${rinfo.address}:${b.port}`;
+        if (!found.has(url)) {
+          found.set(url, {
+            url,
+            name: String(b.name ?? ""),
+            proto: Number(b.proto ?? 0),
+            tokenHash: String(b.token_hash ?? ""),
+          });
+        }
+      } catch {
+        /* ignore malformed */
+      }
+    });
+    sock.bind(() => {
+      try {
+        sock.setBroadcast(true);
+        sock.send(query, port, "255.255.255.255");
+      } catch {
+        /* ignore */
+      }
+    });
+    setTimeout(done, timeoutMs);
+  });
+}
 
 export interface RunnerInfo {
   runner_id: string;
@@ -204,6 +291,23 @@ export class HubClient {
     if (legacy && !candidates.find((c) => (c.url ?? "").trim() === legacy)) {
       candidates.push({ url: legacy, label: "default", priority: 100 });
     }
+    // Discover hubs on the LAN via the UDP beacon and add them as top-priority
+    // candidates. The hub address comes from the beacon's source IP, so this is
+    // immune to DHCP/subnet changes -- the "correct hub" is found with no config.
+    try {
+      const wantHash = token ? beaconTokenHash(token) : undefined;
+      const beaconPort = cfg.get<number>("beaconPort") ?? DEFAULT_BEACON_PORT;
+      const discovered = await discoverBeacons(beaconPort, 1500, wantHash);
+      for (const d of discovered) {
+        const u = d.url.replace(/\/+$/, "");
+        if (!candidates.find((c) => (c.url ?? "").trim().replace(/\/+$/, "") === u)) {
+          candidates.push({ url: u, label: d.name ? `discovered (${d.name})` : "discovered", priority: 50 });
+        }
+      }
+    } catch {
+      /* discovery is best-effort */
+    }
+
     // Always probe the local hub as a low-priority fallback so the extension
     // discovers a hub running on this machine even when every configured
     // candidate is stale or unreachable. The display follows whatever is

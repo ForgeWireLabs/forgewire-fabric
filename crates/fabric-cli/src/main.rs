@@ -78,6 +78,18 @@ enum Commands {
         #[arg(long, env = "FORGEWIRE_HUB_TOKEN_FILE")]
         token_file: Option<String>,
     },
+    /// Discover ForgeWire hubs on the LAN via the UDP beacon (no config needed).
+    Discover {
+        /// Seconds to listen for beacon replies.
+        #[arg(long, default_value = "3")]
+        timeout: u64,
+        /// Only show hubs matching this token file's cluster.
+        #[arg(long, env = "FORGEWIRE_HUB_TOKEN_FILE")]
+        token_file: Option<String>,
+        /// Beacon UDP port.
+        #[arg(long, default_value_t = fabric_beacon::DEFAULT_BEACON_PORT)]
+        port: u16,
+    },
     /// Print version
     Version,
 }
@@ -240,6 +252,26 @@ async fn main() {
                     eprintln!("replay dispatch failed: {e}");
                     std::process::exit(1);
                 }
+            }
+        }
+
+        Commands::Discover { timeout, token_file, port } => {
+            let want = token_file.as_deref().and_then(|tf| {
+                std::fs::read_to_string(tf).ok().map(|t| fabric_beacon::token_hash(t.trim()))
+            });
+            eprintln!("listening for ForgeWire hubs on udp/{port} for {timeout}s...");
+            let hubs = fabric_beacon::discover(
+                port,
+                std::time::Duration::from_secs(timeout),
+                want.as_deref(),
+            )
+            .unwrap_or_default();
+            if hubs.is_empty() {
+                eprintln!("no hubs found (none on this LAN segment, or all firewalled)");
+                std::process::exit(1);
+            }
+            for h in hubs {
+                println!("{}\t{}\tproto={}\tcluster={}", h.url, h.name, h.proto, h.token_hash);
             }
         }
 

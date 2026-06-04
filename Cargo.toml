@@ -20,6 +20,7 @@ members = [
     "crates/fabric-runner",
     "crates/fabric-claim-router",
     "crates/fabric-streams",
+    "crates/fabric-beacon",
     "crates/fabric-py",
 ]
 
@@ -53,6 +54,7 @@ fabric-client = { path = "crates/fabric-client" }
 fabric-runner = { path = "crates/fabric-runner" }
 fabric-claim-router = { path = "crates/fabric-claim-router" }
 fabric-streams = { path = "crates/fabric-streams" }
+fabric-beacon = { path = "crates/fabric-beacon" }
 
 [profile.release]
 lto = "thin"

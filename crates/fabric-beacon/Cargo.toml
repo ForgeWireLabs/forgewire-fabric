@@ -1,0 +1,15 @@
+[package]
+name = "fabric-beacon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Zero-dependency UDP broadcast hub discovery for ForgeWire Fabric — survives DHCP/subnet changes, no static addresses."
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+hex.workspace = true
+
+[lints]
+workspace = true
