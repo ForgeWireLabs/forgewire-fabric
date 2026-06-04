@@ -351,8 +351,10 @@ async fn run_one_task(
                 }
                 _ => TaskResult {
                     worker_id: runner_id,
+                    // Capture the resulting commit so the result chain records
+                    // the output_commit and replay can compare it (M2.5.3).
+                    head_commit: git_head_commit(&config.workspace_root).await,
                     status: if rc == 0 { "done".into() } else { "failed".into() },
-                    head_commit: None,
                     commits: vec![],
                     files_touched: vec![],
                     test_summary: None,
@@ -388,6 +390,23 @@ async fn run_one_task(
 const INTENT_PREFIX: &str = "FW_INTENT:";
 
 /// Parse a `FW_INTENT:<kind>[:<key>=<value>...]` line.
+/// Best-effort `git rev-parse HEAD` in the workspace, for reporting the output
+/// commit on a completed task. Returns `None` if the workspace is not a git repo
+/// or git is unavailable.
+async fn git_head_commit(workspace: &std::path::Path) -> Option<String> {
+    let out = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(workspace)
+        .output()
+        .await
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    if s.is_empty() { None } else { Some(s) }
+}
+
 /// Returns `(kind, paths, hosts, command)`.
 fn parse_intent_line(line: &str) -> (String, Vec<String>, Vec<String>, Option<String>) {
     let rest = &line[INTENT_PREFIX.len()..];
