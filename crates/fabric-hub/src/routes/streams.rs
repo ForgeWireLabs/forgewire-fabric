@@ -8,7 +8,7 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use fabric_store::{NoteStore, ProgressStore, ResultStore, StreamStore, SubmitResultParams, TaskStore};
+use fabric_store::{CostStore, NoteStore, ProgressStore, ResultStore, StreamStore, SubmitResultParams, TaskStore};
 use fabric_streams::{DurabilityProfile, PendingEntry};
 
 use crate::state::HubState;
@@ -52,6 +52,20 @@ pub struct ResultPayload {
     pub test_summary: Option<String>,
     pub log_tail: Option<String>,
     pub error: Option<String>,
+    // Cost actuals (M2.5.2/M2.5.3). When cost_usd is present the hub records a
+    // cost_ledger row and atomically bumps the budget_state accumulators.
+    #[serde(default)]
+    pub model_id: Option<String>,
+    #[serde(default)]
+    pub prompt_tokens: Option<i64>,
+    #[serde(default)]
+    pub completion_tokens: Option<i64>,
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
+    #[serde(default)]
+    pub wall_seconds: Option<f64>,
+    #[serde(default)]
+    pub runner_cpu_seconds: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -283,6 +297,13 @@ pub async fn submit_result(
     let head_commit = payload.head_commit.clone();
     let commits = payload.commits.clone();
     let files_touched = payload.files_touched.clone();
+    // Capture cost actuals before payload is moved.
+    let cost_usd = payload.cost_usd;
+    let cost_model = payload.model_id.clone().unwrap_or_default();
+    let cost_prompt = payload.prompt_tokens.unwrap_or(0);
+    let cost_completion = payload.completion_tokens.unwrap_or(0);
+    let cost_wall = payload.wall_seconds.unwrap_or(0.0);
+    let cost_cpu = payload.runner_cpu_seconds.unwrap_or(0.0);
 
     let p = SubmitResultParams {
         task_id,
@@ -311,6 +332,26 @@ pub async fn submit_result(
         "files_touched": files_touched,
     });
     let _ = audit_append(&*state.store, "result", Some(task_id), &audit_payload).await;
+
+    // Record cost actuals (atomically bumps budget_state) when the runner
+    // reported a cost. Best-effort: a ledger failure must not fail the result.
+    if let Some(cost) = cost_usd {
+        let dispatcher_id = task.dispatcher_id.as_deref();
+        if let Err(e) = state.store.record_cost(
+            &task_id.to_string(),
+            dispatcher_id,
+            Some(&worker_id),
+            &cost_model,
+            cost_prompt,
+            cost_completion,
+            cost,
+            cost_wall,
+            cost_cpu,
+            &utc_now(),
+        ).await {
+            tracing::warn!("record_cost failed for task {task_id}: {e}");
+        }
+    }
 
     Ok(Json(serde_json::to_value(task).unwrap_or(Value::Null)))
 }
