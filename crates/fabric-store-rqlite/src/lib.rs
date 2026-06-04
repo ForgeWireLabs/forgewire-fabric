@@ -241,6 +241,21 @@ impl SchemaStore for RqliteStore {
             "CREATE TABLE IF NOT EXISTS labels (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_by TEXT, updated_at TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS approvals (approval_id TEXT PRIMARY KEY, envelope_hash TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', decision_json TEXT NOT NULL DEFAULT '{}', task_label TEXT, branch TEXT, scope_globs_json TEXT NOT NULL DEFAULT '[]', dispatcher_id TEXT, approver TEXT, reason TEXT, created_at TEXT NOT NULL, resolved_at TEXT)",
             "CREATE TABLE IF NOT EXISTS secrets (name TEXT PRIMARY KEY, encrypted_value TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, last_rotated_at TEXT)",
+            // Cost ledger (M2.5.2). Columns mirror the Python hub schema.sql so the
+            // Rust and Python hub paths read/write the same rqlite table. Previously
+            // this table was only created by the Python hub, so a fresh Rust-only
+            // install failed on the first record_cost — this closes that gap.
+            "CREATE TABLE IF NOT EXISTS cost_ledger (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, dispatcher_id TEXT, runner_id TEXT, model_id TEXT NOT NULL DEFAULT '', prompt_tokens INTEGER NOT NULL DEFAULT 0, completion_tokens INTEGER NOT NULL DEFAULT 0, cost_usd REAL NOT NULL DEFAULT 0.0, wall_seconds REAL NOT NULL DEFAULT 0.0, runner_cpu_seconds REAL NOT NULL DEFAULT 0.0, created_at TEXT NOT NULL)",
+            "CREATE INDEX IF NOT EXISTS idx_cost_task ON cost_ledger (task_id)",
+            "CREATE INDEX IF NOT EXISTS idx_cost_created ON cost_ledger (created_at)",
+            "CREATE INDEX IF NOT EXISTS idx_cost_model ON cost_ledger (model_id, created_at)",
+            // Budget accumulators (M2.5.3). One row per (scope, period_key); spend_usd
+            // is intended to be updated atomically alongside each cost_ledger insert so
+            // daily/weekly/per-dispatcher/per-model totals survive a hub restart without
+            // a full cost_ledger re-aggregation. Tier-1 control-plane state (rqlite only).
+            // NOTE: this creates the table only; the BudgetStore read/write accumulator
+            // logic and Python BudgetEnforcer hydration are a follow-up M2.5.3 brief.
+            "CREATE TABLE IF NOT EXISTS budget_state (scope TEXT NOT NULL, period_key TEXT NOT NULL, spend_usd REAL NOT NULL DEFAULT 0.0, updated_at TEXT NOT NULL, PRIMARY KEY (scope, period_key))",
         ];
 
         for sql in &creates {
@@ -255,6 +270,11 @@ impl SchemaStore for RqliteStore {
         ).await?;
         self.execute_one(
             "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (2, ?)",
+            &[json!(now)],
+        ).await?;
+        // v3: cost_ledger (+ indexes) and budget_state created in the Rust path.
+        self.execute_one(
+            "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (3, ?)",
             &[json!(now)],
         ).await?;
 
