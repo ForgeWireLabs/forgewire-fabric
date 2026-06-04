@@ -31,7 +31,7 @@ use fabric_hub::auth::require_bearer;
 use fabric_hub::routes::{approvals, audit, cluster, cost, dispatchers, health, labels, runners, secrets, streams, tasks};
 use fabric_hub::state::HubState;
 use fabric_policy::{DispatchGate, FabricPolicy};
-use fabric_store::{CostStore, FabricStore, SchemaStore};
+use fabric_store::{FabricStore, SchemaStore};
 use fabric_streams::{DurabilityProfile, StreamBuffer};
 use reqwest::Client as ReqwestClient;
 use tracing::{info, warn};

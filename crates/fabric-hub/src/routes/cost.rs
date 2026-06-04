@@ -55,46 +55,6 @@ fn epoch_to_iso(ts: i64) -> String {
     format!("{year:04}-{:02}-{:02} 00:00:00", month + 1, days + 1)
 }
 
-fn today_str() -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
-    let iso = epoch_to_iso(now);
-    iso[..10].to_owned()
-}
-
-fn this_week_str() -> String {
-    // ISO week: YYYY-WNN. Jan 1 1970 = Thursday = day-of-week 4 (Mon=1).
-    // We use the simple epoch-days approach: find the Monday of the current week,
-    // then count weeks from the Monday of Jan 4 of the year (always in week 1).
-    let now_secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
-    let day_num = now_secs / 86400; // days since 1970-01-01 (Thursday)
-    // ISO day of week: Mon=0 .. Sun=6. 1970-01-01 was Thursday = dow 3.
-    let dow = ((day_num + 3) % 7) as i64;
-    let monday_day = day_num - dow;
-    // Get year from Monday's date
-    let monday_iso = epoch_to_iso(monday_day * 86400);
-    let year: i64 = monday_iso[..4].parse().unwrap_or(1970);
-    // Day number of Jan 4 of this year (always in ISO week 1)
-    let jan4_approx = days_for_year_jan4(year);
-    let jan4_dow = ((jan4_approx + 3) % 7) as i64;
-    let week1_monday = jan4_approx - jan4_dow;
-    let week_num = (monday_day - week1_monday) / 7 + 1;
-    format!("{year:04}-W{:02}", week_num.max(1).min(53))
-}
-
-fn days_for_year_jan4(year: i64) -> i64 {
-    // Days from epoch to Jan 4 of the given year
-    let y = year - 1970;
-    let leap_days = (year - 1) / 4 - (year - 1) / 100 + (year - 1) / 400
-        - (1969 / 4 - 1969 / 100 + 1969 / 400);
-    y * 365 + leap_days + 3 // +3 for Jan 4
-}
-
 pub async fn cost_summary(
     State(state): State<Arc<HubState>>,
     Query(q): Query<SinceQuery>,
@@ -169,24 +129,21 @@ pub async fn cost_records(
 pub async fn cost_budget(
     State(state): State<Arc<HubState>>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    // Compute today and this-week totals from the ledger.
-    let today = today_str();
-    let week = this_week_str();
-    let today_since = format!("{today} 00:00:00");
-    let week_since = since_iso(7); // approximate; precise week computed client-side
-
-    let today_rows = state.store.query_cost(Some(&today_since), 100_000).await
+    // Read exact current-period totals from the persistent budget_state
+    // accumulators (point lookups — no cost_ledger scan, and the weekly figure
+    // is ISO-week-aligned rather than a rolling 7-day approximation). These
+    // survive a hub restart without re-aggregation (M2.5.3).
+    let now = crate::utils::utc_now();
+    let budget = state
+        .store
+        .current_budget(&now)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let week_rows = state.store.query_cost(Some(&week_since), 100_000).await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    let daily_spend: f64 = today_rows.iter().map(|r| r.cost_usd).sum();
-    let weekly_spend: f64 = week_rows.iter().map(|r| r.cost_usd).sum();
 
     Ok(Json(json!({
-        "today": today,
-        "week": week,
-        "daily_spend_usd": (daily_spend * 1_000_000.0).round() / 1_000_000.0,
-        "weekly_spend_usd": (weekly_spend * 1_000_000.0).round() / 1_000_000.0,
+        "today": budget.today,
+        "week": budget.week,
+        "daily_spend_usd": (budget.daily_spend_usd * 1_000_000.0).round() / 1_000_000.0,
+        "weekly_spend_usd": (budget.weekly_spend_usd * 1_000_000.0).round() / 1_000_000.0,
     })))
 }

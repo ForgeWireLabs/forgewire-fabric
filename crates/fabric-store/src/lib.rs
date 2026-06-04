@@ -420,6 +420,58 @@ pub trait CostStore: Send + Sync {
     ) -> StoreResult<Vec<CostRow>>;
 }
 
+// -- Budget accumulators (M2.5.3) --------------------------------------------
+
+/// One persistent spend accumulator: total `spend_usd` for a (scope, period_key).
+///
+/// `scope` is e.g. `"daily"` or `"weekly"`; `period_key` is the day string
+/// `"YYYY-MM-DD"` or the ISO week string `"YYYY-WNN"`. These rows let the
+/// budget enforcer read current-period totals via point lookups and survive a
+/// hub restart without re-aggregating the whole `cost_ledger`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BudgetStateRow {
+    pub scope: String,
+    pub period_key: String,
+    pub spend_usd: f64,
+    pub updated_at: String,
+}
+
+/// Current-period spend totals for the instant the query is made, using the
+/// store's own day/ISO-week period-key derivation (so the keys match the
+/// accumulator writes exactly).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CurrentBudget {
+    pub today: String,
+    pub week: String,
+    pub daily_spend_usd: f64,
+    pub weekly_spend_usd: f64,
+}
+
+#[async_trait]
+pub trait BudgetStore: Send + Sync {
+    /// Atomically add `delta_usd` to the (scope, period_key) accumulator,
+    /// creating the row if absent. Returns the new total.
+    async fn add_spend(
+        &self,
+        scope: &str,
+        period_key: &str,
+        delta_usd: f64,
+        now: &str,
+    ) -> StoreResult<f64>;
+
+    /// Current total for a (scope, period_key); 0.0 if no row exists.
+    async fn get_spend(&self, scope: &str, period_key: &str) -> StoreResult<f64>;
+
+    /// All accumulator rows — used to hydrate an in-memory enforcer on startup.
+    async fn list_budget_state(&self) -> StoreResult<Vec<BudgetStateRow>>;
+
+    /// Current daily and weekly spend totals for the instant `now`, read from
+    /// the accumulators (point lookups, no `cost_ledger` scan). `now` is a hub
+    /// UTC timestamp string; the implementation derives the day and ISO-week
+    /// period keys the same way the accumulator writes do.
+    async fn current_budget(&self, now: &str) -> StoreResult<CurrentBudget>;
+}
+
 // -- Composite trait ---------------------------------------------------------
 
 /// The full store contract. A backend implements all sub-traits.
@@ -440,6 +492,7 @@ pub trait FabricStore:
     + NoteStore
     + SchemaStore
     + CostStore
+    + BudgetStore
     + Send
     + Sync
 {

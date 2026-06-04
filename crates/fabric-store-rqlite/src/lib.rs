@@ -16,6 +16,8 @@
 
 #![deny(rust_2018_idioms)]
 
+mod dates;
+
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -106,6 +108,58 @@ impl RqliteStore {
             return Err(RqliteError::Status { status, body: text });
         }
         serde_json::from_str(&text).map_err(|e| RqliteError::Http(e.to_string()))
+    }
+
+    /// Execute multiple write statements atomically in a single rqlite
+    /// transaction. Either all statements commit or none do — used where an
+    /// insert and its derived accumulator updates must not drift (M2.5.3).
+    async fn execute_tx(&self, statements: &[(&str, &[Value])]) -> Result<Value, RqliteError> {
+        let body: Vec<Value> = statements
+            .iter()
+            .map(|(sql, params)| {
+                if params.is_empty() {
+                    json!([sql])
+                } else {
+                    let mut arr = vec![json!(sql)];
+                    arr.extend(params.iter().cloned());
+                    json!(arr)
+                }
+            })
+            .collect();
+
+        let url = format!("{}/db/execute?timings&transaction", self.base_url);
+        let resp = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| RqliteError::Http(e.to_string()))?;
+
+        let status = resp.status().as_u16();
+        if status == 503 {
+            return Err(RqliteError::QuorumLoss);
+        }
+        let text = resp.text().await.unwrap_or_default();
+        if !(200..300).contains(&status) {
+            return Err(RqliteError::Status { status, body: text });
+        }
+        let parsed: Value =
+            serde_json::from_str(&text).map_err(|e| RqliteError::Http(e.to_string()))?;
+        // rqlite reports per-statement errors inside the results array even on
+        // HTTP 200; surface the first one so a failed transaction is not
+        // silently treated as success.
+        if let Some(results) = parsed["results"].as_array() {
+            for r in results {
+                if let Some(err) = r["error"].as_str() {
+                    return Err(RqliteError::Status {
+                        status: 200,
+                        body: err.to_owned(),
+                    });
+                }
+            }
+        }
+        Ok(parsed)
     }
 
     /// Execute a single write and return rows_affected.
@@ -1232,11 +1286,14 @@ impl CostStore for RqliteStore {
         runner_cpu_seconds: f64,
         now: &str,
     ) -> StoreResult<CostRow> {
-        let sql = "INSERT INTO cost_ledger \
+        // Insert the immutable ledger row AND bump the daily/weekly spend
+        // accumulators in one atomic transaction, so the accumulators can never
+        // drift from the ledger across a crash, restart, or failover (M2.5.3).
+        let insert_sql = "INSERT INTO cost_ledger \
             (task_id, dispatcher_id, runner_id, model_id, prompt_tokens, completion_tokens, \
              cost_usd, wall_seconds, runner_cpu_seconds, created_at) \
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-        let params = [
+        let insert_params = [
             serde_json::Value::String(task_id.to_owned()),
             dispatcher_id.map_or(serde_json::Value::Null, |v| serde_json::Value::String(v.to_owned())),
             runner_id.map_or(serde_json::Value::Null, |v| serde_json::Value::String(v.to_owned())),
@@ -1248,7 +1305,38 @@ impl CostStore for RqliteStore {
             serde_json::json!(runner_cpu_seconds),
             serde_json::Value::String(now.to_owned()),
         ];
-        let id = self.execute_insert(sql, &params).await?;
+
+        // Atomic accumulator increment via UPSERT. Keyed by (scope, period_key).
+        let upsert_sql = "INSERT INTO budget_state (scope, period_key, spend_usd, updated_at) \
+            VALUES (?, ?, ?, ?) \
+            ON CONFLICT(scope, period_key) DO UPDATE SET \
+              spend_usd = spend_usd + excluded.spend_usd, \
+              updated_at = excluded.updated_at";
+        let day = dates::day_key(now);
+        let week = dates::iso_week_key(now);
+        let daily_params = [
+            serde_json::Value::String("daily".to_owned()),
+            serde_json::Value::String(day),
+            serde_json::json!(cost_usd),
+            serde_json::Value::String(now.to_owned()),
+        ];
+        let weekly_params = [
+            serde_json::Value::String("weekly".to_owned()),
+            serde_json::Value::String(week),
+            serde_json::json!(cost_usd),
+            serde_json::Value::String(now.to_owned()),
+        ];
+
+        let resp = self
+            .execute_tx(&[
+                (insert_sql, &insert_params[..]),
+                (upsert_sql, &daily_params[..]),
+                (upsert_sql, &weekly_params[..]),
+            ])
+            .await?;
+        let id = resp["results"][0]["last_insert_id"]
+            .as_i64()
+            .ok_or_else(|| RqliteError::Http("cost INSERT returned no last_insert_id".into()))?;
         Ok(CostRow {
             id,
             task_id: task_id.to_owned(),
@@ -1307,6 +1395,77 @@ impl CostStore for RqliteStore {
                 })
             })
             .collect())
+    }
+}
+
+#[async_trait]
+impl BudgetStore for RqliteStore {
+    async fn add_spend(
+        &self,
+        scope: &str,
+        period_key: &str,
+        delta_usd: f64,
+        now: &str,
+    ) -> StoreResult<f64> {
+        let sql = "INSERT INTO budget_state (scope, period_key, spend_usd, updated_at) \
+            VALUES (?, ?, ?, ?) \
+            ON CONFLICT(scope, period_key) DO UPDATE SET \
+              spend_usd = spend_usd + excluded.spend_usd, \
+              updated_at = excluded.updated_at";
+        let params = [
+            serde_json::Value::String(scope.to_owned()),
+            serde_json::Value::String(period_key.to_owned()),
+            serde_json::json!(delta_usd),
+            serde_json::Value::String(now.to_owned()),
+        ];
+        self.execute_one(sql, &params).await?;
+        self.get_spend(scope, period_key).await
+    }
+
+    async fn get_spend(&self, scope: &str, period_key: &str) -> StoreResult<f64> {
+        let params = [
+            serde_json::Value::String(scope.to_owned()),
+            serde_json::Value::String(period_key.to_owned()),
+        ];
+        let total: Option<f64> = self
+            .query_scalar(
+                "SELECT spend_usd FROM budget_state WHERE scope = ? AND period_key = ?",
+                &params,
+            )
+            .await?;
+        Ok(total.unwrap_or(0.0))
+    }
+
+    async fn list_budget_state(&self) -> StoreResult<Vec<BudgetStateRow>> {
+        let rows = self
+            .query(
+                "SELECT scope, period_key, spend_usd, updated_at FROM budget_state \
+                 ORDER BY scope, period_key",
+                &[],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| BudgetStateRow {
+                scope: r.get("scope").and_then(|v| v.as_str()).unwrap_or("").to_owned(),
+                period_key: r.get("period_key").and_then(|v| v.as_str()).unwrap_or("").to_owned(),
+                spend_usd: r.get("spend_usd").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                updated_at: r.get("updated_at").and_then(|v| v.as_str()).unwrap_or("").to_owned(),
+            })
+            .collect())
+    }
+
+    async fn current_budget(&self, now: &str) -> StoreResult<CurrentBudget> {
+        let today = dates::day_key(now);
+        let week = dates::iso_week_key(now);
+        let daily_spend_usd = self.get_spend("daily", &today).await?;
+        let weekly_spend_usd = self.get_spend("weekly", &week).await?;
+        Ok(CurrentBudget {
+            today,
+            week,
+            daily_spend_usd,
+            weekly_spend_usd,
+        })
     }
 }
 
