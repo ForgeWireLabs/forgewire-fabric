@@ -160,6 +160,19 @@ impl HubClient {
             .await
     }
 
+    // -- Tasks (auth) --------------------------------------------------------
+
+    /// Fetch a single task's full record (the sealed brief fields + status).
+    pub async fn get_task(&self, task_id: i64) -> Result<Value, ClientError> {
+        self.get(&format!("/tasks/{task_id}")).await
+    }
+
+    /// Dispatch a task via the unsigned POST /tasks path. Used by replay to
+    /// re-issue a reconstructed brief.
+    pub async fn dispatch_unsigned(&self, brief: &Value) -> Result<Value, ClientError> {
+        self.post("/tasks", brief).await
+    }
+
     // -- Audit (auth) --------------------------------------------------------
 
     /// Fetch the audit events for a UTC day (`YYYY-MM-DD`) plus the hub's

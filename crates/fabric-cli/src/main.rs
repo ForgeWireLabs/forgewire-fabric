@@ -10,12 +10,14 @@
 //!     forgewire-fabric-cli audit tail [--hub-url URL]
 //!     forgewire-fabric-cli audit verify --task-id ID [--hub-url URL]
 //!     forgewire-fabric-cli audit export --day YYYY-MM-DD [--hub-url URL]
+//!     forgewire-fabric-cli replay TASK_ID [--with-model M] [--on RUNNER] [--dry-run]
 //!     forgewire-fabric-cli doctor [--hub-url URL]
 //!     forgewire-fabric-cli version
 
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+use serde_json::{json, Value};
 use fabric_client::HubClient;
 use fabric_identity::IdentityFile;
 use fabric_types::KeyPurpose;
@@ -46,6 +48,27 @@ enum Commands {
     },
     /// Run diagnostic checks
     Doctor {
+        #[arg(long, env = "FORGEWIRE_HUB_URL", default_value = "http://127.0.0.1:8765")]
+        hub_url: String,
+        #[arg(long, env = "FORGEWIRE_HUB_TOKEN_FILE")]
+        token_file: Option<String>,
+    },
+    /// Replay a recorded task: reconstruct its sealed brief at the exact base
+    /// commit and (unless --dry-run) re-dispatch it. With --dry-run it only
+    /// prints the brief that would be re-issued.
+    Replay {
+        /// The task id to replay.
+        task_id: i64,
+        /// Pin a model override for the replay (records metadata.model_pin),
+        /// e.g. for a cheaper-model A/B comparison.
+        #[arg(long)]
+        with_model: Option<String>,
+        /// Record a preferred runner for the replay (metadata.replay_on).
+        #[arg(long)]
+        on: Option<String>,
+        /// Reconstruct and print the brief without dispatching.
+        #[arg(long)]
+        dry_run: bool,
         #[arg(long, env = "FORGEWIRE_HUB_URL", default_value = "http://127.0.0.1:8765")]
         hub_url: String,
         #[arg(long, env = "FORGEWIRE_HUB_TOKEN_FILE")]
@@ -124,6 +147,83 @@ async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
+        Commands::Replay { task_id, with_model, on, dry_run, hub_url, token_file } => {
+            let token = load_token(token_file.as_deref());
+            let client = HubClient::new(&hub_url, &token);
+
+            // 1. Fetch the original task record (the sealed brief).
+            let task = match client.get_task(task_id).await {
+                Ok(t) => t,
+                Err(e) => {
+                    eprintln!("could not fetch task {task_id}: {e}");
+                    std::process::exit(1);
+                }
+            };
+
+            // 2. Reconstruct the dispatch brief from the recorded fields. Strings
+            //    and arrays are taken verbatim so the replay re-issues the exact
+            //    prompt, scope, and base commit.
+            let mut metadata = task.get("metadata").cloned().unwrap_or_else(|| json!({}));
+            if !metadata.is_object() {
+                metadata = json!({});
+            }
+            metadata["replay_of_task_id"] = json!(task_id);
+            if let Some(model) = &with_model {
+                metadata["model_pin"] = json!(model);
+            }
+            if let Some(runner) = &on {
+                metadata["replay_on"] = json!(runner);
+            }
+
+            let mut brief = json!({
+                "title": task.get("title").cloned().unwrap_or(Value::Null),
+                "prompt": task.get("prompt").cloned().unwrap_or(Value::Null),
+                "scope_globs": task.get("scope_globs").cloned().unwrap_or_else(|| json!([])),
+                "base_commit": task.get("base_commit").cloned().unwrap_or(Value::Null),
+                "branch": task.get("branch").cloned().unwrap_or(Value::Null),
+                "kind": task.get("kind").cloned().unwrap_or_else(|| json!("agent")),
+                "timeout_minutes": task.get("timeout_minutes").cloned().unwrap_or(json!(60)),
+                "priority": task.get("priority").cloned().unwrap_or(json!(100)),
+                "require_base_commit": json!(true),
+                "metadata": metadata,
+            });
+            // Pass through optional routing fields when present.
+            for key in ["required_tools", "required_tags", "required_capabilities",
+                        "tenant", "workspace_root", "network_egress", "todo_id"] {
+                if let Some(v) = task.get(key) {
+                    if !v.is_null() {
+                        brief[key] = v.clone();
+                    }
+                }
+            }
+
+            // 3. Show the reconstructed brief (to stderr so stdout can stay
+            //    machine-readable on actual dispatch).
+            eprintln!("Replay of task {task_id} — reconstructed brief:");
+            eprintln!("{}", serde_json::to_string_pretty(&brief).unwrap_or_default());
+
+            if dry_run {
+                eprintln!("DRY RUN — not dispatched.");
+                return;
+            }
+
+            // 4. Re-dispatch.
+            match client.dispatch_unsigned(&brief).await {
+                Ok(new_task) => {
+                    let new_id = new_task.get("id").and_then(|v| v.as_i64());
+                    match new_id {
+                        Some(id) => println!("{id}"),
+                        None => println!("{}", serde_json::to_string(&new_task).unwrap_or_default()),
+                    }
+                    eprintln!("replayed task {task_id} -> new task {}", new_id.map(|i| i.to_string()).unwrap_or_else(|| "?".into()));
+                }
+                Err(e) => {
+                    eprintln!("replay dispatch failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+
         Commands::Version => {
             println!("forgewire-fabric-cli {}", env!("CARGO_PKG_VERSION"));
             println!("protocol_version: 3");
