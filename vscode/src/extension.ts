@@ -162,8 +162,14 @@ export function deactivate(): void {
 // ---------------------------------------------------------------------------
 
 function getClient(): HubClient | undefined {
-  // First refresh hasn't run yet -- fall back to direct config so that the
-  // very first refresh tick still renders something useful.
+  // Once a probe has run, trust its election: activeClient is the hub that was
+  // actually reachable, or undefined if none were. Do NOT fall back to the
+  // static config in that case -- otherwise the UI would display a stale,
+  // unreachable hub URL as the "active" hub. Only before the first probe do we
+  // fall back to config so the very first tick renders something useful.
+  if (lastProbe) {
+    return activeClient;
+  }
   return activeClient ?? HubClient.fromConfig();
 }
 

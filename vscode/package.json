@@ -2,7 +2,7 @@
   "name": "forgewire",
   "displayName": "ForgeWire",
   "description": "Unified control surface for the ForgeWire platform — Fabric, Loom, Hub, runners, and future services: signed envelopes, scope-bound capability tokens, live stream output. Run a hub or runner from inside VS Code on Windows, macOS, or Linux.",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "publisher": "DigitalHallucinations",
   "license": "Apache-2.0",
   "icon": "media/icon.png",
@@ -71,12 +71,12 @@
         "forgewire.hubPin": {
           "type": "string",
           "default": "",
-          "description": "Manual override: when set, the extension dispatches to this URL only and does not probe candidates. Use the *Pin to Hub\u00e2\u20ac\u00a6* command to set this. Clear with *Unpin Hub*."
+          "description": "Manual override: when set, the extension dispatches to this URL only and does not probe candidates. Use the *Pin to Hubâ€¦* command to set this. Clear with *Unpin Hub*."
         },
         "forgewire.hubName": {
           "type": "string",
           "default": "",
-          "description": "Friendly display name for the hub (shown in the sidebar and status bar). Purely cosmetic \u00e2\u20ac\u201d no effect on hub identity or auth."
+          "description": "Friendly display name for the hub (shown in the sidebar and status bar). Purely cosmetic â€” no effect on hub identity or auth."
         },
         "forgewire.runnerAliases": {
           "type": "object",
@@ -89,7 +89,7 @@
         "forgewire.hubToken": {
           "type": "string",
           "default": "",
-          "markdownDescription": "Bearer token for the hub. **Treat as a secret** \u2014 prefer SecretStorage via the *ForgeWire: Set Hub Token* command."
+          "markdownDescription": "Bearer token for the hub. **Treat as a secret** — prefer SecretStorage via the *ForgeWire: Set Hub Token* command."
         },
         "forgewire.hubTokenFile": {
           "type": "string",
@@ -187,13 +187,13 @@
       },
       {
         "command": "forgewire.connectHub",
-        "title": "Connect to Hub\u2026",
+        "title": "Connect to Hub…",
         "category": "ForgeWire",
         "icon": "$(plug)"
       },
       {
         "command": "forgewire.setToken",
-        "title": "Set Hub Token\u2026",
+        "title": "Set Hub Token…",
         "category": "ForgeWire"
       },
       {
@@ -203,17 +203,17 @@
       },
       {
         "command": "forgewire.startHubHere",
-        "title": "Start Hub Here\u2026",
+        "title": "Start Hub Here…",
         "category": "ForgeWire"
       },
       {
         "command": "forgewire.startRunnerHere",
-        "title": "Start Runner Here\u2026",
+        "title": "Start Runner Here…",
         "category": "ForgeWire"
       },
       {
         "command": "forgewire.dispatchTask",
-        "title": "Dispatch Task\u2026",
+        "title": "Dispatch Task…",
         "category": "ForgeWire",
         "icon": "$(rocket)"
       },
@@ -282,26 +282,26 @@
         "category": "ForgeWire",
         "icon": "$(copy)"
       },
-        {
-          "command": "forgewire.redispatchTask",
-          "when": "view == forgewire.tasks && viewItem =~ /^taskHistory\\.(failed|cancelled|timed_out)$/",
-          "group": "inline@1"
-        },
-        {
-          "command": "forgewire.dismissTask",
-          "when": "view == forgewire.tasks && viewItem =~ /^taskHistory\\./",
-          "group": "inline@2"
-        },
-        {
-          "command": "forgewire.cancelStaleTask",
-          "when": "view == forgewire.tasks && viewItem =~ /^task\\.[a-z]+\\.stale$/",
-          "group": "inline@1"
-        },
-        {
-          "command": "forgewire.redispatchTask",
-          "when": "view == forgewire.tasks && viewItem =~ /^task\\.[a-z]+\\.failed$/",
-          "group": "inline@1"
-        },
+      {
+        "command": "forgewire.redispatchTask",
+        "when": "view == forgewire.tasks && viewItem =~ /^taskHistory\\.(failed|cancelled|timed_out)$/",
+        "group": "inline@1"
+      },
+      {
+        "command": "forgewire.dismissTask",
+        "when": "view == forgewire.tasks && viewItem =~ /^taskHistory\\./",
+        "group": "inline@2"
+      },
+      {
+        "command": "forgewire.cancelStaleTask",
+        "when": "view == forgewire.tasks && viewItem =~ /^task\\.[a-z]+\\.stale$/",
+        "group": "inline@1"
+      },
+      {
+        "command": "forgewire.redispatchTask",
+        "when": "view == forgewire.tasks && viewItem =~ /^task\\.[a-z]+\\.failed$/",
+        "group": "inline@1"
+      },
       {
         "command": "forgewire.copyToken",
         "title": "Copy Hub Token to Clipboard",
@@ -314,25 +314,25 @@
       },
       {
         "command": "forgewire.openSettings",
-        "title": "Open Settings\u00e2\u20ac\u00a6",
+        "title": "Open Settingsâ€¦",
         "category": "ForgeWire",
         "icon": "$(gear)"
       },
       {
         "command": "forgewire.renameHub",
-        "title": "Rename Hub\u00e2\u20ac\u00a6",
+        "title": "Rename Hubâ€¦",
         "category": "ForgeWire",
         "icon": "$(edit)"
       },
       {
         "command": "forgewire.renameHost",
-        "title": "Rename Host\u00e2\u20ac\u00a6",
+        "title": "Rename Hostâ€¦",
         "category": "ForgeWire",
         "icon": "$(edit)"
       },
       {
         "command": "forgewire.renameRunner",
-        "title": "Rename Runner Alias\u00e2\u20ac\u00a6",
+        "title": "Rename Runner Aliasâ€¦",
         "category": "ForgeWire",
         "icon": "$(edit)"
       },
@@ -367,7 +367,7 @@
       },
       {
         "command": "forgewire.pinHub",
-        "title": "Pin to Hub\u00e2\u20ac\u00a6",
+        "title": "Pin to Hubâ€¦",
         "category": "ForgeWire",
         "icon": "$(pin)"
       },
@@ -379,19 +379,19 @@
       },
       {
         "command": "forgewire.promoteHub",
-        "title": "Promote This Node to Hub\u00e2\u20ac\u00a6",
+        "title": "Promote This Node to Hubâ€¦",
         "category": "ForgeWire",
         "icon": "$(arrow-up)"
       },
       {
         "command": "forgewire.demoteHub",
-        "title": "Demote Active Hub\u00e2\u20ac\u00a6",
+        "title": "Demote Active Hubâ€¦",
         "category": "ForgeWire",
         "icon": "$(arrow-down)"
       },
       {
         "command": "forgewire.editHubCandidates",
-        "title": "Edit Hub Candidates\u00e2\u20ac\u00a6",
+        "title": "Edit Hub Candidatesâ€¦",
         "category": "ForgeWire",
         "icon": "$(list-tree)"
       },
@@ -804,24 +804,24 @@
         {
           "command": "forgewire.dr.openSettings"
         },
-      {
-        "command": "forgewire.redispatchTask",
-        "title": "Redispatch Task",
-        "category": "ForgeWire",
-        "icon": "$(redo)"
-      },
-      {
-        "command": "forgewire.dismissTask",
-        "title": "Dismiss from History",
-        "category": "ForgeWire",
-        "icon": "$(close)"
-      },
-      {
-        "command": "forgewire.cancelStaleTask",
-        "title": "Cancel Stale Task",
-        "category": "ForgeWire",
-        "icon": "$(trash)"
-      }
+        {
+          "command": "forgewire.redispatchTask",
+          "title": "Redispatch Task",
+          "category": "ForgeWire",
+          "icon": "$(redo)"
+        },
+        {
+          "command": "forgewire.dismissTask",
+          "title": "Dismiss from History",
+          "category": "ForgeWire",
+          "icon": "$(close)"
+        },
+        {
+          "command": "forgewire.cancelStaleTask",
+          "title": "Cancel Stale Task",
+          "category": "ForgeWire",
+          "icon": "$(trash)"
+        }
       ]
     }
   },
@@ -838,15 +838,3 @@
     "@vscode/vsce": "^2.32.0"
   }
 }
-
-
-
-
-
-
-
-
-
-
-
-

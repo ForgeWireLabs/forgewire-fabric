@@ -204,6 +204,15 @@ export class HubClient {
     if (legacy && !candidates.find((c) => (c.url ?? "").trim() === legacy)) {
       candidates.push({ url: legacy, label: "default", priority: 100 });
     }
+    // Always probe the local hub as a low-priority fallback so the extension
+    // discovers a hub running on this machine even when every configured
+    // candidate is stale or unreachable. The display follows whatever is
+    // actually elected, so a locally-running hub is found automatically.
+    const autoPort = cfg.get<number>("autoStartHubPort") ?? 8765;
+    const localUrl = `http://127.0.0.1:${autoPort}`;
+    if (!candidates.find((c) => (c.url ?? "").trim().replace(/\/+$/, "") === localUrl)) {
+      candidates.push({ url: localUrl, label: "local", priority: 500 });
+    }
     candidates.sort((a, b) => (a.priority ?? 100) - (b.priority ?? 100));
     const probes: Array<any> = [];
     let active: HubClient | undefined;
