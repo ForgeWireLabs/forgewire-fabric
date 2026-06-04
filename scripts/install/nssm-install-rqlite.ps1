@@ -88,8 +88,9 @@ New-Item -ItemType Directory -Force -Path $DataDir, $RqliteDataDir, $LogDir, $Rq
 
 # ---- Download rqlite if missing -------------------------------------------
 if (-not (Test-Path $RqlitedExe)) {
-    $arch = if ([Environment]::Is64BitOperatingSystem) { "amd64" } else { "386" }
-    $zipName = "rqlite-v${RqliteVersion}-windows-${arch}.zip"
+    # rqlite publishes Windows builds as win64/win32 (NOT windows-amd64/386).
+    $winArch = if ([Environment]::Is64BitOperatingSystem) { "win64" } else { "win32" }
+    $zipName = "rqlite-v${RqliteVersion}-${winArch}.zip"
     $downloadUrl = "https://github.com/rqlite/rqlite/releases/download/v${RqliteVersion}/${zipName}"
     $zipPath = Join-Path $env:TEMP $zipName
     $extractDir = Join-Path $env:TEMP "rqlite-extract"
