@@ -109,15 +109,18 @@ if (-not (Test-Path $RqlitedExe)) {
     if (Test-Path $extractDir) { Remove-Item -Recurse -Force $extractDir }
     Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
 
-    # The zip contains a single directory like rqlite-v10.0.3-windows-amd64/
-    $innerDir = Get-ChildItem $extractDir -Directory | Select-Object -First 1
-    if (-not $innerDir) {
-        throw "Unexpected zip layout: no inner directory found."
+    # The binaries may sit at the zip root (win64 layout) or inside a single
+    # directory like rqlite-v10.0.3-windows-amd64/ (older layout). Find rqlited
+    # wherever it landed.
+    $rqlitedSrc = Get-ChildItem $extractDir -Recurse -Filter 'rqlited.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $rqlitedSrc) {
+        throw "rqlited.exe not found in downloaded archive."
     }
+    $srcDir = $rqlitedSrc.Directory.FullName
 
     # Copy binaries to the install dir
-    Copy-Item "$($innerDir.FullName)\rqlited.exe" $RqliteDir -Force
-    Copy-Item "$($innerDir.FullName)\rqlite.exe" $RqliteDir -Force -ErrorAction SilentlyContinue
+    Copy-Item (Join-Path $srcDir 'rqlited.exe') $RqliteDir -Force
+    Copy-Item (Join-Path $srcDir 'rqlite.exe')  $RqliteDir -Force -ErrorAction SilentlyContinue
 
     # Cleanup
     Remove-Item $zipPath -Force -ErrorAction SilentlyContinue

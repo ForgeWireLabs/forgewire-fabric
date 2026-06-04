@@ -121,14 +121,14 @@ if ([string]::IsNullOrWhiteSpace($Token)) {
     Write-Host "Reusing existing token file: $TokenFile"
 } else {
     [System.IO.File]::WriteAllText($TokenFile, $Token.Trim())
-    $fi  = [System.IO.FileInfo]::new($TokenFile)
-    $acl = $fi.GetAccessControl()
+    # Use Get-Acl/Set-Acl (FileInfo.GetAccessControl was removed in PowerShell 7).
+    $acl = Get-Acl -Path $TokenFile
     $acl.SetAccessRuleProtection($true, $false)
     foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRule($rule) }
     foreach ($p in @("NT AUTHORITY\SYSTEM","BUILTIN\Administrators")) {
         $acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($p,"FullControl","Allow"))
     }
-    $fi.SetAccessControl($acl)
+    Set-Acl -Path $TokenFile -AclObject $acl
     Write-Host "Token written to $TokenFile"
 }
 
