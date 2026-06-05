@@ -143,6 +143,15 @@ $CliExe    = Join-Path $BinDir "forgewire-fabric-cli.exe"
 Write-Host "Hub binary   : $HubExe" -ForegroundColor Cyan
 Write-Host "Runner binary: $RunnerExe" -ForegroundColor Cyan
 
+# Self-update wiring: stage dir the hub serves from, and the updater script the
+# hub's POST /admin/update launches (defaults in the hub resolve to these paths).
+New-Item -ItemType Directory -Force -Path (Join-Path $BinDir "staged") | Out-Null
+$updateScriptSrc = Join-Path $PSScriptRoot "update-fabric.ps1"
+if (Test-Path $updateScriptSrc) {
+    Copy-Item $updateScriptSrc (Join-Path $DataDir "update-fabric.ps1") -Force
+    Write-Host "Self-update  : updater + staging dir installed" -ForegroundColor Cyan
+}
+
 # ── Discover existing hub FIRST — determines whether token is required ────────
 $discoveredHub = ""
 if (-not $HubUrl -and -not $ForceHub) {

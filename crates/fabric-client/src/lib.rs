@@ -211,6 +211,27 @@ impl HubClient {
         self.post("/tasks/v2", &body).await
     }
 
+    // -- Self-update (auth) --------------------------------------------------
+
+    /// Fetch this hub's staged-binary manifest: `{version, files:[{name,sha256,size}]}`.
+    pub async fn binaries_manifest(&self) -> Result<Value, ClientError> {
+        self.get("/admin/binaries/manifest").await
+    }
+
+    /// Trigger this node's in-place self-update. `from_hub` is the hub to pull
+    /// staged binaries from (None = use this node's local staged dir).
+    pub async fn trigger_self_update(
+        &self,
+        from_hub: Option<&str>,
+        include_vsix: bool,
+    ) -> Result<Value, ClientError> {
+        let body = json!({
+            "from_hub": from_hub,
+            "include_vsix": include_vsix,
+        });
+        self.post("/admin/update", &body).await
+    }
+
     // -- Audit (auth) --------------------------------------------------------
 
     /// Fetch the audit events for a UTC day (`YYYY-MM-DD`) plus the hub's

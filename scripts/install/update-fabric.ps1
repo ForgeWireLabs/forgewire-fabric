@@ -51,6 +51,11 @@
 param(
     [Parameter(ParameterSetName = 'Stage')][string]$StageDir,
     [Parameter(ParameterSetName = 'Hub')][string]$FromHub,
+    # Stage mode: copy the binaries from -StageDir into this node's hub staging
+    # dir (…\bin\staged) + write VERSION, so the hub can serve them to the
+    # cluster. Does NOT apply locally. Pair with `forgewire-fabric-cli update`.
+    [switch]$Stage,
+    [string]$Version         = '',
     [string]$BinDir          = 'C:\ProgramData\forgewire\bin',
     [int]$HubPort            = 8765,
     [string]$TokenFile       = 'C:\ProgramData\forgewire\hub.token',
@@ -93,7 +98,27 @@ function Hub-Version {
     catch { return $null }
 }
 
-Log "=== update-fabric on $env:COMPUTERNAME (source: $($PSCmdlet.ParameterSetName)) ==="
+Log "=== update-fabric on $env:COMPUTERNAME (mode: $(if($Stage){'STAGE'}else{'APPLY'})) ==="
+
+# ── STAGE MODE: publish binaries to the local hub's staging dir ──────────────
+if ($Stage) {
+    if (-not $StageDir -or -not (Test-Path $StageDir)) { Log "ERROR: -Stage needs a valid -StageDir"; exit 1 }
+    $stagedDir = Join-Path $BinDir 'staged'
+    New-Item -ItemType Directory -Force -Path $stagedDir | Out-Null
+    $copied = 0
+    foreach ($b in $BINARIES) {
+        $src = Join-Path $StageDir $b
+        if (Test-Path $src) { Copy-Item $src (Join-Path $stagedDir $b) -Force; $copied++; Log "  staged $b" }
+    }
+    Get-ChildItem $StageDir -Filter 'forgewire-*.vsix' -ErrorAction SilentlyContinue |
+        Sort-Object Name -Descending | Select-Object -First 1 |
+        ForEach-Object { Copy-Item $_.FullName (Join-Path $stagedDir $_.Name) -Force; Log "  staged $($_.Name)" }
+    $ver = if ($Version) { $Version } else { (Get-Date -Format 'yyyyMMdd-HHmmss') }
+    Set-Content -Path (Join-Path $stagedDir 'VERSION') -Value $ver -Encoding ASCII
+    Log "Staged $copied binar(ies) as version $ver into $stagedDir"
+    Log "Now roll the cluster with:  forgewire-fabric-cli update"
+    return
+}
 
 # ── 1. Resolve the source binaries into a temp dir ───────────────────────────
 $srcDir = $null

@@ -90,6 +90,27 @@ enum Commands {
         #[arg(long, default_value_t = fabric_beacon::DEFAULT_BEACON_PORT)]
         port: u16,
     },
+    /// Roll a staged binary update across the cluster, one node at a time,
+    /// health-gated. Stage binaries first with: update-fabric.ps1 -Stage <dir>.
+    Update {
+        /// Pull staged binaries from this hub (default: auto-detect the node
+        /// that has binaries staged).
+        #[arg(long)]
+        from_hub: Option<String>,
+        /// Update only the node at this hub URL (no cluster roll).
+        #[arg(long)]
+        only: Option<String>,
+        /// Also install the staged VS Code extension on each node.
+        #[arg(long)]
+        include_vsix: bool,
+        /// Seconds to wait for a node to come back healthy after its update.
+        #[arg(long, default_value = "120")]
+        node_timeout: u64,
+        #[arg(long, default_value_t = fabric_beacon::DEFAULT_BEACON_PORT)]
+        beacon_port: u16,
+        #[arg(long, env = "FORGEWIRE_HUB_TOKEN_FILE")]
+        token_file: Option<String>,
+    },
     /// Print version
     Version,
 }
@@ -273,6 +294,102 @@ async fn main() {
             for h in hubs {
                 println!("{}\t{}\tproto={}\tcluster={}", h.url, h.name, h.proto, h.token_hash);
             }
+        }
+
+        Commands::Update { from_hub, only, include_vsix, node_timeout, beacon_port, token_file } => {
+            let token = load_token(token_file.as_deref());
+            if token.is_empty() {
+                eprintln!("a hub token is required (set FORGEWIRE_HUB_TOKEN_FILE or --token-file)");
+                std::process::exit(2);
+            }
+
+            // 1. Target nodes: a single --only URL, or all discovered hubs.
+            let mut nodes: Vec<String> = if let Some(u) = &only {
+                vec![u.trim_end_matches('/').to_owned()]
+            } else {
+                let want = fabric_beacon::token_hash(&token);
+                let found = fabric_beacon::discover(beacon_port, std::time::Duration::from_secs(4), Some(&want))
+                    .unwrap_or_default();
+                found.into_iter().map(|h| h.url).collect()
+            };
+            if nodes.is_empty() {
+                eprintln!("no hubs found on the LAN (and no --only given)");
+                std::process::exit(1);
+            }
+
+            // 2. Staging hub: explicit --from-hub, else the node whose manifest has files.
+            let staging = if let Some(f) = &from_hub {
+                f.trim_end_matches('/').to_owned()
+            } else {
+                let mut s = None;
+                for n in &nodes {
+                    let c = HubClient::new(n, &token);
+                    if let Ok(m) = c.binaries_manifest().await {
+                        let count = m.get("files").and_then(|v| v.as_array()).map_or(0, |a| a.len());
+                        if count > 0 { s = Some(n.clone()); break; }
+                    }
+                }
+                match s {
+                    Some(s) => s,
+                    None => {
+                        eprintln!("no node has binaries staged. On one node run:\n  update-fabric.ps1 -Stage <dir>\nor copy new binaries into …\\bin\\staged");
+                        std::process::exit(1);
+                    }
+                }
+            };
+            // Confirm staging manifest.
+            match HubClient::new(&staging, &token).binaries_manifest().await {
+                Ok(m) => {
+                    let v = m.get("version").and_then(|x| x.as_str()).unwrap_or("?");
+                    let n = m.get("files").and_then(|x| x.as_array()).map_or(0, |a| a.len());
+                    eprintln!("staging hub: {staging}  (version {v}, {n} file(s))");
+                }
+                Err(e) => { eprintln!("cannot read staging manifest from {staging}: {e}"); std::process::exit(1); }
+            }
+
+            // 3. Order: every node except the staging hub first, staging hub LAST
+            //    (it must keep serving binaries to the others before updating itself).
+            nodes.sort();
+            nodes.dedup();
+            nodes.retain(|n| n != &staging);
+            nodes.push(staging.clone());
+
+            // 4. Roll, one node at a time, health-gated on started_at advancing.
+            let mut ok = 0usize;
+            for node in &nodes {
+                let client = HubClient::new(node, &token);
+                let pre = client.healthz().await.ok()
+                    .and_then(|h| h.get("started_at").and_then(|v| v.as_f64()))
+                    .unwrap_or(0.0);
+                let from = if node == &staging { None } else { Some(staging.as_str()) };
+                eprintln!("--> updating {node} (from {}) ...", from.unwrap_or("local stage"));
+                if let Err(e) = client.trigger_self_update(from, include_vsix).await {
+                    eprintln!("    trigger failed: {e}  (aborting roll)");
+                    std::process::exit(1);
+                }
+                // Wait for the node to restart (started_at advances) and be healthy.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(node_timeout);
+                let mut healthy = false;
+                while std::time::Instant::now() < deadline {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    if let Ok(h) = client.healthz().await {
+                        let started = h.get("started_at").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                        let status_ok = h.get("status").and_then(|v| v.as_str()) == Some("ok");
+                        if status_ok && started > pre {
+                            healthy = true;
+                            let ver = h.get("version").and_then(|v| v.as_str()).unwrap_or("?");
+                            eprintln!("    OK — back up, v{ver}");
+                            break;
+                        }
+                    }
+                }
+                if !healthy {
+                    eprintln!("    node did NOT return healthy within {node_timeout}s — aborting roll (remaining nodes untouched)");
+                    std::process::exit(1);
+                }
+                ok += 1;
+            }
+            println!("cluster update complete: {ok}/{} node(s) rolled", nodes.len());
         }
 
         Commands::Version => {
