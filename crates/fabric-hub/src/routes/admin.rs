@@ -120,10 +120,21 @@ pub async fn trigger_update(
         ));
     }
 
+    // Resolve a PowerShell that is reliably available to the SYSTEM scheduled
+    // task. `pwsh.exe` by bare name is not always on SYSTEM's PATH; use the
+    // absolute PowerShell 7 path when present, else fall back to Windows
+    // PowerShell (always in System32, always on PATH).
+    let pwsh = r"C:\Program Files\PowerShell\7\pwsh.exe";
+    let shell = if std::path::Path::new(pwsh).exists() {
+        format!("\"{pwsh}\"")
+    } else {
+        "powershell.exe".to_string()
+    };
+
     // Build the helper command into a .cmd file to avoid nested-quote hell when
     // passing it to schtasks /tr.
     let mut cmd_line = format!(
-        "pwsh.exe -NoProfile -ExecutionPolicy Bypass -File \"{}\"",
+        "{shell} -NoProfile -ExecutionPolicy Bypass -File \"{}\"",
         script.display()
     );
     match req.from_hub.as_deref() {
