@@ -11,10 +11,19 @@
 - [ ] Current limitations are documented.
 - [ ] Parent-platform references are removed or explicitly scoped.
 - [ ] License badge matches the actual license.
-- [ ] Install instructions are verified.
+- [ ] Install instructions are verified and distinguish native operator installs from Python integration installs.
 - [ ] Hub/runner smoke test instructions are verified.
 - [ ] CLI examples are verified.
 - [ ] VS Code workflow instructions are verified.
+
+## Distribution strategy
+
+- [ ] Rust-first release channel decision is recorded in [`docs/RELEASE_DISTRIBUTION.md`](RELEASE_DISTRIBUTION.md).
+- [ ] GitHub release / mirrored release bundle is prepared as the primary operator artifact.
+- [ ] Native hub, runner, and CLI binaries are built for each supported release platform.
+- [ ] Checksums, SBOM/provenance, and rollback instructions are attached to the release bundle.
+- [ ] PyPI publication is explicitly classified as skipped, namespace-reservation pre-release, or secondary Python integration package.
+- [ ] crates.io publication is limited to stable public Rust API crates, not internal daemon workspace mirroring.
 
 ## Release
 

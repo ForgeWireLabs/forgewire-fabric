@@ -14,7 +14,8 @@ A standalone remote dispatch/control-plane layer that ships:
 - Runner service (identity-bearing worker, scoped execution, event/result reporting)
 - CLI (`forgewire-fabric`) for operators and dispatchers
 - VS Code integration surface for dispatch and task observation
-- Optional Rust accelerators with Python parity fallback
+- Native Rust hub, runner, and operator CLI as the deployable substrate
+- Python integration package for clients, MCP/automation adapters, smoke tooling, and parity fallback
 
 ## What ForgeWire Fabric is not
 
@@ -28,4 +29,4 @@ Historically, Fabric started as the remote dispatch layer inside ForgeWire (form
 
 ## Standalone value
 
-ForgeWire Fabric can be adopted independently by teams that want authenticated dispatch from editor/automation surfaces to trusted remote runners without outsourcing execution control to third-party compute.
+ForgeWire Fabric can be adopted independently by teams that want authenticated dispatch from editor/automation surfaces to trusted remote runners without outsourcing execution control to third-party compute. The recommended release shape is Rust-first: signed native binaries and platform installers are the operator-facing substrate, while PyPI remains a secondary integration channel. See [Release Distribution Strategy](RELEASE_DISTRIBUTION.md).
