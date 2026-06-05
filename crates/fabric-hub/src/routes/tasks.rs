@@ -316,14 +316,18 @@ pub async fn claim_task_v2(
         }
     }).collect();
 
-    let runner_view = RunnerView {
-        scope_prefixes: payload.scope_prefixes.clone(),
-        tools: payload.tools.clone(),
-        tags: payload.tags.clone(),
-        tenant: payload.tenant.clone(),
-        workspace_root: payload.workspace_root.clone(),
-        last_known_commit: payload.last_known_commit.clone(),
-    };
+    // Use from_raw so scope_prefixes get the same normalization the task globs
+    // get (backslashes -> '/', trailing '/'). Building RunnerView directly left
+    // Windows backslash prefixes unnormalized, so no path-scoped task ever
+    // matched a Windows runner.
+    let runner_view = RunnerView::from_raw(
+        &payload.scope_prefixes,
+        &payload.tools,
+        &payload.tags,
+        payload.tenant.clone(),
+        payload.workspace_root.clone(),
+        payload.last_known_commit.clone(),
+    );
 
     let (picked_idx, candidates_seen) = pick_task(&candidates, &runner_view);
     let chosen_idx = match picked_idx {
