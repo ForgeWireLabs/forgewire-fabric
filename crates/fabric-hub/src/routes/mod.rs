@@ -1,3 +1,4 @@
+pub mod admin;
 pub mod approvals;
 pub mod audit;
 pub mod cluster;

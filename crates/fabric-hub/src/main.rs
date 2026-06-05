@@ -30,7 +30,7 @@ use axum::middleware;
 use axum::routing::{delete, get, post, put};
 use axum::Router;
 use fabric_hub::auth::require_bearer;
-use fabric_hub::routes::{approvals, audit, cluster, cost, dispatchers, health, labels, runners, secrets, streams, tasks};
+use fabric_hub::routes::{admin, approvals, audit, cluster, cost, dispatchers, health, labels, runners, secrets, streams, tasks};
 use fabric_hub::state::HubState;
 use fabric_policy::{BudgetPolicy, DispatchGate, FabricPolicy};
 use fabric_store::{FabricStore, SchemaStore};
@@ -298,6 +298,10 @@ async fn main() {
         .route("/audit/tasks/{task_id}", get(audit::audit_for_task))
         .route("/audit/tail", get(audit::audit_tail))
         .route("/audit/day/{day}", get(cluster::audit_day))
+        // --- Self-update (M2.5.10) ---
+        .route("/admin/binaries/manifest", get(admin::binaries_manifest))
+        .route("/admin/binaries/{name}", get(admin::binary_download))
+        .route("/admin/update", post(admin::trigger_update))
         // --- Cost (M2.5.2 — rqlite only) ---
         .route("/cost/summary", get(cost::cost_summary))
         .route("/cost/records", get(cost::cost_records))
