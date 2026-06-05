@@ -132,6 +132,24 @@ if ([string]::IsNullOrWhiteSpace($Token)) {
     Write-Host "Token written to $TokenFile"
 }
 
+# ---- Firewall: hub HTTP (TCP) + discovery beacon (UDP) --------------------
+# So runners and the VS Code extension on other machines can reach this hub and
+# receive its LAN discovery beacon.
+$beaconPort = if ($env:FORGEWIRE_BEACON_PORT) { [int]$env:FORGEWIRE_BEACON_PORT } else { 48765 }
+$fwRules = @(
+    @{ Name = "ForgeWire hub $Port";       Proto = "TCP"; Port = $Port },
+    @{ Name = "ForgeWire beacon $beaconPort"; Proto = "UDP"; Port = $beaconPort }
+)
+foreach ($r in $fwRules) {
+    if (-not (Get-NetFirewallRule -DisplayName $r.Name -ErrorAction SilentlyContinue)) {
+        try {
+            New-NetFirewallRule -DisplayName $r.Name -Direction Inbound -Action Allow `
+                -Protocol $r.Proto -LocalPort $r.Port -Profile Any -ErrorAction Stop | Out-Null
+            Write-Host "  firewall: opened $($r.Proto) $($r.Port)"
+        } catch { Write-Host "  firewall: could not open $($r.Proto) $($r.Port) ($($_.Exception.Message))" }
+    }
+}
+
 # ---- NSSM service setup ---------------------------------------------------
 $prevNative = $PSNativeCommandUseErrorActionPreference
 $PSNativeCommandUseErrorActionPreference = $false

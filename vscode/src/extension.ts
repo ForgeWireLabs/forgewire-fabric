@@ -93,6 +93,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     vscode.commands.registerCommand("forgewire.installCli", installCli),
     vscode.commands.registerCommand("forgewire.connectHub", connectHub),
     vscode.commands.registerCommand("forgewire.setToken", setToken),
+    vscode.commands.registerCommand("forgewire.copyJoinToken", copyJoinToken),
     vscode.commands.registerCommand("forgewire.disconnect", disconnect),
     vscode.commands.registerCommand("forgewire.startHubHere", startHubHere),
     vscode.commands.registerCommand("forgewire.startRunnerHere", startRunnerHere),
@@ -355,6 +356,26 @@ async function setToken(): Promise<void> {
   vscode.window.showInformationMessage("ForgeWire: hub token updated.");
   updateStatus();
   refreshAll();
+}
+
+async function copyJoinToken(): Promise<void> {
+  const cfg = vscode.workspace.getConfiguration("forgewire");
+  let token = (cfg.get<string>("hubToken") ?? "").trim();
+  if (!token) {
+    token = ((await context.secrets.get(SECRET_TOKEN_KEY)) ?? "").trim();
+  }
+  if (!token) {
+    vscode.window.showWarningMessage(
+      "ForgeWire: no hub token stored. Set one with 'ForgeWire: Set Hub Token', then copy it to add nodes."
+    );
+    return;
+  }
+  await vscode.env.clipboard.writeText(token);
+  const masked =
+    token.length > 14 ? `${token.slice(0, 6)}…${token.slice(-4)}` : "(stored)";
+  vscode.window.showInformationMessage(
+    `ForgeWire: join token copied (${masked}). On a new machine run the installer with -Token <paste> to join this cluster.`
+  );
 }
 
 async function disconnect(): Promise<void> {

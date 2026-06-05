@@ -121,6 +121,23 @@ export class HubProvider implements vscode.TreeDataProvider<HubNode> {
       }
     );
 
+    // Join token — click to copy for adding new nodes. Shown masked.
+    {
+      const tok = (cfg.get<string>("hubToken") ?? "").trim();
+      const masked =
+        tok.length > 14 ? `${tok.slice(0, 6)}…${tok.slice(-4)}` : tok ? "••••••" : "(not set)";
+      nodes.push({
+        key: "jointoken",
+        label: "Join token",
+        description: `${masked}  — click to copy`,
+        icon: "key",
+        tooltip:
+          "Copy the cluster join token to add a new node. On the new machine run install-fabric.ps1 -Token <paste>.",
+        command: { command: "forgewire.copyJoinToken", title: "Copy Join Token" },
+        contextValue: "hub.jointoken",
+      });
+    }
+
     // Failover candidate list (if configured) so the user can see at a glance
     // which peers are reachable and which one was elected.
     const probe = this.probe();

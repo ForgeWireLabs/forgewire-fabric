@@ -318,56 +318,67 @@ $rqliteInstaller = Join-Path $PSScriptRoot "nssm-install-rqlite.ps1"
 if (-not (Test-Path $rqliteInstaller)) {
     throw "nssm-install-rqlite.ps1 not found at $rqliteInstaller"
 }
+# Detect this machine's primary LAN IPv4 so rqlite advertises a routable address
+# (required for a multi-host cluster; peers cannot reach 127.0.0.1). node-id is
+# the stable identity, so the advertised IP may change across DHCP/restarts.
+$lanIp = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+    Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' -and $_.PrefixOrigin -ne 'WellKnown' } |
+    Sort-Object -Property SkipAsSource |
+    Select-Object -First 1 -ExpandProperty IPAddress)
+if (-not $lanIp) { $lanIp = '127.0.0.1' }
+
 $rqliteArgs = @{
-    DataDir  = $DataDir
-    HttpPort = $RqliteHttpPort
-    RaftPort = $RqliteRaftPort
+    DataDir       = $DataDir
+    HttpPort      = $RqliteHttpPort
+    RaftPort      = $RqliteRaftPort
+    AdvertiseHost = $lanIp   # multi-host ready; peers reach us at this address
 }
-# Joining nodes provide a -JoinAddr so rqlite connects to the existing cluster.
-# Hub nodes bootstrap a new cluster (no JoinAddr).
+# Joining nodes provide a -JoinAddr (raft address of an existing node) so rqlite
+# connects to the existing cluster. The first node bootstraps a new one.
 if ($RqliteJoinAddr) {
     $rqliteArgs["JoinAddr"] = $RqliteJoinAddr
-    Write-Host "  Joining existing rqlite cluster at $RqliteJoinAddr"
-} elseif ($isHubNode) {
-    Write-Host "  Bootstrapping new rqlite cluster (single-node or future multi-node)"
+    Write-Host "  Joining existing rqlite cluster at $RqliteJoinAddr (advertising $lanIp)"
+} else {
+    Write-Host "  Bootstrapping rqlite cluster, advertising $lanIp (add nodes with -RqliteJoinAddr ${lanIp}:$RqliteRaftPort)"
 }
 & $rqliteInstaller @rqliteArgs
 Write-Host "-- 1/6 -- rqlite OK" -ForegroundColor Green
 
-# == STEP 2 - hub (hub node only) ══════════════════════════════════════════════
-if ($isHubNode) {
-    Write-Host ""
-    Write-Host "-- 2/6 -- Hub (Rust binary, rqlite backend)..." -ForegroundColor Cyan
-    $hubInstaller = Join-Path $PSScriptRoot "nssm-install-hub.ps1"
-    & $hubInstaller `
-        -BinDir   $BinDir `
-        -Token    $Token `
-        -Port     $HubPort `
-        -RqliteHost "127.0.0.1" `
-        -RqlitePort $RqliteHttpPort `
-        -NoWatchdog  # watchdog installed in step 4
-    $effectiveHubUrl = "http://127.0.0.1:$HubPort"
+# == STEP 2 - hub (EVERY node: active-active HA) ════════════════════════════════
+# Every node runs a hub against its LOCAL rqlite, which is a member of the shared
+# Raft cluster. The hubs are stateless front-ends, so any node can serve dispatch
+# -- that is what makes "any machine can be hub/failover" true. Clients discover
+# whichever hub is reachable via the LAN beacon and fail over automatically.
+# (With 2 nodes you get replication + read-failover; 3+ nodes give automatic
+# write-failover, since Raft needs a quorum majority.)
+Write-Host ""
+Write-Host "-- 2/6 -- Hub (Rust binary, rqlite backend) on this node..." -ForegroundColor Cyan
+$hubInstaller = Join-Path $PSScriptRoot "nssm-install-hub.ps1"
+& $hubInstaller `
+    -BinDir   $BinDir `
+    -Token    $Token `
+    -Port     $HubPort `
+    -RqliteHost "127.0.0.1" `
+    -RqlitePort $RqliteHttpPort `
+    -NoWatchdog  # watchdog installed in step 4
+$effectiveHubUrl = "http://127.0.0.1:$HubPort"
 
-    Write-Host "  Waiting for hub to be reachable..."
-    $ready = $false
-    for ($i = 0; $i -lt 30; $i++) {
-        Start-Sleep -Seconds 1
-        try {
-            if ((Invoke-WebRequest -Uri "$effectiveHubUrl/healthz" -UseBasicParsing -TimeoutSec 2).StatusCode -eq 200) {
-                $ready = $true; break
-            }
-        } catch {}
-    }
-    if (-not $ready) {
-        Write-Warning "Hub did not respond in 30s. Check: $DataDir\logs\hub.err.log"
-    } else {
-        Write-Host "  Hub ready at $effectiveHubUrl" -ForegroundColor Green
-    }
-    Write-Host "-- 2/6 -- Hub OK" -ForegroundColor Green
-} else {
-    Write-Host ""
-    Write-Host "-- 2/6 -- Hub - joining node, using $effectiveHubUrl" -ForegroundColor DarkGray
+Write-Host "  Waiting for hub to be reachable..."
+$ready = $false
+for ($i = 0; $i -lt 30; $i++) {
+    Start-Sleep -Seconds 1
+    try {
+        if ((Invoke-WebRequest -Uri "$effectiveHubUrl/healthz" -UseBasicParsing -TimeoutSec 2).StatusCode -eq 200) {
+            $ready = $true; break
+        }
+    } catch {}
 }
+if (-not $ready) {
+    Write-Warning "Hub did not respond in 30s. Check: $DataDir\logs\hub.err.log"
+} else {
+    Write-Host "  Hub ready at $effectiveHubUrl" -ForegroundColor Green
+}
+Write-Host "-- 2/6 -- Hub OK" -ForegroundColor Green
 
 # == STEP 3 - Runner (Rust binary) ══════════════════════════════════════════════
 Write-Host ""
@@ -390,7 +401,8 @@ Write-Host ""
 Write-Host "-- 4/6 -- Watchdogs..." -ForegroundColor Cyan
 $hubWd    = Join-Path $PSScriptRoot "install-hub-watchdog.ps1"
 $runnerWd = Join-Path $PSScriptRoot "install-runner-watchdog.ps1"
-if ($isHubNode -and (Test-Path $hubWd)) {
+if (Test-Path $hubWd) {
+    # Every node runs a hub now, so every node gets a hub watchdog.
     & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $hubWd `
         -ServiceName "ForgeWireHub" -HealthzUrl "http://127.0.0.1:$HubPort/healthz"
     Write-Host "  Hub watchdog installed"

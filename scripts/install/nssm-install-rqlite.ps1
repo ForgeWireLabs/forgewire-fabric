@@ -49,6 +49,11 @@ param(
     [int]$RaftPort        = 4002,
     [string]$NodeId       = "",
     [string]$JoinAddress  = "",
+    # Address other nodes use to reach THIS node's raft/http. 127.0.0.1 for a
+    # single-host node (survives DHCP); the LAN IP for a multi-host cluster so
+    # peers can actually connect. The node-id stays stable, so rqlite tolerates
+    # this address changing across restarts (the node re-announces its new IP).
+    [string]$AdvertiseHost = "127.0.0.1",
     [string]$RqliteVersion = "10.0.3",
     [string]$ServiceName  = "ForgeWireRqlite"
 )
@@ -139,16 +144,31 @@ if (-not (Test-Path $RqlitedExe)) {
 }
 
 # ---- Build service parameters ----------------------------------------------
-# Advertise on 127.0.0.1 so the node survives IP changes from DHCP/hotspot.
-# The hub connects to rqlite on localhost. For multi-host Raft clusters,
-# override -JoinAddress with the remote node's LAN address and adjust
-# adv-addr if needed -- but single-host is the OOTB default.
+# adv-addr is what PEERS use to reach this node. 127.0.0.1 for single-host;
+# the LAN IP (-AdvertiseHost) for a multi-host cluster. node-id is the stable
+# identity, so the advertised address may change across restarts/DHCP and the
+# cluster re-forms when the node re-announces.
+Write-Host "Advertising rqlite as $AdvertiseHost (raft :$RaftPort, http :$HttpPort)"
+
+# Open the rqlite ports so peer nodes can form a multi-host Raft cluster. Without
+# these inbound rules, a joining node times out connecting to the raft port even
+# though the bind succeeds locally (confirmed: new ports are dropped by default).
+foreach ($p in @($HttpPort, $RaftPort)) {
+    $ruleName = "ForgeWire rqlite $p"
+    if (-not (Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue)) {
+        try {
+            New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Action Allow `
+                -Protocol TCP -LocalPort $p -Profile Any -ErrorAction Stop | Out-Null
+            Write-Host "  firewall: opened TCP $p"
+        } catch { Write-Host "  firewall: could not open TCP $p ($($_.Exception.Message))" }
+    }
+}
 $rqliteArgs = @(
     "-node-id", $NodeId,
     "-http-addr", "0.0.0.0:$HttpPort",
-    "-http-adv-addr", "127.0.0.1:$HttpPort",
+    "-http-adv-addr", "${AdvertiseHost}:$HttpPort",
     "-raft-addr", "0.0.0.0:$RaftPort",
-    "-raft-adv-addr", "127.0.0.1:$RaftPort"
+    "-raft-adv-addr", "${AdvertiseHost}:$RaftPort"
 )
 if ($JoinAddress) {
     $rqliteArgs += @("-join", $JoinAddress)
