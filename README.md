@@ -25,13 +25,14 @@ ForgeWire Fabric is not the full ForgeWire/PhrenForge platform. It does not incl
 
 ## Install
 
+ForgeWire Fabric is now Rust-first for daemon deployment. The operator-facing release should be a signed native bundle containing `forgewire-hub`, `forgewire-runner`, `forgewire-fabric-cli`, platform service installers, checksums, SBOM/provenance, and rollback notes. See [Release Distribution Strategy](docs/RELEASE_DISTRIBUTION.md).
+
 ```bash
+# Python integration path, not the primary daemon substrate
 pip install forgewire-fabric
 ```
 
-The CLI entry point is `forgewire-fabric`. The package import is `forgewire_fabric`.
-
-Native Rust hub and runner binaries (`forgewire-hub`, `forgewire-runner`) are built from this repo and deployed via NSSM (Windows) or systemd (Linux).
+The Python CLI entry point is `forgewire-fabric`. The package import is `forgewire_fabric`. Use it for client/MCP integration, smoke tooling, and fallback compatibility while Rust hub/runner daemons own the normal runtime path.
 
 ## One-command cluster install (Windows)
 
@@ -44,6 +45,7 @@ Installs rqlite, Raft nodes, `forgewire-hub`, `forgewire-runner`, and the VS Cod
 ## Smoke test
 
 ```bash
+# Python compatibility smoke path
 pip install forgewire-fabric
 forgewire-fabric token gen > hub.token
 export FORGEWIRE_HUB_TOKEN=$(cat hub.token)
