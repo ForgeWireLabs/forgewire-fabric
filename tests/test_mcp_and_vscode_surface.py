@@ -35,13 +35,19 @@ def test_runner_mcp_registration_is_backgrounded() -> None:
 
 def test_dispatchers_view_collapsed_into_hosts() -> None:
     package = json.loads((REPO_ROOT / "vscode" / "package.json").read_text(encoding="utf-8"))
-    view_ids = {view["id"] for view in package["contributes"]["views"]["forgewireFabric"]}
-    assert "forgewireFabric.dispatchers" not in view_ids
+    activity_containers = package["contributes"]["viewsContainers"]["activitybar"]
+    container_ids = {container["id"] for container in activity_containers}
+    assert "forgewire" in container_ids
+    assert "forgewireFabric" not in container_ids
+
+    view_ids = {view["id"] for view in package["contributes"]["views"]["forgewire"]}
+    assert "forgewire.dispatchers" not in view_ids
+    assert "forgewire.hosts" in view_ids
 
     extension = (REPO_ROOT / "vscode" / "src" / "extension.ts").read_text(encoding="utf-8")
-    assert "registerTreeDataProvider(\"forgewireFabric.dispatchers\"" not in extension
+    assert 'registerTreeDataProvider("forgewire.dispatchers"' not in extension
+    assert 'registerTreeDataProvider("forgewireFabric.dispatchers"' not in extension
 
     providers = (REPO_ROOT / "vscode" / "src" / "treeProviders.ts").read_text(encoding="utf-8")
-    assert "kind: \"dispatcher\"" in providers
+    assert 'kind: "dispatcher"' in providers
     assert "hosts:dispatcher:" in providers
-

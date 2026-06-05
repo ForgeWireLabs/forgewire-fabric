@@ -20,6 +20,7 @@ import {
   HubProvider,
   SecretsProvider,
   SettingsProvider,
+  TaskNode,
   TasksProvider,
 } from "./treeProviders";
 
@@ -602,13 +603,53 @@ async function dispatchTask(): Promise<void> {
   }
 }
 
-async function streamTaskCmd(arg: number | { id: number }): Promise<void> {
+
+type TaskCommandArg = number | string | { id?: unknown; task?: { id?: unknown } } | TaskNode | undefined;
+
+function resolveTaskId(arg: TaskCommandArg): number | undefined {
+  if (typeof arg === "number") {
+    return Number.isFinite(arg) && arg > 0 ? Math.trunc(arg) : undefined;
+  }
+  if (typeof arg === "string") {
+    return parseTaskId(arg);
+  }
+  if (!arg || typeof arg !== "object") {
+    return undefined;
+  }
+
+  // VS Code tree item context menu commands receive the tree element, not the
+  // TreeItem.command arguments. ForgeWire task elements keep the id nested under
+  // `task`, while direct invocations and existing Show Task commands pass `id`.
+  const direct = "id" in arg ? parseTaskId(arg.id) : undefined;
+  if (direct) {
+    return direct;
+  }
+  return "task" in arg ? parseTaskId(arg.task?.id) : undefined;
+}
+
+function parseTaskId(value: unknown): number | undefined {
+  if (typeof value === "number") {
+    return Number.isFinite(value) && value > 0 ? Math.trunc(value) : undefined;
+  }
+  if (typeof value === "string") {
+    const match = /^(?:task(?:History)?:)?(\d+)$/.exec(value.trim());
+    if (!match) {
+      return undefined;
+    }
+    const parsed = Number(match[1]);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+  }
+  return undefined;
+}
+
+async function streamTaskCmd(arg: TaskCommandArg): Promise<void> {
   const c = getClient();
   if (!c) {
     return;
   }
-  const id = typeof arg === "number" ? arg : arg?.id;
+  const id = resolveTaskId(arg);
   if (!id) {
+    vscode.window.showWarningMessage("Select a task first.");
     return;
   }
   outputChannel.show(true);
@@ -639,13 +680,14 @@ async function streamTaskCmd(arg: number | { id: number }): Promise<void> {
   }
 }
 
-async function cancelTaskCmd(arg: number | { id: number }): Promise<void> {
+async function cancelTaskCmd(arg: TaskCommandArg): Promise<void> {
   const c = getClient();
   if (!c) {
     return;
   }
-  const id = typeof arg === "number" ? arg : arg?.id;
+  const id = resolveTaskId(arg);
   if (!id) {
+    vscode.window.showWarningMessage("Select a task first.");
     return;
   }
   const ok = await vscode.window.showWarningMessage(
@@ -671,11 +713,14 @@ async function cancelTaskCmd(arg: number | { id: number }): Promise<void> {
 // Reads the original task params and submits a fresh dispatch with the same
 // title, prompt, scope_globs, base_commit, branch, kind, priority, and timeout.
 
-async function redispatchTaskCmd(arg: number | { id: number }): Promise<void> {
+async function redispatchTaskCmd(arg: TaskCommandArg): Promise<void> {
   const c = getClient();
   if (!c) { return; }
-  const id = typeof arg === "number" ? arg : arg?.id;
-  if (!id) { return; }
+  const id = resolveTaskId(arg);
+  if (!id) {
+    vscode.window.showWarningMessage("Select a task first.");
+    return;
+  }
   try {
     const t = await c.getTask(id);
     const newTask = await c.dispatch({
@@ -703,19 +748,25 @@ async function redispatchTaskCmd(arg: number | { id: number }): Promise<void> {
 // Does NOT delete the task from the hub — it is hidden from the history panel
 // and the dismissal is persisted in extension globalState.
 
-function dismissTaskCmd(arg: number | { id: number }): void {
-  const id = typeof arg === "number" ? arg : arg?.id;
-  if (!id) { return; }
+function dismissTaskCmd(arg: TaskCommandArg): void {
+  const id = resolveTaskId(arg);
+  if (!id) {
+    vscode.window.showWarningMessage("Select a task first.");
+    return;
+  }
   tasksProvider.dismissTask(id);
 }
 
 // ---- Cancel a stale queued task -----------------------------------------------
 
-async function cancelStaleTaskCmd(arg: number | { id: number }): Promise<void> {
+async function cancelStaleTaskCmd(arg: TaskCommandArg): Promise<void> {
   const c = getClient();
   if (!c) { return; }
-  const id = typeof arg === "number" ? arg : arg?.id;
-  if (!id) { return; }
+  const id = resolveTaskId(arg);
+  if (!id) {
+    vscode.window.showWarningMessage("Select a task first.");
+    return;
+  }
   try {
     await c.cancel(id);
     vscode.window.showInformationMessage(`Cancelled stale task #${id}.`);
@@ -727,13 +778,14 @@ async function cancelStaleTaskCmd(arg: number | { id: number }): Promise<void> {
   }
 }
 
-async function showTaskCmd(arg: number | { id: number }): Promise<void> {
+async function showTaskCmd(arg: TaskCommandArg): Promise<void> {
   const c = getClient();
   if (!c) {
     return;
   }
-  const id = typeof arg === "number" ? arg : arg?.id;
+  const id = resolveTaskId(arg);
   if (!id) {
+    vscode.window.showWarningMessage("Select a task first.");
     return;
   }
   try {
