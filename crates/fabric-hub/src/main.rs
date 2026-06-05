@@ -39,7 +39,7 @@ use reqwest::Client as ReqwestClient;
 use tracing::{info, warn};
 
 const PROTOCOL_VERSION: i64 = 3;
-const PACKAGE_VERSION: &str = "0.7.0";
+const PACKAGE_VERSION: &str = "0.7.1";
 
 /// Ensure rqlite is reachable, starting the OS service if needed.
 ///

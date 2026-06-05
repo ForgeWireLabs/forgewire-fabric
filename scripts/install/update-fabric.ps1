@@ -70,9 +70,13 @@ $ErrorActionPreference = 'Stop'
 $BINARIES = @('forgewire-hub.exe', 'forgewire-runner.exe', 'forgewire-fabric-cli.exe')
 
 # ── Self-elevation ────────────────────────────────────────────────────────────
-$principal = [System.Security.Principal.WindowsPrincipal]::new(
-    [System.Security.Principal.WindowsIdentity]::GetCurrent())
-if (-not $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
+# Already privileged if Administrator OR running as LocalSystem (the hub's
+# scheduled-task self-update runs as SYSTEM, for which IsInRole(Administrator)
+# can return false even though SYSTEM is fully privileged). Without the IsSystem
+# check the SYSTEM task would try a non-interactive RunAs and silently bail.
+$winId = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = [System.Security.Principal.WindowsPrincipal]::new($winId)
+if (-not ($principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator) -or $winId.IsSystem)) {
     $fwd = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$PSCommandPath)
     foreach ($kv in $PSBoundParameters.GetEnumerator()) {
         if ($kv.Value -is [switch]) { if ($kv.Value.IsPresent) { $fwd += "-$($kv.Key)" } }
