@@ -228,9 +228,10 @@ Use this for MCP adapters, client integrations, and operator scripts. Not intend
 
 ## Policy and approvals
 
-Drop a `policy.yaml` at the root of any repository Fabric dispatches into. The hub loads it at startup and evaluates it at every dispatch, runtime intent check, and completion.
+Policy is automatic. When a task is dispatched to a repository, the hub searches for a `policy.yaml` at the repo root. If none exists, a safe default is written there automatically — you get enforcement from the very first dispatch without any manual setup. Check it in, adjust it, and Fabric picks up the changes on the next dispatch.
 
 ```yaml
+# auto-generated on first dispatch — edit to suit your repo
 protected_branches: [main, "release/*"]
 forbidden_paths: [".github/workflows/**", "secrets/**"]
 max_diff_lines: 2000
