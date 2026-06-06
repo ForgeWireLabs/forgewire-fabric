@@ -8,28 +8,33 @@
 
 Send signed work to machines you trust. Let only eligible runners claim it. Enforce policy before and during execution. Preserve enough evidence to explain what happened later.
 
-Fabric is a self-hosted execution fabric for trusted remote work. It is the layer between your tools — CLI, VS Code, MCP, CI, automation — and the machines that do the work: GPU boxes, lab servers, build hosts, or any machine you operate. No third-party control plane. Your infrastructure, your rules, your audit trail.
+Fabric is a self-hosted execution fabric for trusted remote runners. It is the layer between your tools — CLI, VS Code, MCP, CI, automation — and the machines that do the work: GPU boxes, lab servers, build hosts, or any machine you operate. No third-party control plane. Your infrastructure, your rules, your audit trail.
+
+**Current release: `forgewire-hub` v0.7.0 · `forgewire-runner` v0.7.0 · Python v0.16.0 · VSIX v0.4.0 · Protocol v3**
 
 ---
 
-<!-- Demo GIF placeholder: docs/assets/demo.gif -->
+<!-- demo GIF goes here once recorded -->
+<!-- ![Fabric dispatch demo](docs/assets/demo.gif) -->
 
 ---
 
 ## Quickstart
 
-The fastest path uses the Python CLI. Native Rust daemons are the intended long-running substrate — the Python CLI is the zero-build smoke path.
+Build the native daemons from source:
 
 ```bash
-pip install forgewire-fabric
-forgewire-fabric token gen > hub.token
-export FORGEWIRE_HUB_TOKEN="$(cat hub.token)"
+git clone https://github.com/DigitalHallucinations/forgewire-fabric.git
+cd forgewire-fabric
+cargo build --release
 ```
 
-Start a hub:
+Generate a token and start a hub:
 
 ```bash
-forgewire-fabric hub start --host 127.0.0.1 --port 8765
+./target/release/forgewire-fabric-cli token gen > hub.token
+export FORGEWIRE_HUB_TOKEN="$(cat hub.token)"
+./target/release/forgewire-hub --host 127.0.0.1 --port 8765
 ```
 
 Start a runner in another terminal:
@@ -37,17 +42,19 @@ Start a runner in another terminal:
 ```bash
 export FORGEWIRE_HUB_URL=http://127.0.0.1:8765
 export FORGEWIRE_HUB_TOKEN="$(cat hub.token)"
-forgewire-fabric runner start --workspace-root /path/to/repo
+./target/release/forgewire-runner --workspace-root /path/to/repo
 ```
 
 Dispatch work and watch it stream:
 
 ```bash
-forgewire-fabric dispatch "pytest -q" --scope "tests/**"
-forgewire-fabric tasks stream <task-id>
+./target/release/forgewire-fabric-cli dispatch "pytest -q" --scope "tests/**"
+./target/release/forgewire-fabric-cli tasks stream <task-id>
 ```
 
-That's it. One hub, one runner, signed dispatch, live output. For native daemon setup, multi-machine layouts, and service installation see [docs/QUICKSTART.md](docs/QUICKSTART.md).
+That's it. One hub, one runner, signed dispatch, live output. For Windows service installation, multi-machine layouts, and editor setup see [docs/QUICKSTART.md](docs/QUICKSTART.md).
+
+> **Python CLI:** a `forgewire-fabric` Python package is available for MCP adapters, client integrations, and smoke tests. It is not the intended runtime for long-running hub or runner nodes.
 
 ---
 
@@ -70,7 +77,18 @@ Give a coding agent or automation pipeline a Fabric dispatcher. It submits signe
 Point your CI or editor at a Fabric hub. Route tests to a machine with the right workspace, GPU, or OS. Cap spending. Stream output. Inspect every result. No third-party visibility into your source or build secrets.
 
 **LAN cluster for local AI workloads.**
-Run a hub and runners on machines in your network. No hosted dependency after install — mDNS discovery, rqlite-backed state, and NSSM supervision on Windows. Dispatch from VS Code or the CLI. Keep everything on-premise.
+Run a hub and runners on machines in your network. Zero external dependencies — mDNS discovery, rqlite-backed state, NSSM-supervised on Windows. Dispatch from VS Code or the CLI. Keep everything on-premise.
+
+---
+
+## Deployment profiles
+
+| Profile | Topology | Use case |
+|---|---|---|
+| **Standalone** | 1 node | Laptop dev, local CI, smoke testing |
+| **LAN cluster** | 2–20 nodes | Home/office fleet, zero external dependencies |
+
+A federated overlay (Noise_IK over QUIC, capability anycast, scope-bound egress) is in active development.
 
 ---
 
@@ -84,7 +102,7 @@ Run a hub and runners on machines in your network. No hosted dependency after in
 | **Policy gates** | Dispatch, runtime intent, and completion can be allowed, denied, or held for approval. |
 | **Human-in-the-loop approvals** | Writes, pushes, merges, network egress, and shell actions can pause for operator sign-off. |
 | **Cost controls** | Per-task, daily, and weekly budget limits let the hub reject work before it exceeds caps. |
-| **Secret brokering** | Secrets are requested by name, injected only at claim time, and redacted from stored output on supported paths. |
+| **Secret brokering** | Secrets are requested by name, injected only at claim time, and redacted from all stored output. |
 | **Structured streams** | stdout, stderr, info, progress, and notes are observable while work runs. |
 | **Audit chain** | Hash-chained lifecycle events and results are retained for replay and future external witnessing. |
 | **Editor surfaces** | VS Code extension and MCP integration for dispatch and observation — no direct runner access required. |
@@ -95,10 +113,10 @@ Run a hub and runners on machines in your network. No hosted dependency after in
 
 ```mermaid
 flowchart LR
-    D["Dispatcher<br/>CLI / VS Code / MCP / CI"] -->|signed brief + scope + policy metadata| H
-    H["Fabric Hub<br/>control plane"] -->|status / streams / audit| D
+    D["Dispatcher\nCLI / VS Code / MCP / CI"] -->|signed brief + scope + policy metadata| H
+    H["Fabric Hub\ncontrol plane"] -->|status / streams / audit| D
     H -->|claim: scope · capability · tenant · policy| R
-    R["Runner<br/>execution plane"] -->|streams · result · cost · audit events| H
+    R["Runner\nexecution plane"] -->|streams · result · cost · audit events| H
 ```
 
 **Dispatcher** — any trusted client: CLI, VS Code extension, MCP tool, automation, CI. Describes what should run, where it is allowed to operate, and what capabilities or approvals it needs.
@@ -129,28 +147,35 @@ Fabric is not a VPN, queue, scheduler, workflow engine, or hosted agent. It sits
 
 ## Status
 
-**Alpha, Apache-2.0, usable today.** Core dispatch, routing, policy, approvals, cost tracking, secrets, streams, and audit foundations are working. Native Rust daemons (`forgewire-hub` v0.7.0, `forgewire-runner` v0.7.0) are the primary runtime; the Python package (v0.16.0) remains the integration and smoke-test surface.
+**Alpha — Apache-2.0.** Fabric is usable today. The Rust daemons are the primary runtime; Python is an integration surface only.
 
-What's stable:
+| Component | Version | Notes |
+|---|---|---|
+| `forgewire-hub` | 0.7.0 | axum, rqlite backend, Protocol v3 |
+| `forgewire-runner` | 0.7.0 | FW_INTENT interception, bounded stream buffers |
+| Python package | 0.16.0 | CLI compatibility, MCP adapters, parity bridge |
+| VS Code extension | 0.4.0 | Hub badge, runner tree, approval inbox |
+| Protocol | v3 | Stable wire format |
 
-- Rust hub and runner daemons, Protocol v3.
+Stable today:
+
 - Authenticated dispatch — signed envelopes, nonce replay protection.
 - Scope- and capability-aware runner claim routing.
 - Runner identity persistence, trust registration, heartbeat, drain.
 - Structured task streams, persisted terminal results.
 - Hash-chained audit log foundation.
 - Policy gates — dispatch, runtime intent, completion.
-- Approval inbox with CLI workflows and notification hooks.
-- Cost ledger — per-task, daily, and weekly budget limits.
-- Secret broker — named secret requests, claim-time injection, and output redaction.
-- rqlite-backed hub state for replicated availability.
-- Windows service installation with NSSM supervision and watchdogs.
+- Approval inbox with CLI workflows, ntfy.sh, Slack, and webhook notifications.
+- Cost ledger — per-task, daily, and weekly budget limits with rqlite persistence.
+- Secret broker — encrypted storage, name-only audit, claim-time injection, output redaction.
+- Bounded stream buffers (`strict` / `balanced` / `throughput` durability profiles).
+- Windows OOTB service install with NSSM supervision, watchdog, and one-command installer.
 - VS Code extension — hub connection, runner/task browsing, dispatch, approvals, streams.
 - Python CLI/client compatibility and MCP integration surface.
 
 Still evolving:
 
-- Native release bundles for Linux and macOS (Windows is the most validated service path today).
+- Native release bundles for Linux and macOS (Windows is the most validated path today).
 - Hub HA, role-separated identity, stronger egress enforcement.
 - Federated QUIC transport, capability anycast, external audit witnessing, GUI surfaces.
 
@@ -158,16 +183,30 @@ Still evolving:
 
 ## Install
 
-### Rust (native daemons — recommended for long-running nodes)
+### Native Rust daemons (primary)
+
+Build from source:
 
 ```bash
 git clone https://github.com/DigitalHallucinations/forgewire-fabric.git
 cd forgewire-fabric
 cargo build --release
-# binaries: target/release/forgewire-hub  forgewire-runner  forgewire-fabric-cli
+# target/release/forgewire-hub
+# target/release/forgewire-runner
+# target/release/forgewire-fabric-cli
 ```
 
-### Windows service (NSSM-supervised, always-on)
+Signed release bundles for supported platforms are the intended operator distribution path and are being hardened — see [docs/RELEASE_DISTRIBUTION.md](docs/RELEASE_DISTRIBUTION.md).
+
+### Windows service (one-command, NSSM-supervised)
+
+```powershell
+irm https://raw.githubusercontent.com/DigitalHallucinations/forgewire-fabric/main/scripts/install/install-fabric.ps1 | iex
+```
+
+Installs rqlite, `forgewire-hub`, `forgewire-runner`, and the VS Code extension as NSSM-supervised services in a single pass. No Python required at runtime.
+
+For manual control or production hosts, run the script directly with parameters:
 
 ```powershell
 pwsh -NoProfile -ExecutionPolicy Bypass `
@@ -177,19 +216,19 @@ pwsh -NoProfile -ExecutionPolicy Bypass `
 
 See [docs/operations/service-install.md](docs/operations/service-install.md) before running on a production host.
 
-### Python (CLI, MCP, integrations)
+### Python package (MCP adapters, integrations, smoke tests)
 
 ```bash
 pip install forgewire-fabric
 ```
 
-The Python CLI (`forgewire-fabric`) is the fastest path to get running and the recommended surface for MCP adapters, client integrations, and smoke tests. It is not the preferred long-running daemon substrate.
+Use this for MCP adapters, client integrations, and operator scripts. Not intended as a long-running hub or runner substrate.
 
 ---
 
 ## Policy and approvals
 
-Drop a `policy.yaml` at the root of any repository Fabric dispatches into. The hub loads it at startup and evaluates it on every dispatch, intent check, and completion.
+Drop a `policy.yaml` at the root of any repository Fabric dispatches into. The hub loads it at startup and evaluates it at every dispatch, runtime intent check, and completion.
 
 ```yaml
 protected_branches: [main, "release/*"]
@@ -201,13 +240,26 @@ daily_budget_usd: 5.00
 weekly_budget_usd: 25.00
 ```
 
+Three gate points enforce policy on every task:
+- **Dispatch** — scope, branch, and forbidden-path checks before a task enters the queue.
+- **Runtime intent** — runner calls the hub before gated actions (`fs_write`, `network_egress`, `shell_exec`, `merge`, `push`); hub returns allow, deny, or hold-for-approval.
+- **Completion** — diff-line and path checks at result submission time.
+
 Work the approval queue:
 
 ```bash
-forgewire-fabric approvals list
-forgewire-fabric approvals approve <approval-id>
-forgewire-fabric approvals deny <approval-id> --reason "out of scope"
-forgewire-fabric cost summary --since 7d
+forgewire-fabric-cli approvals list
+forgewire-fabric-cli approvals approve <approval-id>
+forgewire-fabric-cli approvals deny <approval-id> --reason "out of scope"
+forgewire-fabric-cli approvals watch   # tail mode
+```
+
+Cost controls:
+
+```bash
+forgewire-fabric-cli cost summary --since 7d --by model
+forgewire-fabric-cli cost export --since 30d --format csv > spend.csv
+forgewire-fabric-cli cost budget       # daily + weekly vs caps
 ```
 
 See [policy.yaml](policy.yaml) for the annotated full schema.
@@ -242,13 +294,12 @@ See [vscode/README.md](vscode/README.md) for extension commands and settings.
 
 Near-term:
 
+- Append-only hash-chained audit export and `tasks replay <id>`.
+- Structured capability tags and cheapest-fit dispatch routing.
+- Egress allowlist enforcement and sealed secret broker (per-task env injection).
+- Hub HA (active-passive and active-active) and role-separated identity tokens.
 - Signed native release bundles for all supported platforms.
-- Cleaner hub-only, runner-only, and local-smoke installer flows.
-- Better audit export and replay workflows.
-- Capability-aware dispatch with cost-aware runner selection.
-- Stronger secret injection and egress enforcement.
-- Hub HA and role-scoped identity.
-- Published VS Code marketplace packages.
+- VS Code Marketplace publish.
 
 Longer-term:
 
@@ -264,9 +315,9 @@ Longer-term:
 
 Fabric is early and rough in places. Contributions, bug reports, and feedback are welcome.
 
-- **Bugs and feature requests** — open an issue. Include hub/runner version (`forgewire-fabric --version`), OS, and the relevant log output.
+- **Bugs and feature requests** — open an issue. Include hub/runner version (`forgewire-fabric-cli --version`), OS, and the relevant log output.
 - **Code contributions** — fork, branch off `main`, open a PR. For larger changes, open an issue first to discuss approach.
-- **Questions** — open a discussion or issue. There is no mailing list or chat yet; GitHub is the primary channel.
+- **Questions** — open a discussion or issue. GitHub is the primary channel.
 
 Before submitting:
 
@@ -274,7 +325,6 @@ Before submitting:
 cargo fmt --all
 cargo clippy --workspace -- -D warnings
 cargo test --workspace
-pytest tests/test_persona_schema.py
 ```
 
 ---
