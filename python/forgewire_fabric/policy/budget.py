@@ -233,7 +233,13 @@ class _Aggregate:
 
 
 class BudgetEnforcer:
-    """Pre/post-flight budget gate."""
+    """Pre/post-flight budget gate.
+
+    DEPRECATED (M2.5.3): The Rust hub enforces budgets natively via the
+    persistent ``budget_state`` rqlite table.  This class remains in service
+    only while the Python hub is used as a fallback.  It will be removed when
+    the Python hub is fully decommissioned.
+    """
 
     def __init__(
         self,

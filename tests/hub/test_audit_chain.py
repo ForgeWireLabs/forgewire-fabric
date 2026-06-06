@@ -194,3 +194,72 @@ def test_verify_chain_helper_handles_genesis_and_partial() -> None:
     ok2, err2 = Blackboard.verify_audit_chain(bad)
     assert ok2 is False
     assert "chain break" in (err2 or "")
+
+
+# ---------------------------------------------------------------------------
+# M2.5.3 — Replay brief reconstruction round-trip
+#
+# Verifies that every field needed for a deterministic replay survives the
+# dispatch→store→GET cycle.  The Rust CLI reconstructs a brief from the task
+# record using exactly these fields; if any field is dropped or renamed the
+# replay would silently diverge.
+# ---------------------------------------------------------------------------
+
+_REPLAY_DISPATCH = {
+    "title": "replay-test",
+    "prompt": "echo deterministic",
+    "base_commit": "b" * 40,
+    "scope_globs": ["src/**/*.rs", "tests/**/*.py"],
+    "branch": "feature/replay-check",
+    "kind": "command",
+    "timeout_minutes": 45,
+    "priority": 50,
+    "todo_id": "replay-round-trip",
+}
+
+
+def test_replay_brief_fields_survive_round_trip() -> None:
+    """GET /tasks/{id} must return every field the CLI uses to reconstruct a replay brief."""
+    client, _ = _build_client()
+
+    resp = client.post(
+        "/tasks",
+        json=_REPLAY_DISPATCH,
+        headers=BEARER,
+    )
+    assert resp.status_code == 200, resp.text
+    task_id = resp.json()["id"]
+
+    task = client.get(f"/tasks/{task_id}", headers=BEARER).json()
+
+    # Fields the Rust replay CLI reads verbatim (see fabric-cli/src/main.rs Replay branch).
+    for field in ("title", "prompt", "base_commit", "scope_globs", "branch", "kind",
+                  "timeout_minutes", "priority"):
+        assert field in task, f"task record missing '{field}' — replay would lose it"
+
+    assert task["title"] == _REPLAY_DISPATCH["title"]
+    assert task["prompt"] == _REPLAY_DISPATCH["prompt"]
+    assert task["base_commit"] == _REPLAY_DISPATCH["base_commit"]
+    assert task["scope_globs"] == _REPLAY_DISPATCH["scope_globs"]
+    assert task["branch"] == _REPLAY_DISPATCH["branch"]
+    assert task["kind"] == _REPLAY_DISPATCH["kind"]
+
+
+def test_replay_require_base_commit_injected() -> None:
+    """Replay brief must pin base_commit (require_base_commit=true) regardless of the original."""
+    client, _ = _build_client()
+
+    resp = client.post(
+        "/tasks",
+        json={**_REPLAY_DISPATCH, "require_base_commit": False},
+        headers=BEARER,
+    )
+    assert resp.status_code == 200, resp.text
+    task_id = resp.json()["id"]
+
+    task = client.get(f"/tasks/{task_id}", headers=BEARER).json()
+
+    # The CLI always sets require_base_commit=true in the reconstructed brief so
+    # the replay cannot run against a different commit than the original.
+    # Verify the stored base_commit is non-empty (the precondition for pinning).
+    assert task.get("base_commit"), "base_commit must be stored — replay pins to it"

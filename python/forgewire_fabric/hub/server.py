@@ -338,13 +338,21 @@ class Blackboard:
     def get_labels(self) -> dict[str, Any]:
         """Return the fabric-wide label payload: hub_name + runner_aliases."""
         with self._connect() as conn:
-            rows = conn.execute("SELECT key, value FROM labels").fetchall()
+            rows = conn.execute("SELECT key, value_json FROM labels").fetchall()
         hub_name = ""
         aliases: dict[str, str] = {}
         host_aliases: dict[str, str] = {}
         for r in rows:
             k = r["key"]
-            v = r["value"]
+            raw = r["value_json"]
+            # value_json stores a JSON-encoded string; unwrap if possible.
+            try:
+                import json as _json
+                v = _json.loads(raw) if isinstance(raw, str) else raw
+                if not isinstance(v, str):
+                    v = raw
+            except Exception:
+                v = raw
             if k == "hub_name":
                 hub_name = v
             elif k.startswith("runner_alias:"):
@@ -381,21 +389,23 @@ class Blackboard:
         )
 
     def _upsert_label(self, key: str, value: str, updated_by: str | None) -> None:
+        import json as _json
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             if value == "":
                 conn.execute("DELETE FROM labels WHERE key = ?", (key,))
             else:
+                value_json = _json.dumps(value)
                 conn.execute(
                     """
-                    INSERT INTO labels (key, value, updated_by, updated_at)
+                    INSERT INTO labels (key, value_json, updated_by, updated_at)
                     VALUES (?, ?, ?, datetime('now'))
                     ON CONFLICT(key) DO UPDATE SET
-                        value = excluded.value,
+                        value_json = excluded.value_json,
                         updated_by = excluded.updated_by,
                         updated_at = excluded.updated_at
                     """,
-                    (key, value, updated_by),
+                    (key, value_json, updated_by),
                 )
             conn.commit()
         if not self._suppress_snapshot_writeback:
@@ -1110,8 +1120,8 @@ class Blackboard:
                     timeout_minutes, priority, metadata,
                     required_tools, required_tags, tenant, workspace_root,
                     require_base_commit, dispatcher_id, required_capabilities,
-                    secrets_needed, network_egress, kind
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    secrets_needed, network_egress, kind, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING id
                 """,
                 (
@@ -1134,6 +1144,7 @@ class Blackboard:
                     json.dumps(secrets_needed or []),
                     json.dumps(network_egress) if network_egress else None,
                     kind,
+                    _now_iso(),
                 ),
             )
             row = cur.fetchone()
@@ -1222,8 +1233,8 @@ class Blackboard:
                 # No queued task. Still record the worker heartbeat.
                 conn.execute(
                     """
-                    INSERT INTO workers (worker_id, hostname, capabilities, last_seen)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO workers (worker_id, hostname, capabilities, first_seen, last_seen)
+                    VALUES (?, ?, ?, ?, ?)
                     ON CONFLICT(worker_id) DO UPDATE SET
                         hostname = excluded.hostname,
                         capabilities = excluded.capabilities,
@@ -1234,14 +1245,15 @@ class Blackboard:
                         hostname,
                         json.dumps(capabilities or {}),
                         now_iso,
+                        now_iso,
                     ),
                 )
                 return None
             task_id = claim["id"]
             conn.execute(
                 """
-                INSERT INTO workers (worker_id, hostname, capabilities, last_seen, current_task_id)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO workers (worker_id, hostname, capabilities, first_seen, last_seen, current_task_id)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(worker_id) DO UPDATE SET
                     hostname = excluded.hostname,
                     capabilities = excluded.capabilities,
@@ -1252,6 +1264,7 @@ class Blackboard:
                     worker_id,
                     hostname,
                     json.dumps(capabilities or {}),
+                    now_iso,
                     now_iso,
                     task_id,
                 ),
@@ -2237,8 +2250,8 @@ class Blackboard:
             # Maintain legacy workers row for backcompat consumers.
             conn.execute(
                 """
-                INSERT INTO workers (worker_id, hostname, capabilities, last_seen, current_task_id)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO workers (worker_id, hostname, capabilities, first_seen, last_seen, current_task_id)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(worker_id) DO UPDATE SET
                     hostname        = excluded.hostname,
                     capabilities    = excluded.capabilities,
@@ -2255,6 +2268,7 @@ class Blackboard:
                             "scope_prefixes": scope_prefixes,
                         }
                     ),
+                    now,
                     now,
                     task_id,
                 ),

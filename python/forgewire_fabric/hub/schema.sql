@@ -204,7 +204,7 @@ CREATE TABLE IF NOT EXISTS dispatchers (
 -- ----------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS labels (
     key         TEXT PRIMARY KEY,
-    value       TEXT NOT NULL,
+    value_json  TEXT NOT NULL,
     updated_by  TEXT,
     updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );

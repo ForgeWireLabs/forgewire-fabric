@@ -1482,6 +1482,97 @@ impl BudgetStore for RqliteStore {
 
 impl FabricStore for RqliteStore {}
 
+// ---------------------------------------------------------------------------
+// M2.5.3 — budget_state restart-persistence integration test
+//
+// Verifies the core invariant: N atomic cost inserts leave budget_state totals
+// that equal the sum of those inserts, even when the store is reconstructed
+// from scratch (simulating a hub restart). The test requires a live rqlite
+// cluster; it is silently skipped when none is reachable so CI does not break
+// on machines without rqlite.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use fabric_store::{BudgetStore, CostStore};
+
+    fn test_store() -> Option<RqliteStore> {
+        let host = std::env::var("RQLITE_HOST").unwrap_or_else(|_| "127.0.0.1".into());
+        let port: u16 = std::env::var("RQLITE_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(4001);
+        // Quick TCP probe — return None if rqlite is not up.
+        use std::net::TcpStream;
+        if TcpStream::connect(format!("{host}:{port}")).is_err() {
+            return None;
+        }
+        Some(RqliteStore::new(&host, port, "strong"))
+    }
+
+    #[tokio::test]
+    async fn budget_state_persists_across_store_reconstruction() {
+        let store = match test_store() {
+            Some(s) => s,
+            None => {
+                eprintln!("SKIP budget_state restart test — rqlite not reachable");
+                return;
+            }
+        };
+
+        // Ensure schema exists (idempotent).
+        store.init_schema().await.expect("init_schema");
+
+        let now = utc_now();
+        let day = dates::day_key(&now);
+        let week = dates::iso_week_key(&now);
+
+        // Fetch baseline so the test is additive (safe against a shared cluster).
+        let baseline_day = store.get_spend("daily", &day).await.expect("baseline_day");
+        let baseline_week = store.get_spend("weekly", &week).await.expect("baseline_week");
+
+        // Insert 3 cost rows atomically — each bumps daily + weekly accumulators.
+        let tid = format!("test-restart-{}", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
+        for i in 0u32..3 {
+            store
+                .record_cost(
+                    &format!("{tid}-{i}"),
+                    None, None,
+                    "test-model",
+                    0, 0,
+                    1.0,   // $1.00 each → $3.00 total
+                    0.0, 0.0,
+                    &now,
+                )
+                .await
+                .expect("record_cost");
+        }
+
+        // Reconstruct the store — this simulates a hub restart (no in-memory state).
+        let host = std::env::var("RQLITE_HOST").unwrap_or_else(|_| "127.0.0.1".into());
+        let port: u16 = std::env::var("RQLITE_PORT")
+            .ok().and_then(|v| v.parse().ok()).unwrap_or(4001);
+        let fresh = RqliteStore::new(&host, port, "strong");
+
+        // budget_state point lookups must reflect all 3 inserts — not zero.
+        let after_day = fresh.get_spend("daily", &day).await.expect("after_day");
+        let after_week = fresh.get_spend("weekly", &week).await.expect("after_week");
+
+        let delta_day = after_day - baseline_day;
+        let delta_week = after_week - baseline_week;
+
+        assert!(
+            (delta_day - 3.0).abs() < 1e-6,
+            "budget_state daily should have gained exactly $3.00 (got delta={delta_day})"
+        );
+        assert!(
+            (delta_week - 3.0).abs() < 1e-6,
+            "budget_state weekly should have gained exactly $3.00 (got delta={delta_week})"
+        );
+    }
+}
+
 fn utc_offset(offset_secs: i64) -> String {
     let d = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
