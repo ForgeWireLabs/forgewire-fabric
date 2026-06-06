@@ -52,6 +52,7 @@ def _start_rqlite_service() -> None:
 def pytest_sessionstart(session: pytest.Session) -> None:
     """Ensure rqlite is running before any hub tests execute."""
     if _reachable():
+        _drain_stale_test_tasks()
         return
     print("\nrqlite not reachable — attempting to start service...")
     _start_rqlite_service()
@@ -59,6 +60,7 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         time.sleep(1)
         if _reachable():
             print(f"rqlite ready after {i}s")
+            _drain_stale_test_tasks()
             return
     pytest.exit(
         "\n\nFATAL: rqlite not available on 127.0.0.1:4001 after 30s.\n"
@@ -68,3 +70,34 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         "  Install: scripts/install/install-fabric.ps1\n",
         returncode=1,
     )
+
+
+@pytest.fixture(autouse=True)
+def _clean_task_queue():
+    """Cancel all queued tasks before each test so inter-test contamination
+    cannot cause competitive claims to pick up the wrong task."""
+    _drain_stale_test_tasks()
+    yield
+
+
+def _drain_stale_test_tasks(host: str = "127.0.0.1", port: int = 4001) -> None:
+    """Cancel all queued tasks left behind by previous test runs.
+
+    Tests dispatch tasks into the shared rqlite cluster.  If they exit before
+    submitting a result (assertion failure, KeyboardInterrupt, crash) those
+    tasks remain in 'queued' state and pollute competitive-claim tests in
+    subsequent runs.  Mark them all cancelled before each session so the
+    queue is clean.
+    """
+    try:
+        with urllib.request.urlopen(
+            f"http://{host}:{port}/db/execute",
+            data=json.dumps(
+                [["UPDATE tasks SET status = 'cancelled', cancel_requested = 1 "
+                  "WHERE status = 'queued'"]]
+            ).encode("utf-8"),
+            timeout=5,
+        ) as r:
+            r.read()
+    except Exception as exc:
+        print(f"\n[conftest] stale-task drain failed (non-fatal): {exc}")

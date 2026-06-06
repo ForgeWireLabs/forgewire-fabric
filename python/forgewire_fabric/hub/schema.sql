@@ -265,12 +265,11 @@ CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_event(created_at);
 -- secrets (M2.5.5a): sealed secret broker
 -- ----------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS secrets (
-    name            TEXT PRIMARY KEY,
-    ciphertext      TEXT NOT NULL,
-    version         INTEGER NOT NULL DEFAULT 1,
-    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
-    last_rotated_at TEXT
+    name             TEXT PRIMARY KEY,
+    encrypted_value  TEXT NOT NULL,
+    version          INTEGER NOT NULL DEFAULT 1,
+    created_at       TEXT NOT NULL,
+    last_rotated_at  TEXT
 );
 
 -- ----------------------------------------------------------------------

@@ -284,10 +284,9 @@ class SecretBroker:
             """
             CREATE TABLE IF NOT EXISTS secrets (
                 name             TEXT PRIMARY KEY,
-                ciphertext       BLOB NOT NULL,
+                encrypted_value  TEXT NOT NULL,
                 version          INTEGER NOT NULL DEFAULT 1,
                 created_at       TEXT NOT NULL,
-                updated_at       TEXT NOT NULL,
                 last_rotated_at  TEXT
             )
             """
@@ -315,10 +314,10 @@ class SecretBroker:
         if existing is None:
             conn.execute(
                 """
-                INSERT INTO secrets (name, ciphertext, version, created_at, updated_at)
-                VALUES (?, ?, 1, ?, ?)
+                INSERT INTO secrets (name, encrypted_value, version, created_at)
+                VALUES (?, ?, 1, ?)
                 """,
-                (name, b64, now_iso, now_iso),
+                (name, b64, now_iso),
             )
             version = 1
         else:
@@ -326,10 +325,10 @@ class SecretBroker:
             conn.execute(
                 """
                 UPDATE secrets
-                   SET ciphertext = ?, version = ?, updated_at = ?
+                   SET encrypted_value = ?, version = ?
                  WHERE name = ?
                 """,
-                (b64, version, now_iso, name),
+                (b64, version, name),
             )
         self._value_cache = None
         return {"name": name, "version": version, "updated_at": now_iso}
@@ -353,10 +352,10 @@ class SecretBroker:
         conn.execute(
             """
             UPDATE secrets
-               SET ciphertext = ?, version = ?, updated_at = ?, last_rotated_at = ?
+               SET encrypted_value = ?, version = ?, last_rotated_at = ?
              WHERE name = ?
             """,
-            (b64, version, now_iso, now_iso, name),
+            (b64, version, now_iso, name),
         )
         self._value_cache = None
         return {"name": name, "version": version, "last_rotated_at": now_iso}
@@ -371,7 +370,7 @@ class SecretBroker:
     @staticmethod
     def list_metadata(conn: Any) -> list[dict[str, Any]]:
         rows = conn.execute(
-            "SELECT name, version, created_at, updated_at, last_rotated_at "
+            "SELECT name, version, created_at, last_rotated_at "
             "FROM secrets ORDER BY name ASC"
         ).fetchall()
         return [dict(r) for r in rows]
@@ -392,10 +391,10 @@ class SecretBroker:
         out: dict[str, str] = {}
         placeholders = ",".join("?" * len(names))
         rows = conn.execute(
-            f"SELECT name, ciphertext FROM secrets WHERE name IN ({placeholders})",
+            f"SELECT name, encrypted_value FROM secrets WHERE name IN ({placeholders})",
             tuple(names),
         ).fetchall()
-        by_name = {r["name"]: r["ciphertext"] for r in rows}
+        by_name = {r["name"]: r["encrypted_value"] for r in rows}
         for name in names:
             stored = by_name.get(name)
             if stored is None:
@@ -411,12 +410,12 @@ class SecretBroker:
         if self._value_cache is not None:
             return self._value_cache
         with conn_factory() as conn:
-            rows = conn.execute("SELECT name, ciphertext FROM secrets").fetchall()
+            rows = conn.execute("SELECT name, encrypted_value FROM secrets").fetchall()
         cache: dict[str, str] = {}
         for row in rows:
             name = row["name"]
             try:
-                cache[name] = self._decrypt(name, _coerce_ciphertext(row["ciphertext"]))
+                cache[name] = self._decrypt(name, _coerce_ciphertext(row["encrypted_value"]))
             except PermissionError as exc:  # corrupt row; skip with warning
                 LOGGER.warning("secret %r failed decrypt during cache load: %s", name, exc)
         self._value_cache = cache

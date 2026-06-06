@@ -192,11 +192,14 @@ def test_list_and_get_endpoints() -> None:
 def test_hard_deny_is_not_approvable() -> None:
     """A 403 forbidden_paths deny must not be turned into an approval row."""
     client = _build_client({"forbidden_paths": ["secrets/**"]})
+    # Snapshot the approval count before the dispatch.
+    before_count = len(client.get("/approvals", headers=BEARER).json()["approvals"])
     resp = _dispatch(
         client, branch="feature/x", scope_globs=["secrets/k.txt"], todo_id="42"
     )
     assert resp.status_code == 403
     detail = resp.json()["detail"]
     assert "approval_id" not in detail
-    listing = client.get("/approvals", headers=BEARER).json()
-    assert listing["approvals"] == []
+    # No new approval row should have been created by this 403.
+    after_count = len(client.get("/approvals", headers=BEARER).json()["approvals"])
+    assert after_count == before_count

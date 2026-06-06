@@ -11,6 +11,7 @@ import json
 import secrets
 import socket
 import time
+import uuid
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -104,7 +105,7 @@ def _register_dispatcher(client: TestClient, tmp_path: Path, *, hostname: str) -
 def test_hosts_summary_fuses_roles_runners_dispatchers_and_active_hub(tmp_path: Path) -> None:
     app = _make_app(tmp_path)
     with TestClient(app) as client:
-        host = "HOST-A"
+        host = f"HOST-{uuid.uuid4().hex[:8].upper()}"
         command_runner_id = _register_runner(client, tmp_path, hostname=host, tags=["kind:command"])
         dispatcher_id = _register_dispatcher(client, tmp_path, hostname=host)
 
@@ -147,8 +148,9 @@ def test_hosts_summary_fuses_roles_runners_dispatchers_and_active_hub(tmp_path: 
 def test_hosts_summary_uses_host_alias_with_runner_alias_fallback(tmp_path: Path) -> None:
     app = _make_app(tmp_path)
     with TestClient(app) as client:
-        host_a = "HOST-A"
-        host_b = "HOST-B"
+        run_id = uuid.uuid4().hex[:8].upper()
+        host_a = f"HOST-A-{run_id}"
+        host_b = f"HOST-B-{run_id}"
         runner_a = _register_runner(client, tmp_path, hostname=host_a, tags=["kind:command"])
         runner_b = _register_runner(client, tmp_path, hostname=host_b, tags=["kind:command"])
 
@@ -204,15 +206,16 @@ def test_host_role_report_requires_auth(tmp_path: Path) -> None:
 
 def test_deregister_runner_removes_host_row(tmp_path: Path) -> None:
     app = _make_app(tmp_path)
+    ghost_hostname = f"GHOST-RUNNER-{uuid.uuid4().hex[:8].upper()}"
     with TestClient(app) as client:
         runner_id = _register_runner(
-            client, tmp_path, hostname="GHOST-RUNNER", tags=["kind:agent"]
+            client, tmp_path, hostname=ghost_hostname, tags=["kind:agent"]
         )
 
         r = client.get("/hosts", headers=_auth())
         assert r.status_code == 200, r.text
         hostnames = {h["hostname"].lower() for h in r.json()["hosts"]}
-        assert "ghost-runner" in hostnames
+        assert ghost_hostname.lower() in hostnames
 
         r = client.delete(f"/runners/{runner_id}", headers=_auth())
         assert r.status_code == 200, r.text
@@ -223,24 +226,25 @@ def test_deregister_runner_removes_host_row(tmp_path: Path) -> None:
         assert r.status_code == 404, r.text
 
         # Host should no longer appear in /hosts (no runners, no dispatchers,
-        # no host_roles tied to GHOST-RUNNER), aside from the active hub host.
+        # no host_roles tied to ghost_hostname), aside from the active hub host.
         r = client.get("/hosts", headers=_auth())
         assert r.status_code == 200, r.text
         hostnames = {h["hostname"].lower() for h in r.json()["hosts"]}
-        assert "ghost-runner" not in hostnames
+        assert ghost_hostname.lower() not in hostnames
 
 
 def test_deregister_dispatcher_clears_dispatch_host_role(tmp_path: Path) -> None:
     app = _make_app(tmp_path)
+    ghost_disp = f"GHOST-DISPATCHER-{uuid.uuid4().hex[:8].upper()}"
     with TestClient(app) as client:
         dispatcher_id = _register_dispatcher(
-            client, tmp_path, hostname="GHOST-DISPATCHER"
+            client, tmp_path, hostname=ghost_disp
         )
 
         r = client.get("/hosts", headers=_auth())
         hosts_by_name = {h["hostname"].lower(): h for h in r.json()["hosts"]}
-        assert "ghost-dispatcher" in hosts_by_name
-        assert hosts_by_name["ghost-dispatcher"]["roles"]["dispatch"]["status"] == "registered"
+        assert ghost_disp.lower() in hosts_by_name
+        assert hosts_by_name[ghost_disp.lower()]["roles"]["dispatch"]["status"] == "registered"
 
         r = client.delete(
             f"/dispatchers/{dispatcher_id}", headers=_auth()
@@ -257,7 +261,7 @@ def test_deregister_dispatcher_clears_dispatch_host_role(tmp_path: Path) -> None
         # /hosts entirely (no runners, no dispatchers, no host_roles).
         r = client.get("/hosts", headers=_auth())
         hostnames = {h["hostname"].lower() for h in r.json()["hosts"]}
-        assert "ghost-dispatcher" not in hostnames
+        assert ghost_disp.lower() not in hostnames
 
 
 def test_deregister_endpoints_require_auth(tmp_path: Path) -> None:
@@ -292,13 +296,14 @@ def test_dispatcher_only_rows_do_not_create_hosts(tmp_path: Path) -> None:
 
 def test_dispatcher_registration_creates_dispatch_role(tmp_path: Path) -> None:
     app = _make_app(tmp_path)
+    driver_host = f"DRIVER-{uuid.uuid4().hex[:8].upper()}"
     with TestClient(app) as client:
-        dispatcher_id = _register_dispatcher(client, tmp_path, hostname="DRIVER-A")
+        dispatcher_id = _register_dispatcher(client, tmp_path, hostname=driver_host)
 
         r = client.get("/hosts", headers=_auth())
         assert r.status_code == 200, r.text
         hosts = {h["hostname"]: h for h in r.json()["hosts"]}
-        summary = hosts["DRIVER-A"]
+        summary = hosts[driver_host]
         assert summary["roles"]["dispatch"]["enabled"] is True
         assert summary["roles"]["dispatch"]["status"] == "registered"
         assert summary["roles"]["dispatch"]["dispatcher_ids"] == [dispatcher_id]

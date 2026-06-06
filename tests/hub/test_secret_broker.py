@@ -9,8 +9,11 @@ These tests require a live rqlite — see tests/hub/conftest.py.
 
 from __future__ import annotations
 
+import json
+import secrets as _stdlib_secrets
 import tempfile
 import time
+import uuid
 from pathlib import Path
 
 import pytest
@@ -63,25 +66,27 @@ def _build_client() -> tuple[TestClient, Path]:
 
 def test_http_put_creates_then_rotates(tmp_path: Path) -> None:
     client, _ = _build_client()
+    # Use a unique name so prior test-run rows with different keys don't interfere.
+    name = f"GITHUB_TOKEN_{uuid.uuid4().hex[:8].upper()}"
     r = client.post(
         "/secrets",
-        json={"name": "GITHUB_TOKEN", "value": "ghp_one"},
+        json={"name": name, "value": "ghp_one"},
         headers=BEARER,
     )
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["rotated"] is False
-    assert body["secret"]["name"] == "GITHUB_TOKEN"
-    assert body["secret"]["version"] == 1
+    assert body["secret"]["name"] == name
+    v1 = body["secret"]["version"]
 
     r = client.post(
         "/secrets",
-        json={"name": "GITHUB_TOKEN", "value": "ghp_two"},
+        json={"name": name, "value": "ghp_two"},
         headers=BEARER,
     )
     body = r.json()
     assert body["rotated"] is True
-    assert body["secret"]["version"] == 2
+    assert body["secret"]["version"] == v1 + 1
 
 
 def test_http_put_rejects_bad_name() -> None:
@@ -103,9 +108,10 @@ def test_http_put_requires_auth() -> None:
 
 def test_http_list_returns_metadata_only() -> None:
     client, _ = _build_client()
+    name = f"API_KEY_{uuid.uuid4().hex[:8].upper()}"
     client.post(
         "/secrets",
-        json={"name": "API_KEY", "value": "do-not-leak"},
+        json={"name": name, "value": "do-not-leak"},
         headers=BEARER,
     )
     r = client.get("/secrets", headers=BEARER)
@@ -124,22 +130,23 @@ def test_http_delete_missing_is_404() -> None:
 
 def test_http_delete_happy_path() -> None:
     client, _ = _build_client()
+    name = f"DOOMED_{uuid.uuid4().hex[:8].upper()}"
     client.post(
         "/secrets",
-        json={"name": "DOOMED", "value": "ttl-zero"},
+        json={"name": name, "value": "ttl-zero"},
         headers=BEARER,
     )
-    r = client.delete("/secrets/DOOMED", headers=BEARER)
+    r = client.delete(f"/secrets/{name}", headers=BEARER)
     assert r.status_code == 200
     assert r.json()["deleted"] is True
     listing = client.get("/secrets", headers=BEARER).json()["secrets"]
-    assert all(s["name"] != "DOOMED" for s in listing)
+    assert all(s["name"] != name for s in listing)
 
 
 # ---------------------------------------------------------------- e2e
 
 
-def _register(client: TestClient, ident) -> None:
+def _register(client: TestClient, ident, *, tags: list[str] | None = None) -> None:
     ts = int(time.time())
     nonce = _stdlib_secrets.token_hex(16)
     body = {
@@ -160,7 +167,7 @@ def _register(client: TestClient, ident) -> None:
         "os": "test-os",
         "arch": "x86_64",
         "tools": [],
-        "tags": [],
+        "tags": tags or [],
         "scope_prefixes": [],
         "metadata": {},
         "capabilities": {},
@@ -172,7 +179,7 @@ def _register(client: TestClient, ident) -> None:
     assert r.status_code == 200, r.text
 
 
-def _claim_v2(client: TestClient, ident) -> dict:
+def _claim_v2(client: TestClient, ident, *, tags: list[str] | None = None) -> dict:
     ts = int(time.time())
     nonce = _stdlib_secrets.token_hex(16)
     body = {"op": "claim", "runner_id": ident.runner_id, "timestamp": ts, "nonce": nonce}
@@ -184,7 +191,7 @@ def _claim_v2(client: TestClient, ident) -> dict:
         "signature": sig,
         "scope_prefixes": [],
         "tools": [],
-        "tags": [],
+        "tags": tags or [],
     }
     r = client.post("/tasks/claim-v2", json=payload, headers=BEARER)
     assert r.status_code == 200, r.text
@@ -196,29 +203,35 @@ def test_e2e_dispatch_claim_injects_secrets_and_audits_names_only(
 ) -> None:
     client, _ = _build_client()
     ident = load_or_create(tmp_path / "id.json")
-    _register(client, ident)
+    # Use a unique tag so the competitive claim only matches THIS runner/task pair.
+    run_tag = f"sec-e2e-{uuid.uuid4().hex[:8]}"
+    secret_name = f"GITHUB_TOKEN_{uuid.uuid4().hex[:8].upper()}"
+    secret_value = f"ghp_{uuid.uuid4().hex}"
+    _register(client, ident, tags=[run_tag])
     # Plant the secret.
     client.post(
         "/secrets",
-        json={"name": "GITHUB_TOKEN", "value": "ghp_e2e_value"},
+        json={"name": secret_name, "value": secret_value},
         headers=BEARER,
     )
-    # Dispatch a task that declares secrets_needed.
+    # Dispatch a task that declares secrets_needed, gated to our tag.
     dispatch_body = {
         "title": "secret-claim",
         "prompt": "noop",
         "scope_globs": ["docs/x.md"],
         "base_commit": "a" * 40,
         "branch": "feature/secret-claim",
-        "secrets_needed": ["GITHUB_TOKEN"],
+        "secrets_needed": [secret_name],
+        "required_tags": [run_tag],
+        "priority": 9999,
     }
     task = client.post("/tasks", json=dispatch_body, headers=BEARER).json()
 
-    claim = _claim_v2(client, ident)
+    claim = _claim_v2(client, ident, tags=[run_tag])
     assert claim["task"] is not None
     assert claim["task"]["id"] == task["id"]
     # Secret value lands in the claim response and only there.
-    assert claim["task"]["secrets"] == {"GITHUB_TOKEN": "ghp_e2e_value"}
+    assert claim["task"]["secrets"] == {secret_name: secret_value}
 
     # Audit chain: dispatch records the names, claim records dispatched
     # names; nowhere does the value appear.
@@ -228,18 +241,21 @@ def test_e2e_dispatch_claim_injects_secrets_and_audits_names_only(
     assert "dispatch" in kinds and "claim" in kinds
     dispatch_ev = next(ev for ev in audit["events"] if ev["kind"] == "dispatch")
     claim_ev = next(ev for ev in audit["events"] if ev["kind"] == "claim")
-    assert dispatch_ev["payload"]["secrets_needed"] == ["GITHUB_TOKEN"]
-    assert claim_ev["payload"]["secrets_dispatched"] == ["GITHUB_TOKEN"]
-    assert b"ghp_e2e_value" not in json.dumps(audit).encode("utf-8")
+    assert dispatch_ev["payload"]["secrets_needed"] == [secret_name]
+    assert claim_ev["payload"]["secrets_dispatched"] == [secret_name]
+    assert secret_value.encode("utf-8") not in json.dumps(audit).encode("utf-8")
 
 
 def test_e2e_submit_result_redacts_secret_value(tmp_path: Path) -> None:
     client, _ = _build_client()
     ident = load_or_create(tmp_path / "id-redact.json")
-    _register(client, ident)
+    run_tag = f"sec-redact-{uuid.uuid4().hex[:8]}"
+    secret_name = f"OPENAI_API_KEY_{uuid.uuid4().hex[:8].upper()}"
+    secret_value = f"sk-{uuid.uuid4().hex}"
+    _register(client, ident, tags=[run_tag])
     client.post(
         "/secrets",
-        json={"name": "OPENAI_API_KEY", "value": "sk-leakvalue123"},
+        json={"name": secret_name, "value": secret_value},
         headers=BEARER,
     )
     dispatch_body = {
@@ -248,18 +264,21 @@ def test_e2e_submit_result_redacts_secret_value(tmp_path: Path) -> None:
         "scope_globs": ["docs/y.md"],
         "base_commit": "b" * 40,
         "branch": "feature/redact-me",
-        "secrets_needed": ["OPENAI_API_KEY"],
+        "secrets_needed": [secret_name],
+        "required_tags": [run_tag],
+        "priority": 9999,
     }
     task = client.post("/tasks", json=dispatch_body, headers=BEARER).json()
-    _claim_v2(client, ident)
+    claim = _claim_v2(client, ident, tags=[run_tag])
+    assert claim["task"]["id"] == task["id"]
 
     # Runner submits a result whose log_tail + error contain the secret
     # value. The hub must redact both before persisting.
     result_body = {
         "worker_id": ident.runner_id,
         "status": "done",
-        "log_tail": "boot ok. token=sk-leakvalue123 done.",
-        "error": "trace: sk-leakvalue123 surfaced in error",
+        "log_tail": f"boot ok. token={secret_value} done.",
+        "error": f"trace: {secret_value} surfaced in error",
         "head_commit": "c" * 40,
         "commits": ["c" * 40],
         "files_touched": ["docs/y.md"],
@@ -269,19 +288,22 @@ def test_e2e_submit_result_redacts_secret_value(tmp_path: Path) -> None:
     persisted = r.json()
     log_tail = persisted["result"]["log_tail"]
     error = persisted["result"]["error"]
-    assert "sk-leakvalue123" not in log_tail
-    assert "sk-leakvalue123" not in error
-    assert REDACTION_MARKER.format(name="OPENAI_API_KEY") in log_tail
-    assert REDACTION_MARKER.format(name="OPENAI_API_KEY") in error
+    assert secret_value not in log_tail
+    assert secret_value not in error
+    assert REDACTION_MARKER.format(name=secret_name) in log_tail
+    assert REDACTION_MARKER.format(name=secret_name) in error
 
 
 def test_e2e_progress_and_stream_redact_secret_value(tmp_path: Path) -> None:
     client, _ = _build_client()
     ident = load_or_create(tmp_path / "id-progress.json")
-    _register(client, ident)
+    run_tag = f"sec-stream-{uuid.uuid4().hex[:8]}"
+    secret_name = f"DB_PASS_{uuid.uuid4().hex[:8].upper()}"
+    secret_value = f"pa55w0rd-{uuid.uuid4().hex[:8]}"
+    _register(client, ident, tags=[run_tag])
     client.post(
         "/secrets",
-        json={"name": "DB_PASS", "value": "pa55w0rd-leak"},
+        json={"name": secret_name, "value": secret_value},
         headers=BEARER,
     )
     dispatch_body = {
@@ -290,17 +312,20 @@ def test_e2e_progress_and_stream_redact_secret_value(tmp_path: Path) -> None:
         "scope_globs": ["docs/z.md"],
         "base_commit": "d" * 40,
         "branch": "feature/redact-stream",
-        "secrets_needed": ["DB_PASS"],
+        "secrets_needed": [secret_name],
+        "required_tags": [run_tag],
+        "priority": 9999,
     }
     task = client.post("/tasks", json=dispatch_body, headers=BEARER).json()
-    _claim_v2(client, ident)
+    claim = _claim_v2(client, ident, tags=[run_tag])
+    assert claim["task"]["id"] == task["id"]
 
     # Progress
     pr = client.post(
         f"/tasks/{task['id']}/progress",
         json={
             "worker_id": ident.runner_id,
-            "message": "step 1 used pa55w0rd-leak",
+            "message": f"step 1 used {secret_value}",
         },
         headers=BEARER,
     )
@@ -312,7 +337,7 @@ def test_e2e_progress_and_stream_redact_secret_value(tmp_path: Path) -> None:
         json={
             "worker_id": ident.runner_id,
             "channel": "stdout",
-            "line": "connect with pa55w0rd-leak",
+            "line": f"connect with {secret_value}",
         },
         headers=BEARER,
     )
@@ -324,22 +349,24 @@ def test_e2e_progress_and_stream_redact_secret_value(tmp_path: Path) -> None:
         json={
             "worker_id": ident.runner_id,
             "entries": [
-                {"channel": "stderr", "line": "leak1 pa55w0rd-leak"},
-                {"channel": "stdout", "line": "leak2 pa55w0rd-leak"},
+                {"channel": "stderr", "line": f"leak1 {secret_value}"},
+                {"channel": "stdout", "line": f"leak2 {secret_value}"},
             ],
         },
         headers=BEARER,
     )
     assert br.status_code == 200, br.text
 
+    secret_bytes = secret_value.encode("utf-8")
+
     # Pull progress + stream back and confirm redaction.
     fetched = client.get(f"/tasks/{task['id']}", headers=BEARER).json()
     progress_blob = json.dumps(fetched.get("progress") or []).encode("utf-8")
-    assert b"pa55w0rd-leak" not in progress_blob
+    assert secret_bytes not in progress_blob
 
     stream = client.get(
         f"/tasks/{task['id']}/stream", headers=BEARER
     ).json()
     stream_blob = json.dumps(stream).encode("utf-8")
-    assert b"pa55w0rd-leak" not in stream_blob
-    assert REDACTION_MARKER.format(name="DB_PASS").encode("utf-8") in stream_blob
+    assert secret_bytes not in stream_blob
+    assert REDACTION_MARKER.format(name=secret_name).encode("utf-8") in stream_blob

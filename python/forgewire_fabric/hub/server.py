@@ -678,8 +678,8 @@ class Blackboard:
                 """
                 INSERT INTO approvals (
                     approval_id, envelope_hash, decision_json, task_label,
-                    branch, scope_globs_json, dispatcher_id, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')
+                    branch, scope_globs_json, dispatcher_id, status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
                 """,
                 (
                     approval_id,
@@ -689,6 +689,7 @@ class Blackboard:
                     branch,
                     json.dumps(list(scope_globs)),
                     dispatcher_id,
+                    _now_iso(),
                 ),
             )
             conn.commit()
@@ -769,12 +770,12 @@ class Blackboard:
             cur = conn.execute(
                 """
                 UPDATE approvals
-                   SET status = 'consumed', consumed_at = datetime('now')
+                   SET status = 'consumed', resolved_at = ?
                  WHERE approval_id = ?
                    AND envelope_hash = ?
                    AND status = 'approved'
                 """,
-                (approval_id, envelope_hash),
+                (_now_iso(), approval_id, envelope_hash),
             )
             conn.commit()
             return cur.rowcount > 0
@@ -1401,7 +1402,7 @@ class Blackboard:
         with self._connect() as conn:
             cur = conn.execute(
                 """
-                INSERT INTO progress (task_id, seq, message, files_touched)
+                INSERT INTO progress (task_id, seq, message, files_touched, created_at)
                 SELECT
                     t.id,
                     COALESCE(
@@ -1409,12 +1410,13 @@ class Blackboard:
                         0
                     ) + 1,
                     ?,
+                    ?,
                     ?
                 FROM tasks t
                 WHERE t.id = ? AND t.worker_id = ?
                 RETURNING id, seq
                 """,
-                (message, files_json, task_id, worker_id),
+                (message, files_json, _now_iso(), task_id, worker_id),
             )
             row = cur.fetchone()
             if row is None:
@@ -1473,12 +1475,12 @@ class Blackboard:
         with self._connect() as conn:
             cur = conn.execute(
                 """
-                INSERT INTO notes (task_id, author, body)
-                SELECT t.id, ?, ?
+                INSERT INTO notes (task_id, author, body, created_at)
+                SELECT t.id, ?, ?, ?
                 FROM tasks t WHERE t.id = ?
                 RETURNING id
                 """,
-                (author, body, task_id),
+                (author, body, _now_iso(), task_id),
             )
             row = cur.fetchone()
             if row is None:
@@ -1537,10 +1539,10 @@ class Blackboard:
             next_seq = self._stream_counter.next_seq(task_id)
             cur = conn.execute(
                 """
-                INSERT INTO task_streams (task_id, seq, channel, line)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO task_streams (task_id, seq, channel, line, created_at)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (task_id, next_seq, channel, line),
+                (task_id, next_seq, channel, line, _now_iso()),
             )
             entry_id = cur.lastrowid
         return {
@@ -1598,19 +1600,20 @@ class Blackboard:
                 ).fetchone()
                 self._stream_counter.prime(task_id, int(seq_row["s"]))
 
-            assigned: list[tuple[int, str, int, str]] = []
+            now = _now_iso()
+            assigned: list[tuple[int, str, int, str, str]] = []
             for entry in entries:
                 seq = self._stream_counter.next_seq(task_id)
                 assigned.append(
-                    (task_id, seq, str(entry["channel"]), str(self.redact_text(entry["line"]) or ""))
+                    (task_id, seq, str(entry["channel"]), str(self.redact_text(entry["line"]) or ""), now)
                 )
 
             conn.execute("BEGIN IMMEDIATE")
             try:
                 conn.executemany(
                     """
-                    INSERT INTO task_streams (task_id, seq, channel, line)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO task_streams (task_id, seq, channel, line, created_at)
+                    VALUES (?, ?, ?, ?, ?)
                     """,
                     assigned,
                 )
