@@ -1,142 +1,25 @@
-# ForgeWire Fabric
+# Fabric
 
-**Private work-dispatch fabric for trusted remote runners.**
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](rust-toolchain.toml)
+[![Status: Alpha](https://img.shields.io/badge/status-alpha-yellow.svg)](#status)
 
-ForgeWire Fabric turns machines you control into a signed, policy-governed execution fabric. Dispatch work from your laptop, editor, automation, CI, or ForgeWire itself; Fabric routes each task to an eligible trusted runner, enforces scope and policy, streams execution, tracks cost, and records an audit trail.
+> **Fabric sees the work graph.**
 
-Most infrastructure sees only one layer:
+Send signed work to machines you trust. Let only eligible runners claim it. Enforce policy before and during execution. Preserve enough evidence to explain what happened later.
 
-- VPNs see machines.
-- Queues see messages.
-- Schedulers see workloads.
-- Hosted agent platforms see tasks.
-
-**Fabric sees the work graph.** Every dispatch, claim, stream, result, approval, budget check, secret handoff, and audit event belongs to one execution chain.
-
-> **Status:** Apache-2.0 alpha. Fabric is usable today for signed hub/runner dispatch, scoped runners, capability-aware claims, policy gates, approvals, cost tracking, structured streams, audit foundations, Python/MCP integrations, and VS Code workflows. Larger features such as federated QUIC transport, capability anycast, hub HA, stronger egress enforcement, and external audit witnessing are planned or in progress.
+Fabric is a self-hosted execution fabric for trusted remote runners. It is the layer between your tools — CLI, VS Code, MCP, CI, automation — and the machines that do the work: GPU boxes, lab servers, build hosts, or any machine you operate. No third-party control plane. Your infrastructure, your rules, your audit trail.
 
 ---
 
-## Why Fabric exists
-
-Remote execution is easy to start and hard to trust.
-
-A shared SSH key works until you need to know which task touched which path. A queue works until you need per-task approval, secrets, egress, and replay. A scheduler works until the work is not just a container but a signed instruction with scope, capabilities, budget, and provenance. A hosted agent platform works until execution policy, credentials, source access, and audit logs live in somebody else's control plane.
-
-Fabric exists for operators who want the convenience of remote agents, build workers, GPU boxes, lab machines, and private runners **without surrendering execution control**.
-
-Fabric's core promise:
-
-> **Send signed work to machines you trust, let only eligible runners claim it, enforce policy before and during execution, and preserve enough evidence to explain what happened later.**
+<!-- demo GIF goes here once recorded -->
+<!-- ![Fabric dispatch demo](docs/assets/demo.gif) -->
 
 ---
 
-## What Fabric does
+## Quickstart
 
-- **Signed task dispatch** — dispatchers submit sealed work briefs with scoped execution intent.
-- **Trusted hub/runner execution** — a hub owns task state; runners register identity, advertise capabilities, claim eligible work, and report results.
-- **Scope-aware routing** — runners can be limited to declared workspace prefixes; tasks outside those scopes are invisible to them.
-- **Capability-aware claims** — tasks can require tags, tools, workspace affinity, tenant affinity, and runner capabilities.
-- **Policy gates** — dispatch, runtime intent, and completion can be allowed, denied, or held for approval.
-- **Operator approvals** — risky operations such as writes, network egress, merges, pushes, or shell actions can pause for human approval.
-- **Cost controls** — per-task and period budgets let the hub reject work before it exceeds configured caps.
-- **Secret brokering and redaction** — secret names can be requested by a task, injected only at claim time, and redacted from stored outputs.
-- **Structured streams** — stdout, stderr, info events, progress, notes, and terminal results are observable while work runs.
-- **Audit foundations** — lifecycle events and results are retained for review, replay tooling, and future external witnessing.
-- **Editor and tool surfaces** — CLI, MCP integration, and VS Code extension support dispatch and observation without giving tools unchecked access.
-
----
-
-## The core model
-
-```text
-        signed brief + scope + policy metadata
-┌────────────┐ ───────────────────────────────▶ ┌──────────────┐
-│ Dispatcher │                                  │ Fabric Hub   │
-│ CLI/VSCode │ ◀──── status / streams / audit ─ │ control plane│
-│ MCP/tool   │                                  └──────┬───────┘
-└────────────┘                                         │
-                                                       │ claim by scope,
-                                                       │ capability, tenant,
-                                                       │ workspace, policy
-                                                       ▼
-                                                ┌──────────────┐
-                                                │ Runner       │
-                                                │ execution    │
-                                                │ plane        │
-                                                └──────┬───────┘
-                                                       │
-                                                       │ streams, result,
-                                                       │ cost, audit events
-                                                       ▼
-                                                Operator evidence
-```
-
-### Dispatcher
-
-A dispatcher is any trusted client that submits work: the CLI, VS Code extension, MCP-enabled tooling, automation, CI, ForgeWire, or a custom application. Dispatchers describe **what** should run, **where it is allowed to operate**, and **what capabilities or approvals it needs**.
-
-### Hub
-
-The hub is the control plane. It accepts dispatches, verifies authorization, enforces policy, stores task state, tracks cost, exposes task/runner/audit APIs, and decides which work an eligible runner may claim.
-
-### Runner
-
-A runner is the execution plane. It registers with a stable identity, advertises tags/tools/capabilities, limits itself to declared scopes, claims work from the hub, executes inside its local workspace, streams progress, and submits terminal results.
-
----
-
-## Where Fabric fits
-
-Fabric is not trying to be only a VPN, queue, scheduler, workflow engine, or hosted agent. It sits where those systems overlap: trusted remote work.
-
-| If you would normally reach for... | It gives you... | Fabric adds... |
-|---|---|---|
-| **Tailscale / WireGuard / Headscale** | Private reachability | Work-aware dispatch, runner identity, policy, streams, audit, and future native overlay transport. |
-| **NATS / gRPC / RabbitMQ** | Message movement | Signed work envelopes, runner claims, scoped execution, policy gates, and result provenance. |
-| **Celery / Dramatiq / RQ** | Task queues and workers | Scope/capability routing, signed dispatch, approvals, costs, secrets, streams, and audit chain. |
-| **Ray / Dask** | Distributed compute | Operator-owned policy, trusted runners, work provenance, and non-Python/agent/command task semantics. |
-| **Kubernetes / Nomad** | Workload scheduling | Signed intent, task-level scope, capability-aware execution, and private work-control semantics. |
-| **Temporal** | Durable workflow history | Runner identity, signed remote execution, scoped workspaces, streamed evidence, and operator policy gates. |
-| **Hosted coding agents** | Agent/task execution UX | Private control plane, local credentials, budget/egress/secrets policy, approvals, and audit on infrastructure you operate. |
-
-A useful shorthand:
-
-> Tailscale connects machines. NATS moves messages. Kubernetes schedules workloads. Temporal records workflows. Ray runs distributed compute. Hosted agents run tasks for you. **Fabric governs trusted work across machines you control.**
-
----
-
-## Current capabilities
-
-Stable or usable today:
-
-- Rust hub and runner daemons with Protocol v3 support.
-- Python CLI/client compatibility surface for smoke tooling, MCP integration, and operator workflows.
-- Authenticated dispatch with signed envelopes and nonce replay protection.
-- Scope- and capability-aware runner claim routing.
-- Runner identity persistence, trust registration, heartbeat, drain, and registry surfaces.
-- Structured task streams and persisted terminal results.
-- Hash-chained audit log foundation.
-- Policy gates for dispatch, runtime intent checks, and completion-time review.
-- Approval inbox with CLI workflows and notification hooks.
-- Cost ledger with per-task, daily, and weekly budget limits.
-- Secret broker foundation with encrypted storage, name-only audit, claim-time injection, and output redaction.
-- rqlite-backed hub state path for replicated availability work.
-- Windows service installation path with NSSM supervision and watchdogs.
-- VS Code extension for hub connection, runner/task browsing, dispatch, approvals, and task streams.
-
-Still alpha / evolving:
-
-- Native release bundles are the intended primary distribution path and are still being hardened.
-- Linux and macOS service installers are part of the cross-platform direction, but Windows has the most validated service path today.
-- Hub HA, role-separated identity, stronger egress enforcement, and richer replay/export workflows are active roadmap items.
-- Federated overlay transport, capability anycast, external witnessing, and GUI/operator surfaces are planned later-stage capabilities.
-
----
-
-## Quickstart: local hub and runner
-
-The smallest smoke path uses the Python compatibility CLI. Native daemons are the intended deployment substrate for long-running hosts, but the Python CLI remains useful for local tests and integrations.
+The fastest path uses the Python CLI. Native Rust daemons are the intended long-running substrate — the Python CLI is the zero-build smoke path.
 
 ```bash
 pip install forgewire-fabric
@@ -144,7 +27,7 @@ forgewire-fabric token gen > hub.token
 export FORGEWIRE_HUB_TOKEN="$(cat hub.token)"
 ```
 
-Start a local hub:
+Start a hub:
 
 ```bash
 forgewire-fabric hub start --host 127.0.0.1 --port 8765
@@ -155,59 +38,159 @@ Start a runner in another terminal:
 ```bash
 export FORGEWIRE_HUB_URL=http://127.0.0.1:8765
 export FORGEWIRE_HUB_TOKEN="$(cat hub.token)"
-
 forgewire-fabric runner start --workspace-root /path/to/repo
 ```
 
-Dispatch and observe scoped work:
+Dispatch work and watch it stream:
 
 ```bash
 forgewire-fabric dispatch "pytest -q" --scope "tests/**"
-forgewire-fabric tasks list
 forgewire-fabric tasks stream <task-id>
 ```
 
-For native daemon setup, service installation, editor usage, and multi-machine walkthroughs, see [docs/QUICKSTART.md](docs/QUICKSTART.md).
+That's it. One hub, one runner, signed dispatch, live output. For native daemon setup, multi-machine layouts, and service installation see [docs/QUICKSTART.md](docs/QUICKSTART.md).
 
 ---
 
-## Install and distribution
+## Why Fabric exists
 
-### Native release path
+Remote execution is easy to start and hard to trust.
 
-The intended operator experience is a signed native release bundle containing:
+A shared SSH key works until you need to know which task touched which path. A queue works until you need per-task approval, secrets, egress control, and replay. A scheduler works until the work is not just a container but a signed instruction with scope, capabilities, budget, and provenance. A hosted agent platform works until you realize execution policy, credentials, source access, and audit logs live in somebody else's control plane.
 
-- `forgewire-hub`
-- `forgewire-runner`
-- `forgewire-fabric-cli`
-- platform service installers
-- checksums, provenance, rollback notes, and release metadata
+Fabric exists for operators who want the convenience of remote agents, build workers, GPU boxes, and private runners **without surrendering execution control**.
 
-See [docs/RELEASE_DISTRIBUTION.md](docs/RELEASE_DISTRIBUTION.md) for release artifact expectations.
+---
 
-### From source
+## Use cases
+
+**AI agents on hardware you own.**
+Give a coding agent or automation pipeline a Fabric dispatcher. It submits signed work briefs; runners execute in scoped workspaces; the hub enforces policy and requires human approval before pushes, merges, or egress. The agent never touches SSH keys or runner credentials.
+
+**Private multi-machine build and test.**
+Point your CI or editor at a Fabric hub. Route tests to a machine with the right workspace, GPU, or OS. Cap spending. Stream output. Inspect every result. No third-party visibility into your source or build secrets.
+
+**LAN cluster for local AI workloads.**
+Run a hub and runners on machines in your network. Zero external dependencies — mDNS discovery, rqlite-backed state, NSSM-supervised on Windows. Dispatch from VS Code or the CLI. Keep everything on-premise.
+
+---
+
+## What it does
+
+| Capability | Description |
+|---|---|
+| **Signed dispatch** | Work briefs are sealed with a signed envelope and nonce replay protection. |
+| **Scope-aware routing** | Runners declare workspace prefixes; tasks outside their scope are never offered to them. |
+| **Capability claims** | Tasks can require tags, tools, workspace affinity, tenant affinity, or runner capabilities before a runner may claim them. |
+| **Policy gates** | Dispatch, runtime intent, and completion can be allowed, denied, or held for approval. |
+| **Human-in-the-loop approvals** | Writes, pushes, merges, network egress, and shell actions can pause for operator sign-off. |
+| **Cost controls** | Per-task, daily, and weekly budget limits let the hub reject work before it exceeds caps. |
+| **Secret brokering** | Secrets are requested by name, injected only at claim time, and redacted from all stored output. |
+| **Structured streams** | stdout, stderr, info, progress, and notes are observable while work runs. |
+| **Audit chain** | Hash-chained lifecycle events and results are retained for replay and future external witnessing. |
+| **Editor surfaces** | VS Code extension and MCP integration for dispatch and observation — no direct runner access required. |
+
+---
+
+## How it works
+
+```mermaid
+flowchart LR
+    D["Dispatcher\nCLI / VS Code / MCP / CI"] -->|signed brief + scope + policy metadata| H
+    H["Fabric Hub\ncontrol plane"] -->|status / streams / audit| D
+    H -->|claim: scope · capability · tenant · policy| R
+    R["Runner\nexecution plane"] -->|streams · result · cost · audit events| H
+```
+
+**Dispatcher** — any trusted client: CLI, VS Code extension, MCP tool, automation, CI. Describes what should run, where it is allowed to operate, and what capabilities or approvals it needs.
+
+**Hub** — the control plane. Accepts dispatches, enforces policy, stores task state, tracks cost, and decides which runners may claim which work.
+
+**Runner** — the execution plane. Registers with a stable identity, advertises capabilities, limits itself to declared scopes, executes work, streams progress, and reports results.
+
+---
+
+## Where Fabric fits
+
+Fabric is not a VPN, queue, scheduler, workflow engine, or hosted agent. It sits where those systems overlap: **trusted remote work**.
+
+| If you reach for... | It gives you... | Fabric adds... |
+|---|---|---|
+| **Tailscale / WireGuard** | Private reachability | Work-aware dispatch, runner identity, policy, streams, audit. |
+| **NATS / RabbitMQ** | Message movement | Signed work envelopes, scoped runner claims, policy gates, result provenance. |
+| **Celery / RQ / Dramatiq** | Task queues and workers | Scope/capability routing, approvals, secrets, budget, audit chain. |
+| **Ray / Dask** | Distributed compute | Operator policy, trusted runners, work provenance, non-Python task semantics. |
+| **Kubernetes / Nomad** | Workload scheduling | Signed intent, task-level scope, capability-aware execution, private work-control. |
+| **Temporal** | Durable workflow history | Runner identity, scoped workspaces, streamed evidence, operator policy gates. |
+| **Hosted coding agents** | Agent/task execution UX | Private control plane, local credentials, budget/egress/secrets policy, on-prem audit. |
+
+> Tailscale connects machines. NATS moves messages. Kubernetes schedules workloads. Temporal records workflows. Hosted agents run tasks for you. **Fabric governs trusted work across machines you control.**
+
+---
+
+## Status
+
+**Alpha — Apache-2.0.** Fabric is usable today. Core dispatch, routing, policy, approvals, cost tracking, secrets, streams, and audit foundations are working. Native Rust daemons (`forgewire-hub` v0.5.0, `forgewire-runner` v0.5.0) are the primary runtime; the Python package (v0.14.0) remains the integration and smoke-test surface.
+
+What's stable:
+
+- Rust hub and runner daemons, Protocol v3.
+- Authenticated dispatch — signed envelopes, nonce replay protection.
+- Scope- and capability-aware runner claim routing.
+- Runner identity persistence, trust registration, heartbeat, drain.
+- Structured task streams, persisted terminal results.
+- Hash-chained audit log foundation.
+- Policy gates — dispatch, runtime intent, completion.
+- Approval inbox with CLI workflows and notification hooks.
+- Cost ledger — per-task, daily, and weekly budget limits.
+- Secret broker — encrypted storage, name-only audit, claim-time injection, output redaction.
+- rqlite-backed hub state for replicated availability.
+- Windows service installation with NSSM supervision and watchdogs.
+- VS Code extension — hub connection, runner/task browsing, dispatch, approvals, streams.
+- Python CLI/client compatibility and MCP integration surface.
+
+Still evolving:
+
+- Native release bundles for Linux and macOS (Windows is the most validated service path today).
+- Hub HA, role-separated identity, stronger egress enforcement.
+- Federated QUIC transport, capability anycast, external audit witnessing, GUI surfaces.
+
+---
+
+## Install
+
+### Rust (native daemons — recommended for long-running nodes)
 
 ```bash
 git clone https://github.com/DigitalHallucinations/forgewire-fabric.git
 cd forgewire-fabric
 cargo build --release
+# binaries: target/release/forgewire-hub  forgewire-runner  forgewire-fabric-cli
 ```
 
-Native binaries are emitted under `target/release/`.
+### Windows service (NSSM-supervised, always-on)
 
-### Python integration package
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass `
+  -File scripts/install/install-fabric.ps1 `
+  -WorkspaceRoot C:\Projects\your-repo
+```
+
+See [docs/operations/service-install.md](docs/operations/service-install.md) before running on a production host.
+
+### Python (CLI, MCP, integrations)
 
 ```bash
 pip install forgewire-fabric
 ```
 
-The Python command is `forgewire-fabric`; the import package is `forgewire_fabric`. Use this package for CLI compatibility, MCP adapters, client integrations, smoke tests, and fallback tooling. It is not the preferred long-running daemon substrate.
+The Python CLI (`forgewire-fabric`) is the fastest path to get running and the recommended surface for MCP adapters, client integrations, and smoke tests. It is not the preferred long-running daemon substrate.
 
 ---
 
-## Policy and operator control
+## Policy and approvals
 
-Fabric can load a repository-local policy file that governs dispatch, runtime intent, and completion.
+Drop a `policy.yaml` at the root of any repository Fabric dispatches into. The hub loads it at startup and evaluates it on every dispatch, intent check, and completion.
 
 ```yaml
 protected_branches: [main, "release/*"]
@@ -219,38 +202,37 @@ daily_budget_usd: 5.00
 weekly_budget_usd: 25.00
 ```
 
-Useful commands:
+Work the approval queue:
 
 ```bash
 forgewire-fabric approvals list
 forgewire-fabric approvals approve <approval-id>
 forgewire-fabric approvals deny <approval-id> --reason "out of scope"
-forgewire-fabric cost summary --since 7d --by model
-forgewire-fabric cost budget
+forgewire-fabric cost summary --since 7d
 ```
 
-See [policy.yaml](policy.yaml) for an annotated policy example.
+See [policy.yaml](policy.yaml) for the annotated full schema.
 
 ---
 
 ## VS Code and MCP
 
-Fabric includes editor and tool integration surfaces so operators can dispatch and observe work without giving tools uncontrolled direct access to runners.
+Fabric includes editor and tool integration surfaces so operators can dispatch and observe work without giving tools direct runner access.
 
-Build and install the VS Code extension from the `vscode/` workspace:
+**VS Code extension:**
 
 ```bash
-cd vscode
-npm install
-npm run package
+cd vscode && npm install && npm run package
 code --install-extension forgewire-*.vsix
 ```
 
-Install the MCP integration against a running hub:
+**MCP integration:**
 
 ```bash
 forgewire-fabric mcp install --hub-url http://127.0.0.1:8765
-forgewire-fabric mcp install --hub-url http://127.0.0.1:8765 --with-runner --workspace-root /path/to/repo
+# or with a local runner:
+forgewire-fabric mcp install --hub-url http://127.0.0.1:8765 \
+  --with-runner --workspace-root /path/to/repo
 ```
 
 See [vscode/README.md](vscode/README.md) for extension commands and settings.
@@ -259,65 +241,69 @@ See [vscode/README.md](vscode/README.md) for extension commands and settings.
 
 ## Roadmap
 
-The public roadmap is intentionally described by capability rather than internal milestone number. Detailed engineering sequencing lives outside this README.
+Near-term:
 
-Near-term focus:
-
-- Signed native release bundles for supported platforms.
-- Clearer hub-only, runner-only, and local-smoke installer flows.
+- Signed native release bundles for all supported platforms.
+- Cleaner hub-only, runner-only, and local-smoke installer flows.
 - Better audit export and replay workflows.
-- Capability-aware dispatch routing with cost-aware runner selection.
+- Capability-aware dispatch with cost-aware runner selection.
 - Stronger secret injection and egress enforcement.
 - Hub HA and role-scoped identity.
-- Published VS Code packages and richer operator documentation.
+- Published VS Code marketplace packages.
 
-Longer-term direction:
+Longer-term:
 
 - Federated transport over Noise/QUIC with relay fallback.
-- Capability anycast URIs such as `forgewire://capability/<expression>`.
+- Capability anycast URIs — `fabric://capability/<expression>`.
 - Task-bound egress enforcement with userspace-first and OS-native tiers.
-- Per-task stream QoS and transport-level usage accounting.
 - External audit witnessing and signed export manifests.
-- GUI/operator surfaces and Kubernetes-native deployment options.
+- GUI/operator surfaces and Kubernetes-native deployment.
 
 ---
 
-## What this is not
+## Contributing
 
-- **Not a hosted agent platform.** Fabric does not phone home and does not require third-party execution control.
-- **Not the full ForgeWire application runtime.** Desktop shell features, personas, memory, local assistant orchestration, and broader ForgeWire UX live outside this repository.
-- **Not just a message broker.** Fabric carries work semantics, identity, scope, policy, cost, streams, and audit, not only messages.
-- **Not a Kubernetes replacement.** Fabric can coexist with schedulers, but it focuses on signed remote work and trusted runner control.
-- **Not production-hard by default.** It is alpha software. Treat public exposure, tokens, secrets, and runner permissions with the same caution you would apply to SSH or CI credentials.
+Fabric is early and rough in places. Contributions, bug reports, and feedback are welcome.
+
+- **Bugs and feature requests** — open an issue. Include hub/runner version (`forgewire-fabric --version`), OS, and the relevant log output.
+- **Code contributions** — fork, branch off `main`, open a PR. For larger changes, open an issue first to discuss approach.
+- **Questions** — open a discussion or issue. There is no mailing list or chat yet; GitHub is the primary channel.
+
+Before submitting:
+
+```bash
+cargo fmt --all
+cargo clippy --workspace -- -D warnings
+cargo test --workspace
+```
 
 ---
 
 ## Repository map
 
-| Area | What it contains |
+| Path | Contents |
 |---|---|
-| `crates/` | Rust hub, runner, CLI, protocol, policy, audit, store, client, streams, beacon, and claim-router crates. |
-| `python/forgewire_fabric/` | Python CLI/client compatibility, hub/runner adapters, MCP integration, policy helpers, cluster helpers, and installer assets. |
-| `scripts/install/` | Platform installer and service-management scripts. |
-| `scripts/dr/` | rqlite backup, restore, and chaos-drill support scripts. |
-| `vscode/` | VS Code extension for connecting to a hub, browsing runners/tasks, dispatching work, approvals, and streams. |
-| `docs/` | Quickstart, positioning, protocol, release distribution, and operations docs. |
-| `tests/` | Protocol, routing, installer sync, runtime parity, hub, runner, cluster, and integration tests. |
+| `crates/` | `fabric-hub`, `fabric-runner`, `fabric-cli`, `fabric-protocol`, `fabric-policy`, `fabric-audit`, `fabric-store`, `fabric-store-rqlite`, `fabric-streams`, `fabric-beacon`, `fabric-claim-router`, `fabric-client`, `fabric-identity`, `fabric-types` |
+| `python/forgewire_fabric/` | Python CLI, MCP integration, hub/runner adapters, policy helpers, cluster helpers |
+| `scripts/install/` | Platform installer and service-management scripts |
+| `scripts/dr/` | rqlite backup, restore, and chaos-drill scripts |
+| `vscode/` | VS Code extension |
+| `docs/` | Quickstart, protocol spec, release distribution, operations guides |
+| `tests/` | Protocol, routing, installer, runtime parity, hub, runner, cluster, and integration tests |
 
 ---
 
 ## Documentation
 
-- [docs/QUICKSTART.md](docs/QUICKSTART.md) — hands-on setup guide.
-- [docs/POSITIONING.md](docs/POSITIONING.md) — product boundaries and relationship to the parent project.
-- [docs/protocol-v3-spec.md](docs/protocol-v3-spec.md) — signed dispatch envelope details.
-- [docs/RELEASE_DISTRIBUTION.md](docs/RELEASE_DISTRIBUTION.md) — release artifact strategy.
-- [docs/operations/service-install.md](docs/operations/service-install.md) — long-running service installation.
-- [docs/operations/tls.md](docs/operations/tls.md) — TLS/reverse-proxy guidance.
-- [vscode/README.md](vscode/README.md) — editor extension guide.
+- [docs/QUICKSTART.md](docs/QUICKSTART.md) — hands-on setup guide
+- [docs/protocol-v3-spec.md](docs/protocol-v3-spec.md) — signed dispatch envelope details
+- [docs/RELEASE_DISTRIBUTION.md](docs/RELEASE_DISTRIBUTION.md) — release artifact strategy
+- [docs/operations/service-install.md](docs/operations/service-install.md) — long-running service installation
+- [docs/operations/tls.md](docs/operations/tls.md) — TLS and reverse-proxy guidance
+- [vscode/README.md](vscode/README.md) — editor extension guide
 
 ---
 
 ## License
 
-ForgeWire Fabric is released under the Apache License 2.0. See [LICENSE](LICENSE).
+Apache License 2.0 — see [LICENSE](LICENSE).
