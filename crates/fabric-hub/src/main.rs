@@ -241,7 +241,27 @@ async fn main() {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs_f64(),
-        gate: DispatchGate::new(FabricPolicy::default()),
+        gate: {
+            // Load policy from FORGEWIRE_HUB_POLICY_FILE if set.
+            // If the file does not exist, a safe annotated default is written
+            // automatically so operators can tune from the first dispatch.
+            let policy = if let Ok(path) = std::env::var("FORGEWIRE_HUB_POLICY_FILE") {
+                match FabricPolicy::load_or_create(&path) {
+                    Ok(p) => {
+                        info!(path = %path, "policy loaded");
+                        p
+                    }
+                    Err(e) => {
+                        tracing::warn!(path = %path, error = %e, "policy load failed — using permissive default");
+                        FabricPolicy::default()
+                    }
+                }
+            } else {
+                tracing::info!("FORGEWIRE_HUB_POLICY_FILE not set — using permissive default (no file written)");
+                FabricPolicy::default()
+            };
+            DispatchGate::new(policy)
+        },
         budget_caps,
         host: host.clone(),
         port,
