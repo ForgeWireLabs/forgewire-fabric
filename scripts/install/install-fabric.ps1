@@ -327,28 +327,26 @@ $rqliteInstaller = Join-Path $PSScriptRoot "nssm-install-rqlite.ps1"
 if (-not (Test-Path $rqliteInstaller)) {
     throw "nssm-install-rqlite.ps1 not found at $rqliteInstaller"
 }
-# Detect this machine's primary LAN IPv4 so rqlite advertises a routable address
-# (required for a multi-host cluster; peers cannot reach 127.0.0.1). node-id is
-# the stable identity, so the advertised IP may change across DHCP/restarts.
-$lanIp = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-    Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' -and $_.PrefixOrigin -ne 'WellKnown' } |
-    Sort-Object -Property SkipAsSource |
-    Select-Object -First 1 -ExpandProperty IPAddress)
-if (-not $lanIp) { $lanIp = '127.0.0.1' }
+# Advertise rqlite by HOSTNAME, not a pinned IP. The hostname resolves to the
+# node's CURRENT IP via mDNS/NetBIOS, so the Raft cluster survives DHCP/subnet
+# changes (a power outage that re-leases every node's IP would otherwise deadlock
+# the cluster on stale peer addresses). The hostname is the stable identity.
+$advHost = $env:COMPUTERNAME
+if (-not $advHost) { $advHost = [System.Net.Dns]::GetHostName() }
 
 $rqliteArgs = @{
     DataDir       = $DataDir
     HttpPort      = $RqliteHttpPort
     RaftPort      = $RqliteRaftPort
-    AdvertiseHost = $lanIp   # multi-host ready; peers reach us at this address
+    AdvertiseHost = $advHost   # peers reach us by name; survives IP changes
 }
-# Joining nodes provide a -JoinAddr (raft address of an existing node) so rqlite
-# connects to the existing cluster. The first node bootstraps a new one.
+# Joining nodes provide a -JoinAddr (raft address of an existing node, by NAME)
+# so rqlite connects to the existing cluster. The first node bootstraps a new one.
 if ($RqliteJoinAddr) {
     $rqliteArgs["JoinAddr"] = $RqliteJoinAddr
-    Write-Host "  Joining existing rqlite cluster at $RqliteJoinAddr (advertising $lanIp)"
+    Write-Host "  Joining existing rqlite cluster at $RqliteJoinAddr (advertising $advHost)"
 } else {
-    Write-Host "  Bootstrapping rqlite cluster, advertising $lanIp (add nodes with -RqliteJoinAddr ${lanIp}:$RqliteRaftPort)"
+    Write-Host "  Bootstrapping rqlite cluster, advertising $advHost (add nodes with -RqliteJoinAddr ${advHost}:$RqliteRaftPort)"
 }
 & $rqliteInstaller @rqliteArgs
 Write-Host "-- 1/6 -- rqlite OK" -ForegroundColor Green
