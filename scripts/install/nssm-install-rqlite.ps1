@@ -163,16 +163,78 @@ foreach ($p in @($HttpPort, $RaftPort)) {
         } catch { Write-Host "  firewall: could not open TCP $p ($($_.Exception.Message))" }
     }
 }
+# ---- Determine voter / standby role -----------------------------------------
+# Cluster topology rules (enforced here and by the hub's cluster_manager):
+#
+#   1 node   — voter (bootstrapping single leader)
+#   2 nodes  — 1 voter (stable leader) + 1 non-voter (hot standby)
+#              No quorum loss if one node is slow; leader never steps down.
+#   3+ nodes — all voters (full Raft quorum, N/2+1 fault tolerance)
+#
+# On a 2-node cluster the second node joins as a non-voter. The hub's
+# background cluster manager promotes it to voter automatically when a
+# third node joins, and demotes back to standby if the cluster shrinks.
+
+$joinAsVoter = $true  # default: bootstrap or 3+-node join (all voters)
+
+if ($JoinAddress) {
+    # Derive the leader HTTP address from the Raft join address.
+    $joinHost = $JoinAddress.Split(":")[0]
+    $leaderHttp = "http://${joinHost}:$HttpPort"
+
+    Write-Host "Checking existing cluster voter count at $leaderHttp ..."
+    try {
+        $nodes = Invoke-RestMethod -Uri "$leaderHttp/nodes" -TimeoutSec 5 -ErrorAction Stop
+        $voterCount = ($nodes.PSObject.Properties.Value | Where-Object { $_.voter -eq $true }).Count
+        $totalCount = $nodes.PSObject.Properties.Count
+
+        Write-Host "  Cluster has $totalCount node(s), $voterCount voter(s)."
+
+        if ($voterCount -eq 1 -and $totalCount -eq 1) {
+            # Exactly one voter already — this is the 2nd node. Join as standby.
+            $joinAsVoter = $false
+            Write-Host "  → Joining as NON-VOTER (hot standby). Will be promoted to voter when a 3rd node joins." -ForegroundColor Cyan
+        } elseif ($voterCount -ge 2) {
+            # Three or more voters already in the cluster — join as voter.
+            $joinAsVoter = $true
+            Write-Host "  → Joining as VOTER (full Raft quorum, $($voterCount + 1) voters after join)." -ForegroundColor Green
+        } else {
+            # Fallback: join as voter.
+            $joinAsVoter = $true
+            Write-Host "  → Joining as VOTER (default)." -ForegroundColor Green
+        }
+    } catch {
+        Write-Warning "Could not reach leader at $leaderHttp ($($_.Exception.Message)) — joining as voter (safe default)."
+        $joinAsVoter = $true
+    }
+} else {
+    Write-Host "No -JoinAddress — bootstrapping as single-node leader (voter)."
+}
+
+# ---- Build rqlite startup arguments -----------------------------------------
 $rqliteArgs = @(
     "-node-id", $NodeId,
     "-http-addr", "0.0.0.0:$HttpPort",
     "-http-adv-addr", "${AdvertiseHost}:$HttpPort",
     "-raft-addr", "0.0.0.0:$RaftPort",
-    "-raft-adv-addr", "${AdvertiseHost}:$RaftPort"
+    "-raft-adv-addr", "${AdvertiseHost}:$RaftPort",
+    # Use stable, generous Raft timeouts. 1 s (rqlite default) is too tight when
+    # Bolt I/O or a snapshot runs long. 3 s heartbeat + 5 s election gives ample
+    # slack while still electing within a few seconds of a real failure.
+    "-raft-heartbeat-timeout", "3s",
+    "-raft-election-timeout",  "5s",
+    "-raft-leader-lease-timeout", "2s"
 )
+
 if ($JoinAddress) {
     $rqliteArgs += @("-join", $JoinAddress)
     Write-Host "Joining existing cluster at $JoinAddress"
+    if (-not $joinAsVoter) {
+        # -raft-non-voter makes this node a read-only standby from startup.
+        # The hub's cluster_manager will promote it to voter if a 3rd node joins.
+        $rqliteArgs += @("-raft-non-voter")
+        Write-Host "Starting as non-voter (hot standby) — will auto-promote to voter when 3rd node joins."
+    }
 } else {
     Write-Host "No -JoinAddress -- bootstrapping as single-node leader."
 }
@@ -230,15 +292,18 @@ try {
 
     if ($ready) {
         $status = (Invoke-WebRequest -Uri "http://127.0.0.1:$HttpPort/status" -UseBasicParsing -TimeoutSec 5).Content | ConvertFrom-Json
+
         Write-Host ""
         Write-Host "rqlite is READY." -ForegroundColor Green
         Write-Host "  Node ID:  $NodeId"
+        Write-Host "  Role:     $(if ($JoinAddress -and -not $joinAsVoter) { 'non-voter (hot standby)' } elseif ($JoinAddress) { 'voter (cluster member)' } else { 'voter (single leader)' })"
         Write-Host "  State:    $($status.store.raft.state)"
         Write-Host "  Leader:   $($status.store.leader.addr)"
         Write-Host "  HTTP:     http://127.0.0.1:$HttpPort"
         Write-Host "  Raft:     127.0.0.1:$RaftPort"
         Write-Host "  Data:     $RqliteDataDir"
         Write-Host "  Logs:     $LogDir"
+        Write-Host "  Heartbeat timeout: 3s  Election timeout: 5s"
     } else {
         Write-Warning "rqlite did not become ready within ${maxWait}s. Check logs at ${LogDir}\rqlite.err.log"
         $svcStatus = (& nssm.exe status $ServiceName 2>&1 | Out-String).Trim()

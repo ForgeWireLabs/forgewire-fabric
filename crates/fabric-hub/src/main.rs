@@ -22,6 +22,8 @@
 //!       balanced   — buffer 50 lines, flush to store as a batch
 //!       throughput — buffer 200 lines, flush to store as a batch (operator opt-in only)
 
+mod cluster_manager;
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -205,6 +207,19 @@ async fn main() {
         std::process::exit(1);
     });
     info!("backend=rqlite host={rqlite_host} port={rqlite_port} consistency={consistency}");
+
+    // ── Cluster topology manager ──────────────────────────────────────────────
+    // Runs in the background: enforces the voter/standby rule and triggers
+    // periodic snapshots to keep the Raft log compact.
+    //   2 nodes → 1 voter (stable leader) + 1 non-voter (hot standby)
+    //   3+ nodes → all voters (full Raft quorum)
+    {
+        let cm_host = rqlite_host.clone();
+        let cm_port = rqlite_port;
+        tokio::spawn(async move {
+            cluster_manager::run(cm_host, cm_port).await;
+        });
+    }
 
     let store: Arc<dyn FabricStore> = Arc::new(rqlite);
 
