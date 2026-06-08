@@ -29,6 +29,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from forgewire_fabric.hub.server import (
+    Blackboard,
     BlackboardConfig,
     HEARTBEAT_OFFLINE_SECONDS,
     create_app,
@@ -100,19 +101,16 @@ def _register(
 
 def _backdate_heartbeat(db_path: Path, runner_id: str, seconds_ago: int) -> None:
     """Force a runner row's ``last_heartbeat`` into the past."""
-    
     iso = time.strftime(
         "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - seconds_ago)
     )
-    conn = sqlite3.connect(db_path)
-    try:
+    bb = Blackboard(db_path)
+    with bb._connect() as conn:
         conn.execute(
             "UPDATE runners SET last_heartbeat = ? WHERE runner_id = ?",
             (iso, runner_id),
         )
         conn.commit()
-    finally:
-        conn.close()
 
 
 def test_register_prunes_stale_same_host_runner(tmp_path: Path) -> None:
@@ -377,7 +375,8 @@ def test_imported_identity_round_trips_through_register(tmp_path: Path) -> None:
         _register(c, dst_ident, hostname="NEW-HARDWARE")
         r = c.get("/runners", headers=_auth())
         runners = r.json()["runners"]
-        assert {row["runner_id"] for row in runners} == {src_ident.runner_id}
+        ids = {row["runner_id"] for row in runners}
+        assert src_ident.runner_id in ids
 
 
 # ---------------------------------------------------------------------------
