@@ -10,6 +10,11 @@ Start rqlite manually if the service is not installed:
     Windows:  nssm start ForgeWireRqliteNode1
     Linux:    systemctl start forgewire-rqlite
     Manual:   rqlited -node-id n1 -http-addr 127.0.0.1:4001 -raft-addr 127.0.0.1:4002 ~/rqlite/n1
+
+HARD INVARIANT: only the two real machines (DESKTOP-38GVF8D and DESKTOP-228U8GL)
+may ever appear in the runners or dispatchers tables.  The cleanup fixture below
+enforces this after every test.  Tests must NEVER call POST /runners/register or
+POST /dispatchers/register.
 """
 from __future__ import annotations
 
@@ -21,12 +26,16 @@ import urllib.request
 
 import pytest
 
+# The two real cluster machines. Any other runner or dispatcher is a ghost.
+_REAL_RUNNERS = {"DESKTOP-38GVF8D-runner", "DESKTOP-228U8GL-runner"}
+_REAL_HOSTNAMES = {"DESKTOP-38GVF8D", "DESKTOP-228U8GL",
+                   "desktop-38gvf8d", "desktop-228u8gl"}
+
 
 def _reachable(host: str = "127.0.0.1", port: int = 4001) -> bool:
     try:
         with urllib.request.urlopen(f"http://{host}:{port}/status", timeout=2) as r:
             data = json.loads(r.read())
-            # Accept any response — leader may still be electing on fresh start
             return isinstance(data, dict)
     except Exception:
         return False
@@ -50,9 +59,9 @@ def _start_rqlite_service() -> None:
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
-    """Ensure rqlite is running before any hub tests execute."""
+    """Ensure rqlite is running and the cluster is clean before any hub test."""
     if _reachable():
-        _drain_stale_test_tasks()
+        _enforce_cluster_invariant()
         return
     print("\nrqlite not reachable — attempting to start service...")
     _start_rqlite_service()
@@ -60,7 +69,7 @@ def pytest_sessionstart(session: pytest.Session) -> None:
         time.sleep(1)
         if _reachable():
             print(f"rqlite ready after {i}s")
-            _drain_stale_test_tasks()
+            _enforce_cluster_invariant()
             return
     pytest.exit(
         "\n\nFATAL: rqlite not available on 127.0.0.1:4001 after 30s.\n"
@@ -73,31 +82,46 @@ def pytest_sessionstart(session: pytest.Session) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _clean_task_queue():
-    """Cancel all queued tasks before each test so inter-test contamination
-    cannot cause competitive claims to pick up the wrong task."""
-    _drain_stale_test_tasks()
-    yield
+def _cluster_guard():
+    """Enforce cluster invariant before AND after every test.
 
-
-def _drain_stale_test_tasks(host: str = "127.0.0.1", port: int = 4001) -> None:
-    """Cancel all queued tasks left behind by previous test runs.
-
-    Tests dispatch tasks into the shared rqlite cluster.  If they exit before
-    submitting a result (assertion failure, KeyboardInterrupt, crash) those
-    tasks remain in 'queued' state and pollute competitive-claim tests in
-    subsequent runs.  Mark them all cancelled before each session so the
-    queue is clean.
+    Before: cancel queued tasks so competitive claims don't pick up stale work.
+    After: remove any ghost runners/dispatchers/workers the test created.
     """
+    _enforce_cluster_invariant()
+    yield
+    _enforce_cluster_invariant()
+
+
+def _enforce_cluster_invariant(host: str = "127.0.0.1", port: int = 4001) -> None:
+    """Delete ghost runners/dispatchers and cancel stale queued tasks.
+
+    Safe to call repeatedly — all statements are idempotent.
+    """
+    statements = [
+        # Cancel tasks that tests left in queued state.
+        ["UPDATE tasks SET status = 'cancelled', cancel_requested = 1 "
+         "WHERE status = 'queued'"],
+        # Delete any runner that isn't one of the two real machines.
+        ["DELETE FROM runners WHERE runner_id NOT IN "
+         "('DESKTOP-38GVF8D-runner', 'DESKTOP-228U8GL-runner')"],
+        # Delete all dispatchers — no test should register one; real dispatchers
+        # re-register themselves on next heartbeat.
+        ["DELETE FROM dispatchers"],
+        # Delete workers added by test legacy-claim calls.
+        ["DELETE FROM workers WHERE hostname NOT IN "
+         "('DESKTOP-38GVF8D', 'DESKTOP-228U8GL') "
+         "OR hostname IS NULL"],
+        # Remove nonces that belong to deleted runners.
+        ["DELETE FROM runner_nonces WHERE runner_id NOT IN "
+         "(SELECT runner_id FROM runners)"],
+    ]
     try:
         with urllib.request.urlopen(
             f"http://{host}:{port}/db/execute",
-            data=json.dumps(
-                [["UPDATE tasks SET status = 'cancelled', cancel_requested = 1 "
-                  "WHERE status = 'queued'"]]
-            ).encode("utf-8"),
+            data=json.dumps(statements).encode("utf-8"),
             timeout=5,
         ) as r:
             r.read()
     except Exception as exc:
-        print(f"\n[conftest] stale-task drain failed (non-fatal): {exc}")
+        print(f"\n[conftest] cluster invariant enforcement failed (non-fatal): {exc}")

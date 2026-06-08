@@ -303,24 +303,35 @@ class Connection:
     # -- core HTTP helpers --------------------------------------------------
 
     def _post(self, path: str, payload: Any) -> dict[str, Any]:
-        try:
-            resp = self._client.post(path, json=payload)
-        except httpx.HTTPError as exc:
-            raise OperationalError(f"rqlite request failed: {exc}") from exc
-        if resp.status_code >= 500:
-            raise OperationalError(
-                f"rqlite returned {resp.status_code}: {resp.text[:200]}"
-            )
-        if resp.status_code >= 400:
-            raise DatabaseError(
-                f"rqlite returned {resp.status_code}: {resp.text[:200]}"
-            )
-        try:
-            return resp.json()
-        except ValueError as exc:
-            raise OperationalError(
-                f"rqlite returned non-JSON: {resp.text[:200]}"
-            ) from exc
+        import time as _time
+        last_exc: Exception | None = None
+        for attempt in range(4):
+            try:
+                resp = self._client.post(path, json=payload)
+            except httpx.HTTPError as exc:
+                raise OperationalError(f"rqlite request failed: {exc}") from exc
+            # 503 means leader election in progress — retry with backoff.
+            if resp.status_code == 503:
+                last_exc = OperationalError(
+                    f"rqlite returned {resp.status_code}: {resp.text[:200]}"
+                )
+                _time.sleep(0.25 * (attempt + 1))
+                continue
+            if resp.status_code >= 500:
+                raise OperationalError(
+                    f"rqlite returned {resp.status_code}: {resp.text[:200]}"
+                )
+            if resp.status_code >= 400:
+                raise DatabaseError(
+                    f"rqlite returned {resp.status_code}: {resp.text[:200]}"
+                )
+            try:
+                return resp.json()
+            except ValueError as exc:
+                raise OperationalError(
+                    f"rqlite returned non-JSON: {resp.text[:200]}"
+                ) from exc
+        raise last_exc  # type: ignore[misc]
 
     @staticmethod
     def _check_results(body: Mapping[str, Any]) -> list[Mapping[str, Any]]:

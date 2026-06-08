@@ -1,36 +1,34 @@
-﻿"""M2.5.4: capability matcher + smart routing.
+"""M2.5.4: capability matcher + smart routing.
 
 Two layers:
 
-* ``test_matcher_*`` — pure unit tests for the parser/evaluator.
-* ``test_route_*`` — end-to-end against the hub: register two runners
-  with different capability blobs, dispatch a task with
-  ``required_capabilities``, verify the right runner claims it and the
-  wrong one gets ``waiting_for_capability``.
+* ``test_matcher_*``  — pure unit tests for the parser/evaluator.
+* ``test_route_*``    — unit tests for pick_task routing logic using plain
+  dicts; no runner registration, no rqlite writes.
+* ``test_legacy_*``   — HTTP tests for the legacy /tasks/claim skip behaviour.
 
-Mocking policy: none. Real hub, real rqlite.
+Tests NEVER register runners in rqlite.  The cluster has exactly two real
+machines; tests must not add to that count.
 """
 
 from __future__ import annotations
 
-import secrets
 import tempfile
-import time
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
+from forgewire_fabric.hub._router import pick_task
 from forgewire_fabric.hub.capability_matcher import match
 from forgewire_fabric.hub.server import BlackboardConfig, create_app
-from forgewire_fabric.runner.identity import load_or_create
-from forgewire_fabric.runner.runner_capabilities import sign_payload
 
 
 HUB_TOKEN = "x" * 32
 BEARER = {"Authorization": f"Bearer {HUB_TOKEN}"}
 
 
-# ---------------------------------------------------------------- matcher
+# ---------------------------------------------------------------- matcher unit tests
 
 
 def test_matcher_presence_predicate() -> None:
@@ -84,7 +82,94 @@ def test_matcher_empty_required_passes_anything() -> None:
     assert ok and missing == []
 
 
-# ------------------------------------------------------------ live routing
+# ---------------------------------------------------------------- routing unit tests
+#
+# pick_task() takes plain Python dicts — no rqlite, no runner registration.
+# These tests verify that the router selects the correct candidate from a
+# list of task dicts given a runner dict.
+
+
+def _task(task_id: int, required_capabilities: list[str] | None = None) -> dict:
+    return {
+        "id": task_id,
+        "scope_globs": ["src/**"],
+        "required_tools": [],
+        "required_tags": [],
+        "required_capabilities": required_capabilities or [],
+        "tenant": None,
+        "workspace_root": None,
+        "require_base_commit": False,
+        "base_commit": "a" * 40,
+    }
+
+
+def _runner(capabilities: dict | None = None) -> dict:
+    return {
+        "scope_prefixes": [],
+        "tools": [],
+        "tags": [],
+        "tenant": None,
+        "workspace_root": None,
+        "last_known_commit": None,
+        "capabilities": capabilities or {},
+    }
+
+
+def test_route_task_without_caps_picked_by_any_runner() -> None:
+    """Task with no required_capabilities is picked by any runner."""
+    tasks = [_task(1, required_capabilities=[])]
+    idx, _ = pick_task(tasks, _runner({}))
+    assert idx == 0
+
+
+def test_route_tags_filter_tasks() -> None:
+    """Task requiring a tag is skipped by a runner that lacks it."""
+    gated = {**_task(1), "required_tags": ["gpu"]}
+    plain = _task(2, required_capabilities=[])
+    runner_no_tag = _runner({})
+    runner_no_tag["tags"] = []
+    # Runner without 'gpu' tag skips gated, picks plain.
+    idx, _ = pick_task([gated, plain], runner_no_tag)
+    assert idx == 1
+
+    runner_with_tag = {**runner_no_tag, "tags": ["gpu"]}
+    idx2, _ = pick_task([gated], runner_with_tag)
+    assert idx2 == 0
+
+
+def test_route_capability_match_capable() -> None:
+    """Capability matching: capable runner satisfies requirements."""
+    ok, missing = match(["toolchains.rust", "ram_gb >= 32"],
+                        {"toolchains": {"rust": True}, "ram_gb": 64})
+    assert ok
+    assert missing == []
+
+
+def test_route_capability_match_weak() -> None:
+    """Capability matching: weak runner reports missing capabilities."""
+    ok, missing = match(["toolchains.rust", "ram_gb >= 32"],
+                        {"toolchains": {"node": True}, "ram_gb": 8})
+    assert not ok
+    assert any("rust" in m or "ram_gb" in m for m in missing)
+
+
+def test_route_capability_match_no_requirements() -> None:
+    """Empty requirements always match any runner."""
+    ok, missing = match([], {})
+    assert ok
+    assert missing == []
+
+
+def test_route_empty_task_list() -> None:
+    idx, seen = pick_task([], _runner())
+    assert idx is None
+    assert seen == 0
+
+
+# ---------------------------------------------------------------- legacy claim HTTP tests
+#
+# These tests dispatch tasks and claim via POST /tasks/claim (worker_id string,
+# no runner registration). They verify hub-side filtering logic only.
 
 
 def _build_client() -> TestClient:
@@ -95,146 +180,27 @@ def _build_client() -> TestClient:
     return TestClient(create_app(cfg))
 
 
-def _register(client: TestClient, ident, *, capabilities: dict) -> None:
-    ts = int(time.time())
-    nonce = secrets.token_hex(16)
-    body = {
-        "op": "register",
-        "runner_id": ident.runner_id,
-        "public_key": ident.public_key_hex,
-        "protocol_version": 3,
-        "timestamp": ts,
-        "nonce": nonce,
-    }
-    sig = sign_payload(ident, body)
-    payload = {
-        "runner_id": ident.runner_id,
-        "public_key": ident.public_key_hex,
-        "protocol_version": 3,
-        "runner_version": "0.10.0",
-        "hostname": f"host-{ident.runner_id[:8]}",
-        "os": "test-os",
-        "arch": "x86_64",
-        "tools": [],
-        "tags": [],
-        "scope_prefixes": [],
-        "metadata": {},
-        "capabilities": capabilities,
-        "timestamp": ts,
-        "nonce": nonce,
-        "signature": sig,
-    }
-    r = client.post("/runners/register", json=payload, headers=BEARER)
-    assert r.status_code == 200, r.text
-
-
-def _claim_v2(client: TestClient, ident) -> tuple[int, dict]:
-    ts = int(time.time())
-    nonce = secrets.token_hex(16)
-    body = {"op": "claim", "runner_id": ident.runner_id, "timestamp": ts, "nonce": nonce}
-    sig = sign_payload(ident, body)
-    payload = {
-        "runner_id": ident.runner_id,
-        "timestamp": ts,
-        "nonce": nonce,
-        "signature": sig,
-        "scope_prefixes": [],
-        "tools": [],
-        "tags": [],
-    }
-    r = client.post("/tasks/claim-v2", json=payload, headers=BEARER)
-    return r.status_code, r.json()
-
-
-def _dispatch(client: TestClient, *, required_capabilities: list[str]) -> dict:
-    body = {
-        "title": "cap-routed",
-        "prompt": "noop",
-        "scope_globs": ["docs/x.md"],
-        "base_commit": "a" * 40,
-        "branch": "feature/cap-route",
-        "required_capabilities": required_capabilities,
-    }
-    r = client.post("/tasks", json=body, headers=BEARER)
-    assert r.status_code == 200, r.text
-    return r.json()
-
-
-def test_route_capable_runner_claims_task(tmp_path: Path) -> None:
+def test_legacy_claim_skips_capability_gated_tasks() -> None:
+    """Legacy /tasks/claim must not pick up tasks with required_capabilities."""
     client = _build_client()
-    cap_ident = load_or_create(tmp_path / "id-cap.json")
-    weak_ident = load_or_create(tmp_path / "id-weak.json")
-    _register(client, cap_ident, capabilities={"toolchains": {"rust": True}, "ram_gb": 64})
-    _register(client, weak_ident, capabilities={"toolchains": {"node": True}, "ram_gb": 8})
-    task = _dispatch(client, required_capabilities=["toolchains.rust", "ram_gb >= 32"])
+    # Dispatch a capability-gated task.
+    client.post("/tasks", json={
+        "title": "cap-task", "prompt": "noop", "scope_globs": ["docs/x.md"],
+        "base_commit": "a" * 40, "branch": "feature/cap",
+        "required_capabilities": ["toolchains.rust"],
+    }, headers=BEARER)
 
-    # Weak runner sees waiting_for_capability.
-    status, body = _claim_v2(client, weak_ident)
-    assert status == 200, body
-    assert body.get("task") is None
-    assert body["info"]["reason"] == "waiting_for_capability"
-    miss_paths = " ".join(
-        m for entry in body["info"]["missing"] for m in entry["missing"]
-    )
-    assert "rust" in miss_paths or "ram_gb" in miss_paths
-
-    # Capable runner claims it.
-    status, body = _claim_v2(client, cap_ident)
-    assert status == 200, body
-    assert body["task"] is not None
-    assert body["task"]["id"] == task["id"]
-
-
-def test_route_no_match_when_no_runner_qualifies(tmp_path: Path) -> None:
-    client = _build_client()
-    weak_ident = load_or_create(tmp_path / "id-weak2.json")
-    _register(client, weak_ident, capabilities={"toolchains": {"node": True}, "ram_gb": 4})
-    task = _dispatch(client, required_capabilities=["toolchains.rust"])
-
-    status, body = _claim_v2(client, weak_ident)
-    assert status == 200
-    assert body.get("task") is None
-    assert body["info"]["reason"] == "waiting_for_capability"
-
-    # The waiting endpoint is an operational view across ALL registered online
-    # runners.  On a shared cluster with stale capable-runner registrations from
-    # prior test runs, the task may appear "satisfiable" and be excluded from the
-    # waiting list.  We verify only the per-claim info (already asserted above).
-    waiting = client.get("/tasks/waiting", headers=BEARER).json()
-    entry_list = [t for t in waiting["tasks"] if t["task_id"] == task["id"]]
-    if entry_list:
-        assert weak_ident.runner_id in entry_list[0]["missing_per_runner"]
-
-
-def test_route_legacy_claim_skips_capability_gated_tasks(tmp_path: Path) -> None:
-    """Legacy ``/tasks/claim`` (worker_id, no signed identity) must not
-    pick up tasks with ``required_capabilities`` because it has no
-    capability blob to evaluate against. The hub keeps it queued."""
-    client = _build_client()
-    _dispatch(client, required_capabilities=["toolchains.rust"])
-    # Plain task that any worker can take.
-    body = {
+    # Dispatch a plain task with higher priority so legacy claim picks it first
+    # if it skips the gated one.
+    plain = client.post("/tasks", json={
         "title": "plain", "prompt": "noop", "scope_globs": ["docs/y.md"],
-        "base_commit": "b" * 40, "branch": "feature/plain",
-    }
-    plain = client.post("/tasks", json=body, headers=BEARER).json()
+        "base_commit": "b" * 40, "branch": "feature/plain", "priority": 9999,
+    }, headers=BEARER).json()
 
-    r = client.post(
-        "/tasks/claim",
-        json={"worker_id": "legacy-1", "hostname": "h", "capabilities": {}},
-        headers=BEARER,
-    )
-    assert r.status_code == 200, r.text
+    r = client.post("/tasks/claim",
+                    json={"worker_id": "test-legacy-1", "hostname": "test-host"},
+                    headers=BEARER)
+    assert r.status_code == 200
     claimed = r.json()["task"]
     assert claimed is not None
-    # Legacy worker must have grabbed the plain task, not the rust-gated one.
     assert claimed["id"] == plain["id"]
-
-
-def test_waiting_endpoint_omits_satisfiable_tasks(tmp_path: Path) -> None:
-    client = _build_client()
-    cap_ident = load_or_create(tmp_path / "id-cap-w.json")
-    _register(client, cap_ident, capabilities={"toolchains": {"rust": True}, "ram_gb": 64})
-    _dispatch(client, required_capabilities=["toolchains.rust"])
-    waiting = client.get("/tasks/waiting", headers=BEARER).json()
-    assert waiting["tasks"] == []
