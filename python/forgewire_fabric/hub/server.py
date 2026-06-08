@@ -328,10 +328,8 @@ class Blackboard:
         ]
         with self._connect() as conn:
             for stmt in _ADDITIVE:
-                try:
+                with contextlib.suppress(Exception):  # duplicate column → silently skip
                     conn.execute(stmt)
-                except Exception:  # noqa: BLE001 — duplicate column, silently skip
-                    pass
 
     # ----------------------------------------------------------------- labels
 
@@ -1011,7 +1009,6 @@ class Blackboard:
 
     def cost_summary(self, *, since_iso: str | None = None) -> dict[str, Any]:
         """Aggregate cost_ledger rows grouped by model_id and by day."""
-        base = "SELECT * FROM cost_ledger"
         if since_iso:
             rows_raw = self.query_cost(since_iso=since_iso, limit=100_000)
         else:

@@ -15,7 +15,6 @@ from forgewire_fabric.policy.budget import (
     CostLedger,
     CostRecord,
     TaskBudget,
-    _this_week,
     _to_week,
 )
 

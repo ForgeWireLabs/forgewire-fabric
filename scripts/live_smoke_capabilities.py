@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 
 import httpx
+import contextlib
 
 
 HUB_URL = "http://192.0.2.10:8765"
@@ -97,10 +98,8 @@ def main() -> int:
 
         # Cancel both probe tasks so they don't linger forever.
         for tid in (ok_tid, bad_tid):
-            try:
+            with contextlib.suppress(Exception):
                 c.post(f"/tasks/{tid}/cancel")
-            except Exception:
-                pass
 
         print("[5] PASS")
         return 0

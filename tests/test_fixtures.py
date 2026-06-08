@@ -450,7 +450,7 @@ class TestStoreFixtures:
         """datetime('now') is allowed in DEFAULT expressions but not in logic.
         The compat doc explains why explicit UTC is required for rqlite.
         """
-        assert "MIGRATION_COMPAT" or True  # structural — just verify compat doc mentions it
+        assert True  # structural — just verify compat doc mentions it
         assert "explicit UTC" in (FIXTURES / "store" / "MIGRATION_COMPAT.md").read_text()
 
     def test_additive_columns_documented(self, compat: str) -> None:

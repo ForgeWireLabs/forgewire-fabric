@@ -15,7 +15,7 @@ import json
 import click
 
 from . import cli
-from ._helpers import _async, _client, _print_json
+from ._helpers import _async, _client
 
 
 @cli.group(help="Cost ledger reporting (M2.5.2).")

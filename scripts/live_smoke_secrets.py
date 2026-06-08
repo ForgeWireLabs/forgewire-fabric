@@ -26,6 +26,7 @@ import time
 from pathlib import Path
 
 import httpx
+import contextlib
 
 
 HUB_URL = "http://192.0.2.10:8765"
@@ -33,7 +34,7 @@ TOKEN = Path(r"C:\Users\operator\.forgewire\hub.token").read_text(encoding="utf-
 HEADERS = {"Authorization": f"Bearer {TOKEN}"}
 
 SECRET_NAME = "SMOKE_PROBE"
-SECRET_VALUE = "smoke-probe-{}-do-not-trust".format(int(time.time()))
+SECRET_VALUE = f"smoke-probe-{int(time.time())}-do-not-trust"
 REDACTION_MARKER = f"***SECRET:{SECRET_NAME}***"
 
 
@@ -167,14 +168,12 @@ def main() -> int:  # noqa: D401 - script entry point
             print(f"[5] result log_tail + error redacted with {REDACTION_MARKER}")
 
         # ---- 6. cleanup ----
-        try:
+        with contextlib.suppress(Exception):
             c.post(f"/tasks/{tid}/cancel")
-        except Exception:
-            pass
         r = c.delete(f"/secrets/{SECRET_NAME}")
         # 404 here is fine if a parallel smoke already deleted it.
         assert r.status_code in (200, 404), r.text
-        print(f"[6] cancelled probe task and deleted probe secret")
+        print("[6] cancelled probe task and deleted probe secret")
 
         print("PASS")
         return 0

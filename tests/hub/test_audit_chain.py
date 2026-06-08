@@ -65,7 +65,7 @@ def _rqlite_query(sql: str, params: list | None = None) -> list[dict]:
         result = r.json()["results"][0]
         cols = result.get("columns", [])
         values = result.get("values", [])
-        return [dict(zip(cols, row)) for row in values]
+        return [dict(zip(cols, row, strict=False)) for row in values]
 
 
 def _build_client() -> TestClient:

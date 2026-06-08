@@ -15,7 +15,6 @@ Mocking policy: none. We hit the live OptiPlex hub.
 from __future__ import annotations
 
 import datetime as dt
-import json
 import sys
 from pathlib import Path
 

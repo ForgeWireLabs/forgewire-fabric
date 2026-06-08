@@ -16,7 +16,6 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-import pytest
 from fastapi.testclient import TestClient
 
 from forgewire_fabric.hub._router import pick_task

@@ -79,9 +79,9 @@ def main() -> None:
     for n in (5, 25, 50):
         tasks, runner = _make_corpus(n)
         print(f"\nN_tasks = {n}")
-        py_t = _bench("python", lambda: _py_pick_task(tasks, runner), 20_000)
+        py_t = _bench("python", lambda t=tasks, r=runner: _py_pick_task(t, r), 20_000)
         if HAS_RUST:
-            rust_t = _bench("rust ", lambda: _rust.pick_task(tasks, runner), 20_000)
+            rust_t = _bench("rust ", lambda t=tasks, r=runner: _rust.pick_task(t, r), 20_000)
             print(f"  speedup            = {py_t / rust_t:6.2f}x")
 
     print("\n=== Worst case: full scan, no match (tenant mismatch on every task) ===")
@@ -93,9 +93,9 @@ def main() -> None:
         for t in tasks:
             t["tenant"] = "alpha"
         print(f"\nN_tasks = {n}")
-        py_t = _bench("python", lambda: _py_pick_task(tasks, runner_no), 20_000)
+        py_t = _bench("python", lambda t=tasks, r=runner_no: _py_pick_task(t, r), 20_000)
         if HAS_RUST:
-            rust_t = _bench("rust ", lambda: _rust.pick_task(tasks, runner_no), 20_000)
+            rust_t = _bench("rust ", lambda t=tasks, r=runner_no: _rust.pick_task(t, r), 20_000)
             print(f"  speedup            = {py_t / rust_t:6.2f}x")
 
 
