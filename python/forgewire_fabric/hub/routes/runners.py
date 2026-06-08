@@ -26,11 +26,12 @@ from forgewire_fabric.hub.server import (
     _parse_version,
 )
 
-from ._deps import get_context, require_auth
+from ._deps import get_context, require_auth, require_scope
 from ._helpers import (
     audit_claim,
     audit_dispatch,
     check_skew,
+    dispatch_v3_signed_payload,
     enforce_dispatch_gate,
     signed_payload,
     verify_runner_signature,
@@ -135,19 +136,7 @@ def dispatch_task_signed(request: Request, payload: DispatchTaskSignedRequest) -
     public_key = blackboard.dispatcher_public_key(payload.dispatcher_id)
     if public_key is None:
         raise HTTPException(status_code=404, detail="dispatcher not registered")
-    signed = signed_payload(
-        {
-            "op": "dispatch",
-            "dispatcher_id": payload.dispatcher_id,
-            "title": payload.title,
-            "prompt": payload.prompt,
-            "scope_globs": list(payload.scope_globs),
-            "base_commit": payload.base_commit,
-            "branch": payload.branch,
-            "timestamp": payload.timestamp,
-            "nonce": payload.nonce,
-        }
-    )
+    signed = dispatch_v3_signed_payload(payload)
     if not verify_signature(public_key, signed, payload.signature):
         raise HTTPException(status_code=403, detail="invalid dispatch signature")
     try:
@@ -368,7 +357,7 @@ def heartbeat_runner(request: Request, runner_id: str, payload: HeartbeatRequest
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@router.post("/runners/{runner_id}/drain", dependencies=[Depends(require_auth)])
+@router.post("/runners/{runner_id}/drain", dependencies=[Depends(require_scope("runner:control"))])
 def drain_runner(request: Request, runner_id: str, payload: DrainRequest) -> dict[str, Any]:
     ctx = get_context(request)
     if runner_id != payload.runner_id:
@@ -387,7 +376,7 @@ def drain_runner(request: Request, runner_id: str, payload: DrainRequest) -> dic
         raise HTTPException(status_code=404, detail="runner not registered") from exc
 
 
-@router.post("/runners/{runner_id}/drain-by-dispatcher", dependencies=[Depends(require_auth)])
+@router.post("/runners/{runner_id}/drain-by-dispatcher", dependencies=[Depends(require_scope("runner:control"))])
 def drain_runner_by_dispatcher(request: Request, runner_id: str) -> dict[str, Any]:
     try:
         return get_context(request).blackboard.request_drain(runner_id)
@@ -395,7 +384,7 @@ def drain_runner_by_dispatcher(request: Request, runner_id: str) -> dict[str, An
         raise HTTPException(status_code=404, detail="runner not registered") from exc
 
 
-@router.post("/runners/{runner_id}/undrain-by-dispatcher", dependencies=[Depends(require_auth)])
+@router.post("/runners/{runner_id}/undrain-by-dispatcher", dependencies=[Depends(require_scope("runner:control"))])
 def undrain_runner_by_dispatcher(request: Request, runner_id: str) -> dict[str, Any]:
     try:
         return get_context(request).blackboard.request_undrain(runner_id)
@@ -403,7 +392,7 @@ def undrain_runner_by_dispatcher(request: Request, runner_id: str) -> dict[str, 
         raise HTTPException(status_code=404, detail="runner not registered") from exc
 
 
-@router.delete("/runners/{runner_id}", dependencies=[Depends(require_auth)])
+@router.delete("/runners/{runner_id}", dependencies=[Depends(require_scope("runner:control"))])
 def deregister_runner(request: Request, runner_id: str) -> dict[str, Any]:
     """Remove a runner row from the registry.
 

@@ -74,23 +74,36 @@ def _sign_dispatch(
 ) -> dict:
     ts = int(time.time()) if timestamp is None else timestamp
     n = nonce or secrets.token_hex(16)
-    body = {
-        "op": "dispatch",
-        "dispatcher_id": ident.dispatcher_id,
+    payload = {
         "title": title,
         "prompt": prompt,
         "scope_globs": list(scope_globs),
         "base_commit": base_commit,
         "branch": branch,
+        "todo_id": None,
+        "timeout_minutes": 60,
+        "priority": 100,
+        "metadata": None,
+        "required_tools": None,
+        "required_tags": None,
+        "required_capabilities": None,
+        "secrets_needed": None,
+        "network_egress": None,
+        "tenant": None,
+        "workspace_root": None,
+        "require_base_commit": False,
+        "kind": "agent",
+        "max_cost_usd": None,
+    }
+    body = {
+        "op": "dispatch",
+        "dispatcher_id": ident.dispatcher_id,
+        **payload,
         "timestamp": ts,
         "nonce": n,
     }
     return {
-        "title": title,
-        "prompt": prompt,
-        "scope_globs": list(scope_globs),
-        "base_commit": base_commit,
-        "branch": branch,
+        **payload,
         "dispatcher_id": ident.dispatcher_id,
         "timestamp": ts,
         "nonce": n,

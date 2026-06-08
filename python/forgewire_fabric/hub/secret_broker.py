@@ -119,6 +119,7 @@ class FileKeyProvider:
 
     def load(self) -> bytes:
         if self.path.exists():
+            self._validate_existing_permissions()
             data = self.path.read_bytes()
             if len(data) != 32:
                 raise ValueError(
@@ -127,18 +128,45 @@ class FileKeyProvider:
             return data
         self.path.parent.mkdir(parents=True, exist_ok=True)
         key = AESGCM.generate_key(bit_length=256)
-        # Write+chmod tightly so a partial read can't observe a 0-byte
-        # key. We write to a temp path then rename atomically.
-        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        tmp.write_bytes(key)
-        if sys.platform != "win32":
+        tmp = self.path.with_name(
+            f"{self.path.name}.{os.getpid()}.{_stdlib_secrets.token_hex(8)}.tmp"
+        )
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        try:
+            fd = os.open(tmp, flags, 0o600)
             try:
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(key)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            except Exception:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                raise
+            if sys.platform != "win32":
                 os.chmod(tmp, 0o600)
-            except OSError as exc:  # pragma: no cover - filesystem rarity
-                LOGGER.warning("chmod 0600 failed for %s: %s", tmp, exc)
-        os.replace(tmp, self.path)
+            os.replace(tmp, self.path)
+        except FileExistsError:
+            # Extremely unlikely with pid+random temp names; retry safely.
+            return self.load()
+        except OSError:
+            tmp.unlink(missing_ok=True)
+            raise
         LOGGER.info("generated new secrets master key at %s", self.path)
         return key
+
+    def _validate_existing_permissions(self) -> None:
+        if sys.platform == "win32":
+            return
+        st = self.path.stat()
+        mode = st.st_mode & 0o777
+        if mode & 0o077:
+            raise PermissionError(
+                f"master key at {self.path} must not be group/world accessible "
+                f"(mode {mode:o}); run chmod 0600 {self.path}"
+            )
 
 
 @dataclass(slots=True)

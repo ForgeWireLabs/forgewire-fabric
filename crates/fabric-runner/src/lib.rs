@@ -62,14 +62,13 @@ impl RunnerConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(fabric_beacon::DEFAULT_BEACON_PORT);
-        let token_file = std::env::var("FORGEWIRE_HUB_TOKEN_FILE")
-            .unwrap_or_else(|_| {
-                if cfg!(windows) {
-                    r"C:\ProgramData\forgewire\hub.token".to_owned()
-                } else {
-                    "/var/lib/forgewire/hub.token".to_owned()
-                }
-            });
+        let token_file = std::env::var("FORGEWIRE_HUB_TOKEN_FILE").unwrap_or_else(|_| {
+            if cfg!(windows) {
+                r"C:\ProgramData\forgewire\hub.token".to_owned()
+            } else {
+                "/var/lib/forgewire/hub.token".to_owned()
+            }
+        });
         let token = std::fs::read_to_string(&token_file)
             .map_err(|e| format!("cannot read token file {token_file}: {e}"))?
             .trim()
@@ -162,10 +161,8 @@ pub fn load_or_create_identity(path: &Path) -> IdentityFile {
             id
         }
         Err(fabric_identity::IdentityError::NotFound(_)) => {
-            let id = fabric_identity::generate(
-                &format!("{}-runner", gethostname()),
-                KeyPurpose::Runner,
-            );
+            let id =
+                fabric_identity::generate(&format!("{}-runner", gethostname()), KeyPurpose::Runner);
             if let Err(e) = fabric_identity::save(path, &id) {
                 error!("failed to save identity to {}: {e}", path.display());
             }
@@ -253,14 +250,20 @@ pub async fn claim_loop(
         // require_base_commit (e.g. replays, which run at an exact commit).
         claim.last_known_commit = git_head_commit(&config.workspace_root).await;
         match client.claim_v2(&identity, &claim).await {
-            Ok(ClaimResponse { task: Some(task), .. }) => {
+            Ok(ClaimResponse {
+                task: Some(task), ..
+            }) => {
                 {
                     let mut s = stats.lock().await;
                     s.claim_failures_consecutive = 0;
                     s.last_claim_error = None;
                 }
                 let task_id = task["id"].as_i64().unwrap_or(0);
-                info!(task_id, title = task["title"].as_str().unwrap_or("?"), "claimed task");
+                info!(
+                    task_id,
+                    title = task["title"].as_str().unwrap_or("?"),
+                    "claimed task"
+                );
                 run_one_task(client.clone(), identity.clone(), &config, &task).await;
             }
             Ok(ClaimResponse { task: None, info }) => {
@@ -343,13 +346,21 @@ async fn run_one_task(
             let stderr_handle = {
                 let c = client.clone();
                 let rid = runner_id.clone();
-                tokio::spawn(async move {
-                    pump_stderr(c, task_id, &rid, stderr).await
-                })
+                tokio::spawn(async move { pump_stderr(c, task_id, &rid, stderr).await })
             };
             drop(intent_tx); // close sender so receiver terminates when pump exits
 
-            let rc = child.wait().await.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1);
+            let mut intent_outcome: Option<IntentOutcome> = None;
+            let rc = tokio::select! {
+                status = child.wait() => status.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1),
+                outcome = intent_rx.recv() => {
+                    intent_outcome = outcome;
+                    if intent_outcome.is_some() {
+                        let _ = child.kill().await;
+                    }
+                    child.wait().await.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1)
+                }
+            };
 
             let mut log_lines = Vec::new();
             if let Ok(lines) = stdout_handle.await {
@@ -363,7 +374,9 @@ async fn run_one_task(
             let tail = log_lines[tail_start..].join("\n");
 
             // Check if an intent gate fired.
-            let intent_outcome = intent_rx.recv().await;
+            if intent_outcome.is_none() {
+                intent_outcome = intent_rx.try_recv().ok();
+            }
             match intent_outcome {
                 Some(IntentOutcome::Denied { kind, detail }) => {
                     warn!(task_id, kind, "task killed by policy deny");
@@ -399,12 +412,20 @@ async fn run_one_task(
                     // Capture the resulting commit so the result chain records
                     // the output_commit and replay can compare it (M2.5.3).
                     head_commit: git_head_commit(&config.workspace_root).await,
-                    status: if rc == 0 { "done".into() } else { "failed".into() },
+                    status: if rc == 0 {
+                        "done".into()
+                    } else {
+                        "failed".into()
+                    },
                     commits: vec![],
                     files_touched: vec![],
                     test_summary: None,
                     log_tail: Some(tail),
-                    error: if rc == 0 { None } else { Some(format!("exit code {rc}")) },
+                    error: if rc == 0 {
+                        None
+                    } else {
+                        Some(format!("exit code {rc}"))
+                    },
                 },
             }
         }
@@ -449,7 +470,11 @@ async fn git_head_commit(workspace: &std::path::Path) -> Option<String> {
         return None;
     }
     let s = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-    if s.is_empty() { None } else { Some(s) }
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
 }
 
 /// Returns `(kind, paths, hosts, command)`.
@@ -500,26 +525,39 @@ async fn pump_stream(
             let host_refs: Vec<&str> = hosts.iter().map(String::as_str).collect();
             let cmd_ref = command.as_deref();
             match client
-                .post_intent(task_id, runner_id, &kind, &path_refs, &host_refs, cmd_ref, None, None, None)
+                .post_intent(
+                    task_id, runner_id, &kind, &path_refs, &host_refs, cmd_ref, None, None, None,
+                )
                 .await
             {
                 Ok(_) => {
                     info!(task_id, kind, "intent allowed by hub");
                     let _ = client
-                        .append_stream(task_id, runner_id, channel, &format!("[intent:{kind}] allowed"))
+                        .append_stream(
+                            task_id,
+                            runner_id,
+                            channel,
+                            &format!("[intent:{kind}] allowed"),
+                        )
                         .await;
                 }
                 Err(ref e) if e.is_policy_denied() => {
                     warn!(task_id, kind, "intent denied by policy");
                     kill_flag.store(true, Ordering::Relaxed);
                     let _ = intent_tx
-                        .send(IntentOutcome::Denied { kind, detail: e.to_string() })
+                        .send(IntentOutcome::Denied {
+                            kind,
+                            detail: e.to_string(),
+                        })
                         .await;
                     break;
                 }
                 Err(ref e) if e.is_approval_required() => {
                     let approval_id = e.approval_id().unwrap_or_else(|| "unknown".into());
-                    warn!(task_id, kind, approval_id, "intent requires approval — halting task");
+                    warn!(
+                        task_id,
+                        kind, approval_id, "intent requires approval — halting task"
+                    );
                     kill_flag.store(true, Ordering::Relaxed);
                     let _ = intent_tx
                         .send(IntentOutcome::ApprovalHold { kind, approval_id })
@@ -527,14 +565,25 @@ async fn pump_stream(
                     break;
                 }
                 Err(e) => {
-                    warn!(task_id, error = %e, "intent POST failed — allowing (best-effort)");
+                    warn!(task_id, error = %e, "intent POST failed — failing closed");
+                    kill_flag.store(true, Ordering::Relaxed);
+                    let _ = intent_tx
+                        .send(IntentOutcome::Denied {
+                            kind,
+                            detail: format!("intent policy check failed closed: {e}"),
+                        })
+                        .await;
+                    break;
                 }
             }
             // Do not forward FW_INTENT lines to the hub stream.
             continue;
         }
 
-        if let Err(e) = client.append_stream(task_id, runner_id, channel, &line).await {
+        if let Err(e) = client
+            .append_stream(task_id, runner_id, channel, &line)
+            .await
+        {
             warn!(task_id, channel, error = %e, "stream append failed");
         }
         lines.push(line);
@@ -553,7 +602,10 @@ async fn pump_stderr(
     let Some(pipe) = pipe else { return lines };
     let mut reader = BufReader::new(pipe).lines();
     while let Ok(Some(line)) = reader.next_line().await {
-        if let Err(e) = client.append_stream(task_id, runner_id, "stderr", &line).await {
+        if let Err(e) = client
+            .append_stream(task_id, runner_id, "stderr", &line)
+            .await
+        {
             warn!(task_id, error = %e, "stderr stream append failed");
         }
         lines.push(line);
@@ -595,7 +647,10 @@ fn build_register_payload(config: &RunnerConfig) -> RegisterPayload {
         capabilities: HashMap::new(),
         metadata: {
             let mut m = HashMap::new();
-            m.insert("flavor".into(), Value::String("forgewire-runner-rust".into()));
+            m.insert(
+                "flavor".into(),
+                Value::String("forgewire-runner-rust".into()),
+            );
             m
         },
     }

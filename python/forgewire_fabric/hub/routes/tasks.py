@@ -112,14 +112,6 @@ def list_waiting_tasks(request: Request) -> dict[str, Any]:
     return {"tasks": out, "online_runners": [runner["runner_id"] for runner in online]}
 
 
-@router.get("/tasks/{task_id}", dependencies=[Depends(require_auth)])
-def get_task(request: Request, task_id: int) -> dict[str, Any]:
-    try:
-        return get_context(request).blackboard.get_task(task_id)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="task not found") from exc
-
-
 @router.post("/tasks/claim", dependencies=[Depends(require_auth)])
 def claim_task(request: Request, payload: ClaimRequest) -> JSONResponse:
     ctx = get_context(request)
@@ -130,3 +122,11 @@ def claim_task(request: Request, payload: ClaimRequest) -> JSONResponse:
     )
     audit_claim(ctx, task, worker_id=payload.worker_id)
     return JSONResponse(content={"task": task})
+
+
+@router.get("/tasks/{task_id}", dependencies=[Depends(require_auth)])
+def get_task(request: Request, task_id: int) -> dict[str, Any]:
+    try:
+        return get_context(request).blackboard.get_task(task_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="task not found") from exc

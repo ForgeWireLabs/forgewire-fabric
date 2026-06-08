@@ -9,12 +9,12 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response as FastAPIResponse
 
-from ._deps import get_context, require_auth
+from ._deps import get_context, require_scope
 
 router = APIRouter()
 
 
-@router.get("/state/snapshot", dependencies=[Depends(require_auth)])
+@router.get("/state/snapshot", dependencies=[Depends(require_scope("admin:state"))])
 def state_snapshot(request: Request) -> FastAPIResponse:
     """Download a rqlite database backup."""
     ctx = get_context(request)
@@ -45,7 +45,7 @@ def state_snapshot(request: Request) -> FastAPIResponse:
     )
 
 
-@router.post("/state/import", dependencies=[Depends(require_auth)])
+@router.post("/state/import", dependencies=[Depends(require_scope("admin:state"))])
 async def state_import(request: Request) -> dict[str, Any]:
     """Load a rqlite database backup."""
     ctx = get_context(request)

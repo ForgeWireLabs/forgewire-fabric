@@ -2,7 +2,7 @@
 //!
 //! - GET  /tasks
 //! - GET  /tasks/{task_id}
-//! - POST /tasks          (unsigned bearer-only, compat quarantine)
+//! - POST /tasks          (rejected; protocol v3 requires signed dispatch)
 //! - POST /tasks/v2       (signed dispatch with registered dispatcher key)
 //! - POST /tasks/claim-v2 (runner claim with Ed25519 signature)
 
@@ -14,13 +14,15 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use fabric_claim_router::{CandidateTask, RunnerView, pick_task};
+use fabric_claim_router::{pick_task, CandidateTask, RunnerView};
 use fabric_store::{
     ClaimResult, CreateTaskParams, DispatcherStore, NonceStore, RunnerStore, SecretStore, TaskStore,
 };
 
 use crate::state::HubState;
-use crate::utils::{audit_append, budget_denial, check_skew, runner_kind_from_tags, utc_now, verify_sig};
+use crate::utils::{
+    audit_append, budget_denial, check_skew, runner_kind_from_tags, utc_now, verify_sig,
+};
 
 // ---- Shared request types --------------------------------------------------
 
@@ -50,6 +52,7 @@ pub struct DispatchPayload {
     pub secrets_needed: Option<Vec<String>>,
     pub network_egress: Option<Value>,
     pub approval_id: Option<String>,
+    pub max_cost_usd: Option<f64>,
 }
 
 #[derive(Deserialize)]
@@ -88,10 +91,18 @@ pub struct ListQuery {
     pub limit: i64,
 }
 
-fn default_timeout() -> i64 { 60 }
-fn default_priority() -> i64 { 100 }
-fn default_kind() -> String { "agent".into() }
-fn default_limit() -> i64 { 100 }
+fn default_timeout() -> i64 {
+    60
+}
+fn default_priority() -> i64 {
+    100
+}
+fn default_kind() -> String {
+    "agent".into()
+}
+fn default_limit() -> i64 {
+    100
+}
 
 // ---- GET /tasks ------------------------------------------------------------
 
@@ -99,7 +110,10 @@ pub async fn list_tasks(
     State(state): State<Arc<HubState>>,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    let tasks = state.store.list_tasks(q.status.as_deref(), q.limit).await
+    let tasks = state
+        .store
+        .list_tasks(q.status.as_deref(), q.limit)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(json!({ "tasks": tasks })))
 }
@@ -120,39 +134,13 @@ pub async fn get_task(
 // ---- POST /tasks (unsigned, compat quarantine) -----------------------------
 
 pub async fn dispatch_task(
-    State(state): State<Arc<HubState>>,
-    Json(payload): Json<DispatchPayload>,
+    State(_state): State<Arc<HubState>>,
+    Json(_payload): Json<DispatchPayload>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    let now = utc_now();
-
-    // Native budget gate (M2.5.3): reject before creating the task if a cost cap
-    // is already met. Reads the persistent budget_state accumulators.
-    if let Some(reason) = budget_denial(&*state.store, &state.budget_caps, &now).await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    {
-        let _ = audit_append(&*state.store, "dispatch_denied", None, &json!({
-            "reason": "budget_exceeded", "detail": reason, "signed": false,
-        })).await;
-        return Err((StatusCode::PAYMENT_REQUIRED, reason));
-    }
-
-    let p = dispatch_params(&payload, None);
-    let task = state.store.create_task(p, &now).await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    let audit_payload = json!({
-        "task_id": task.id,
-        "title": task.title,
-        "base_commit": task.base_commit,
-        "branch": task.branch,
-        "scope_globs": task.scope_globs,
-        "signed": false,
-        "dispatcher_id": null,
-        "approval_id": payload.approval_id,
-    });
-    let _ = audit_append(&*state.store, "dispatch", Some(task.id), &audit_payload).await;
-
-    Ok(Json(serde_json::to_value(task).unwrap_or(Value::Null)))
+    Err((
+        StatusCode::UPGRADE_REQUIRED,
+        "protocol v3 requires signed dispatch via POST /tasks/v2".into(),
+    ))
 }
 
 // ---- POST /tasks/v2 (signed dispatch) --------------------------------------
@@ -163,10 +151,12 @@ pub async fn dispatch_task_signed(
 ) -> Result<Json<Value>, (StatusCode, String)> {
     use fabric_store::DispatcherStore;
 
-    check_skew(payload.timestamp)
-        .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
+    check_skew(payload.timestamp).map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
 
-    let public_key = state.store.dispatcher_public_key(&payload.dispatcher_id).await
+    let public_key = state
+        .store
+        .dispatcher_public_key(&payload.dispatcher_id)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "dispatcher not registered".into()))?;
 
@@ -178,15 +168,34 @@ pub async fn dispatch_task_signed(
         "scope_globs": payload.base.scope_globs,
         "base_commit": payload.base.base_commit,
         "branch": payload.base.branch,
+        "todo_id": payload.base.todo_id,
+        "timeout_minutes": payload.base.timeout_minutes,
+        "priority": payload.base.priority,
+        "metadata": payload.base.metadata,
+        "required_tools": payload.base.required_tools,
+        "required_tags": payload.base.required_tags,
+        "required_capabilities": payload.base.required_capabilities,
+        "secrets_needed": payload.base.secrets_needed,
+        "network_egress": payload.base.network_egress,
+        "tenant": payload.base.tenant,
+        "workspace_root": payload.base.workspace_root,
+        "require_base_commit": payload.base.require_base_commit,
+        "kind": payload.base.kind,
+        "max_cost_usd": payload.base.max_cost_usd,
         "timestamp": payload.timestamp,
         "nonce": payload.nonce,
     });
     verify_sig(&public_key, &envelope, &payload.signature)
         .map_err(|e| (StatusCode::FORBIDDEN, e))?;
 
-    state.store.consume_dispatcher_nonce(&payload.dispatcher_id, &payload.nonce, &utc_now()).await
+    state
+        .store
+        .consume_dispatcher_nonce(&payload.dispatcher_id, &payload.nonce, &utc_now())
+        .await
         .map_err(|e| match e {
-            fabric_store::StoreError::NotFound(_) => (StatusCode::NOT_FOUND, "dispatcher not registered".into()),
+            fabric_store::StoreError::NotFound(_) => {
+                (StatusCode::NOT_FOUND, "dispatcher not registered".into())
+            }
             fabric_store::StoreError::PermissionDenied(m) => (StatusCode::FORBIDDEN, m),
             other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
         })?;
@@ -195,18 +204,28 @@ pub async fn dispatch_task_signed(
 
     // Native budget gate (M2.5.3): reject before creating the task if a cost cap
     // is already met. Reads the persistent budget_state accumulators.
-    if let Some(reason) = budget_denial(&*state.store, &state.budget_caps, &now).await
+    if let Some(reason) = budget_denial(&*state.store, &state.budget_caps, &now)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     {
-        let _ = audit_append(&*state.store, "dispatch_denied", None, &json!({
-            "reason": "budget_exceeded", "detail": reason, "signed": true,
-            "dispatcher_id": payload.dispatcher_id,
-        })).await;
+        let _ = audit_append(
+            &*state.store,
+            "dispatch_denied",
+            None,
+            &json!({
+                "reason": "budget_exceeded", "detail": reason, "signed": true,
+                "dispatcher_id": payload.dispatcher_id,
+            }),
+        )
+        .await;
         return Err((StatusCode::PAYMENT_REQUIRED, reason));
     }
 
     let p = dispatch_params(&payload.base, Some(&payload.dispatcher_id));
-    let task = state.store.create_task(p, &now).await
+    let task = state
+        .store
+        .create_task(p, &now)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let audit_payload = json!({
@@ -230,10 +249,12 @@ pub async fn claim_task_v2(
     State(state): State<Arc<HubState>>,
     Json(payload): Json<ClaimV2Payload>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    check_skew(payload.timestamp)
-        .map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
+    check_skew(payload.timestamp).map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
 
-    let public_key = state.store.runner_public_key(&payload.runner_id).await
+    let public_key = state
+        .store
+        .runner_public_key(&payload.runner_id)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "runner not registered".into()))?;
 
@@ -246,75 +267,126 @@ pub async fn claim_task_v2(
     verify_sig(&public_key, &envelope, &payload.signature)
         .map_err(|e| (StatusCode::FORBIDDEN, e))?;
 
-    let runner = state.store.get_runner(&payload.runner_id).await.map_err(|e| match e {
-        fabric_store::StoreError::NotFound(_) => (StatusCode::NOT_FOUND, "runner not registered".into()),
-        other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
-    })?;
+    let runner = state
+        .store
+        .get_runner(&payload.runner_id)
+        .await
+        .map_err(|e| match e {
+            fabric_store::StoreError::NotFound(_) => {
+                (StatusCode::NOT_FOUND, "runner not registered".into())
+            }
+            other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+        })?;
 
     if runner.drain_requested {
         return Ok(Json(json!({"task": null, "info": {"reason": "drain"}})));
     }
 
     // Concurrency cap
-    let active_tasks = state.store.list_tasks(Some("claimed"), 200).await.unwrap_or_default();
-    let active_tasks_running = state.store.list_tasks(Some("running"), 200).await.unwrap_or_default();
-    let current_load = active_tasks.iter().chain(active_tasks_running.iter())
+    let active_tasks = state
+        .store
+        .list_tasks(Some("claimed"), 200)
+        .await
+        .unwrap_or_default();
+    let active_tasks_running = state
+        .store
+        .list_tasks(Some("running"), 200)
+        .await
+        .unwrap_or_default();
+    let current_load = active_tasks
+        .iter()
+        .chain(active_tasks_running.iter())
         .filter(|t| t.worker_id.as_deref() == Some(&payload.runner_id))
         .count() as i64;
     if current_load >= runner.max_concurrent {
-        return Ok(Json(json!({"task": null, "info": {"reason": "concurrency_cap", "current_load": current_load, "max_concurrent": runner.max_concurrent}})));
+        return Ok(Json(
+            json!({"task": null, "info": {"reason": "concurrency_cap", "current_load": current_load, "max_concurrent": runner.max_concurrent}}),
+        ));
     }
 
     // Resource gates
     if let Some(ram) = payload.ram_free_mb {
         if ram < 512 {
-            return Ok(Json(json!({"task": null, "info": {"reason": "resource_gate", "detail": format!("ram_free_mb {ram} < 512")}})));
+            return Ok(Json(
+                json!({"task": null, "info": {"reason": "resource_gate", "detail": format!("ram_free_mb {ram} < 512")}}),
+            ));
         }
     }
     if payload.on_battery {
         if let Some(batt) = payload.battery_pct {
             if batt < 20 {
-                return Ok(Json(json!({"task": null, "info": {"reason": "resource_gate", "detail": format!("on battery {batt}% < 20")}})));
+                return Ok(Json(
+                    json!({"task": null, "info": {"reason": "resource_gate", "detail": format!("on battery {batt}% < 20")}}),
+                ));
             }
         }
     }
 
     // Fetch queued tasks matching kind
     let task_kind = runner_kind_from_tags(&payload.tags);
-    let queued = state.store.list_tasks(Some("queued"), 50).await
+    let queued = state
+        .store
+        .list_tasks(Some("queued"), 50)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let queued: Vec<_> = queued.into_iter()
+    let queued: Vec<_> = queued
+        .into_iter()
         .filter(|t| !t.cancel_requested && t.kind == task_kind)
         .collect();
 
     if queued.is_empty() {
-        return Ok(Json(json!({"task": null, "info": {"reason": "queue_empty"}})));
+        return Ok(Json(
+            json!({"task": null, "info": {"reason": "queue_empty"}}),
+        ));
     }
 
     // Capability filtering
     let runner_caps = runner.capabilities.clone();
     let runner_caps_map = runner_caps.as_object().cloned().unwrap_or_default();
 
-    let candidates: Vec<CandidateTask> = queued.iter().map(|t| {
-        let scope_globs: Vec<String> = t.scope_globs.as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_owned())).collect())
-            .unwrap_or_default();
-        let required_tools: Vec<String> = t.required_tools.as_ref().and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_owned())).collect())
-            .unwrap_or_default();
-        let required_tags: Vec<String> = t.required_tags.as_ref().and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_owned())).collect())
-            .unwrap_or_default();
-        CandidateTask {
-            scope_globs,
-            required_tools,
-            required_tags,
-            tenant: t.tenant.clone(),
-            workspace_root: t.workspace_root.clone(),
-            require_base_commit: t.require_base_commit,
-            base_commit: t.base_commit.clone(),
-        }
-    }).collect();
+    let candidates: Vec<CandidateTask> = queued
+        .iter()
+        .map(|t| {
+            let scope_globs: Vec<String> = t
+                .scope_globs
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_owned()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let required_tools: Vec<String> = t
+                .required_tools
+                .as_ref()
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_owned()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let required_tags: Vec<String> = t
+                .required_tags
+                .as_ref()
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(|s| s.to_owned()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            CandidateTask {
+                scope_globs,
+                required_tools,
+                required_tags,
+                tenant: t.tenant.clone(),
+                workspace_root: t.workspace_root.clone(),
+                require_base_commit: t.require_base_commit,
+                base_commit: t.base_commit.clone(),
+            }
+        })
+        .collect();
 
     // Use from_raw so scope_prefixes get the same normalization the task globs
     // get (backslashes -> '/', trailing '/'). Building RunnerView directly left
@@ -340,29 +412,42 @@ pub async fn claim_task_v2(
                 tags = ?runner_view.tags,
                 "no eligible task for runner"
             );
-            return Ok(Json(json!({"task": null, "info": {"reason": "no_eligible_runner", "candidates_seen": candidates_seen}})));
+            return Ok(Json(
+                json!({"task": null, "info": {"reason": "no_eligible_runner", "candidates_seen": candidates_seen}}),
+            ));
         }
         Some(i) => i,
     };
 
     let chosen_task = &queued[chosen_idx];
     let now = utc_now();
-    let claim_result = state.store.claim_task(chosen_task.id, &payload.runner_id, &now).await
+    let claim_result = state
+        .store
+        .claim_task(chosen_task.id, &payload.runner_id, &now)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     let task = match claim_result {
         ClaimResult::Claimed(t) => t,
         ClaimResult::AlreadyClaimed => {
-            return Ok(Json(json!({"task": null, "info": {"reason": "no_eligible_runner", "detail": "lost_claim_race"}})));
+            return Ok(Json(
+                json!({"task": null, "info": {"reason": "no_eligible_runner", "detail": "lost_claim_race"}}),
+            ));
         }
     };
 
     // Resolve secrets
     let mut task_val = serde_json::to_value(&task).unwrap_or(Value::Null);
     let mut secrets_dispatched: Vec<String> = vec![];
-    let requested: Vec<String> = task.secrets_needed.as_ref()
+    let requested: Vec<String> = task
+        .secrets_needed
+        .as_ref()
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_owned())).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_owned()))
+                .collect()
+        })
         .unwrap_or_default();
     if !requested.is_empty() {
         if let Ok(resolved) = state.store.resolve_secrets(&requested).await {
@@ -384,13 +469,19 @@ pub async fn claim_task_v2(
     });
     let _ = audit_append(&*state.store, "claim", Some(task.id), &audit_payload).await;
 
-    Ok(Json(json!({"task": task_val, "info": {"reason": "claimed"}})))
+    Ok(Json(
+        json!({"task": task_val, "info": {"reason": "claimed"}}),
+    ))
 }
 
 // ---- Helpers ---------------------------------------------------------------
 
 fn dispatch_params(p: &DispatchPayload, dispatcher_id: Option<&str>) -> CreateTaskParams {
-    let metadata = if p.metadata.is_null() { json!({}) } else { p.metadata.clone() };
+    let metadata = if p.metadata.is_null() {
+        json!({})
+    } else {
+        p.metadata.clone()
+    };
     CreateTaskParams {
         title: p.title.clone(),
         prompt: p.prompt.clone(),

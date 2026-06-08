@@ -8,12 +8,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from forgewire_fabric.hub.server import ApprovalDecisionRequest
 
-from ._deps import get_context, require_auth
+from ._deps import get_context, require_scope
 
 router = APIRouter()
 
 
-@router.get("/approvals", dependencies=[Depends(require_auth)])
+@router.get("/approvals", dependencies=[Depends(require_scope("approvals:read"))])
 def list_approvals(
     request: Request, status: str | None = None, limit: int = 200
 ) -> dict[str, Any]:
@@ -32,7 +32,7 @@ def list_approvals(
     }
 
 
-@router.get("/approvals/{approval_id}", dependencies=[Depends(require_auth)])
+@router.get("/approvals/{approval_id}", dependencies=[Depends(require_scope("approvals:read"))])
 def get_approval(request: Request, approval_id: str) -> dict[str, Any]:
     row = get_context(request).blackboard.get_approval(approval_id)
     if row is None:
@@ -40,7 +40,7 @@ def get_approval(request: Request, approval_id: str) -> dict[str, Any]:
     return row
 
 
-@router.post("/approvals/{approval_id}/approve", dependencies=[Depends(require_auth)])
+@router.post("/approvals/{approval_id}/approve", dependencies=[Depends(require_scope("approvals:write"))])
 def approve_approval(
     request: Request, approval_id: str, payload: ApprovalDecisionRequest
 ) -> dict[str, Any]:
@@ -57,7 +57,7 @@ def approve_approval(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
-@router.post("/approvals/{approval_id}/deny", dependencies=[Depends(require_auth)])
+@router.post("/approvals/{approval_id}/deny", dependencies=[Depends(require_scope("approvals:write"))])
 def deny_approval(
     request: Request, approval_id: str, payload: ApprovalDecisionRequest
 ) -> dict[str, Any]:

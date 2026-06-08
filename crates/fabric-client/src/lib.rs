@@ -125,14 +125,10 @@ impl HubClient {
                     let status = resp.status().as_u16();
                     let text = resp.text().await.unwrap_or_default();
                     if (200..300).contains(&status) {
-                        let val: Value =
-                            serde_json::from_str(&text).unwrap_or(Value::Null);
+                        let val: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
                         return Ok(val);
                     }
-                    return Err(ClientError::Hub {
-                        status,
-                        body: text,
-                    });
+                    return Err(ClientError::Hub { status, body: text });
                 }
                 Err(e) => {
                     last_err = e.to_string();
@@ -171,7 +167,7 @@ impl HubClient {
     ///
     /// `brief` carries the dispatch fields (title, prompt, scope_globs,
     /// base_commit, branch, and any optional routing/metadata). The dispatcher
-    /// identity signs the canonical envelope over the security-relevant subset
+    /// identity signs the canonical envelope over the protocol-v3 execution-semantics set
     /// the hub verifies; the signed envelope, nonce, and timestamp are attached
     /// to the request body. There is no unsigned dispatch path — every
     /// state-changing dispatch is ed25519-signed (hard rule #6).
@@ -194,11 +190,29 @@ impl HubClient {
             "scope_globs": brief.get("scope_globs").cloned().unwrap_or_else(|| json!([])),
             "base_commit": brief.get("base_commit").cloned().unwrap_or(Value::Null),
             "branch": brief.get("branch").cloned().unwrap_or(Value::Null),
+            "todo_id": brief.get("todo_id").cloned().unwrap_or(Value::Null),
+            "timeout_minutes": brief.get("timeout_minutes").cloned().unwrap_or_else(|| json!(60)),
+            "priority": brief.get("priority").cloned().unwrap_or_else(|| json!(100)),
+            "metadata": brief.get("metadata").cloned().unwrap_or(Value::Null),
+            "required_tools": brief.get("required_tools").cloned().unwrap_or(Value::Null),
+            "required_tags": brief.get("required_tags").cloned().unwrap_or(Value::Null),
+            "required_capabilities": brief.get("required_capabilities").cloned().unwrap_or(Value::Null),
+            "secrets_needed": brief.get("secrets_needed").cloned().unwrap_or(Value::Null),
+            "network_egress": brief.get("network_egress").cloned().unwrap_or(Value::Null),
+            "tenant": brief.get("tenant").cloned().unwrap_or(Value::Null),
+            "workspace_root": brief.get("workspace_root").cloned().unwrap_or(Value::Null),
+            "require_base_commit": brief.get("require_base_commit").cloned().unwrap_or_else(|| json!(false)),
+            "kind": brief.get("kind").cloned().unwrap_or_else(|| json!("agent")),
+            "max_cost_usd": brief.get("max_cost_usd").cloned().unwrap_or(Value::Null),
             "timestamp": ts,
             "nonce": nonce,
         });
-        let signature = sign_envelope_hex(&identity.secret_key_hex, &envelope)
-            .map_err(|e| ClientError::Transport { attempts: 0, message: format!("sign: {e}") })?;
+        let signature = sign_envelope_hex(&identity.secret_key_hex, &envelope).map_err(|e| {
+            ClientError::Transport {
+                attempts: 0,
+                message: format!("sign: {e}"),
+            }
+        })?;
 
         // Request body = the full brief (flattened) + dispatcher auth fields.
         let mut body = brief.clone();
@@ -254,7 +268,13 @@ impl HubClient {
 
     pub async fn healthz(&self) -> Result<Value, ClientError> {
         let url = format!("{}/healthz", self.base_url);
-        match self.http.get(&url).timeout(Duration::from_secs(5)).send().await {
+        match self
+            .http
+            .get(&url)
+            .timeout(Duration::from_secs(5))
+            .send()
+            .await
+        {
             Ok(resp) => {
                 let text = resp.text().await.unwrap_or_default();
                 Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
@@ -284,8 +304,8 @@ impl HubClient {
             "timestamp": ts,
             "nonce": nonce,
         });
-        let canonical = canonicalize(&signed_fields)
-            .map_err(|e| ClientError::Protocol(e.to_string()))?;
+        let canonical =
+            canonicalize(&signed_fields).map_err(|e| ClientError::Protocol(e.to_string()))?;
         let signature = sign_payload_hex(&identity.secret_key_hex, &canonical)
             .map_err(|e| ClientError::Protocol(e.to_string()))?;
 
@@ -345,8 +365,8 @@ impl HubClient {
             "timestamp": ts,
             "nonce": nonce,
         });
-        let canonical = canonicalize(&signed_fields)
-            .map_err(|e| ClientError::Protocol(e.to_string()))?;
+        let canonical =
+            canonicalize(&signed_fields).map_err(|e| ClientError::Protocol(e.to_string()))?;
         let signature = sign_payload_hex(&identity.secret_key_hex, &canonical)
             .map_err(|e| ClientError::Protocol(e.to_string()))?;
 
@@ -366,11 +386,8 @@ impl HubClient {
             "heartbeat_failures_total": stats.heartbeat_failures_total,
         });
 
-        self.post(
-            &format!("/runners/{}/heartbeat", identity.id),
-            &body,
-        )
-        .await
+        self.post(&format!("/runners/{}/heartbeat", identity.id), &body)
+            .await
     }
 
     // -- Claim v2 (signed) ---------------------------------------------------
@@ -389,8 +406,8 @@ impl HubClient {
             "timestamp": ts,
             "nonce": nonce,
         });
-        let canonical = canonicalize(&signed_fields)
-            .map_err(|e| ClientError::Protocol(e.to_string()))?;
+        let canonical =
+            canonicalize(&signed_fields).map_err(|e| ClientError::Protocol(e.to_string()))?;
         let signature = sign_payload_hex(&identity.secret_key_hex, &canonical)
             .map_err(|e| ClientError::Protocol(e.to_string()))?;
 
@@ -519,10 +536,7 @@ impl HubClient {
 
     // -- Drain (signed) ------------------------------------------------------
 
-    pub async fn drain(
-        &self,
-        identity: &IdentityFile,
-    ) -> Result<Value, ClientError> {
+    pub async fn drain(&self, identity: &IdentityFile) -> Result<Value, ClientError> {
         let ts = unix_timestamp();
         let nonce = random_nonce();
 
@@ -532,8 +546,8 @@ impl HubClient {
             "timestamp": ts,
             "nonce": nonce,
         });
-        let canonical = canonicalize(&signed_fields)
-            .map_err(|e| ClientError::Protocol(e.to_string()))?;
+        let canonical =
+            canonicalize(&signed_fields).map_err(|e| ClientError::Protocol(e.to_string()))?;
         let signature = sign_payload_hex(&identity.secret_key_hex, &canonical)
             .map_err(|e| ClientError::Protocol(e.to_string()))?;
 
@@ -544,11 +558,8 @@ impl HubClient {
             "signature": signature,
         });
 
-        self.post(
-            &format!("/runners/{}/drain", identity.id),
-            &body,
-        )
-        .await
+        self.post(&format!("/runners/{}/drain", identity.id), &body)
+            .await
     }
 }
 

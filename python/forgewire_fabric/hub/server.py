@@ -35,7 +35,6 @@ import uuid
 import calendar
 from datetime import datetime, UTC
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -44,6 +43,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
 from forgewire_fabric.hub._router import pick_task as _router_pick_task
+from forgewire_fabric.hub.config import BlackboardConfig
 from forgewire_fabric.hub._streams import make_counter as _make_stream_counter
 from forgewire_fabric.hub import _rqlite_db
 from forgewire_fabric.hub.capability_matcher import match as _capability_match
@@ -128,50 +128,6 @@ def _parse_version(value: str) -> tuple[int, int, int]:
 # ---------------------------------------------------------------------------
 # Storage layer
 # ---------------------------------------------------------------------------
-
-
-@dataclass(slots=True)
-class BlackboardConfig:
-    db_path: Path
-    token: str
-    host: str
-    port: int
-    min_runner_version: str = DEFAULT_MIN_RUNNER_VERSION
-    require_signed_dispatch: bool = False
-    # M2.5.1 / M2.5.2: optional path to a ``policy.yaml`` consumed by
-    # :class:`forgewire_fabric.policy.HubDispatchGate`. ``None`` means the
-    # gate operates with an empty policy + zero budget, which is
-    # equivalent to permit-all but still emits structured
-    # :class:`PolicyDecision` records on every dispatch/completion.
-    policy_path: Path | None = None
-    backend: str = "rqlite"  # rqlite is the only supported backend (SQLite retired M2.7.3)
-    rqlite_host: str = "127.0.0.1"
-    rqlite_port: int = 4001
-    rqlite_consistency: str = "strong"
-    # M2.5.1: optional outbound webhook fired when a dispatch is held for
-    # human approval (REQUIRE_APPROVAL). The hub POSTs a JSON body
-    # ``{event: "approval.created", approval_id, decision, task_label,
-    # branch, scope_globs}`` to this URL with a 5s timeout. Failures are
-    # logged but never block the dispatch path.
-    approval_webhook_url: str | None = None
-    # M2.5.1: ntfy.sh topic URL (e.g. "https://ntfy.sh/my-forgewire-topic").
-    # The hub fires a mobile-push-friendly notification on every new approval.
-    # Set via --approval-ntfy or FORGEWIRE_HUB_APPROVAL_NTFY env var.
-    approval_ntfy_url: str | None = None
-    # M2.5.1: Slack incoming webhook URL. The hub fires a Slack message with
-    # approval_id and a CLI hint on every new approval.
-    # Set via --approval-slack or FORGEWIRE_HUB_APPROVAL_SLACK env var.
-    approval_slack_url: str | None = None
-    # Labels snapshot sidecar. The hub mirrors the contents of the
-    # ``labels`` table (``hub_name`` + ``runner_alias:<runner_id>`` rows)
-    # to this JSON file on every successful write, and re-applies the
-    # file on startup. This protects operator-set names from accidental
-    # rqlite table wipes, schema rebuilds, or DR restores from a
-    # snapshot that pre-dates the rename. ``None`` resolves to
-    # ``<db_path>.parent / "labels.snapshot.json"`` inside Blackboard;
-    # set to ``Path("")`` (or env ``FORGEWIRE_HUB_LABELS_SNAPSHOT=``
-    # empty) to disable entirely.
-    labels_snapshot_path: Path | None = None
 
 
 class Blackboard:
@@ -2817,26 +2773,12 @@ class HostRoleRequest(BaseModel):
 
 
 class DispatchTaskSignedRequest(DispatchTaskRequest):
-    """Signed-dispatch envelope.
+    """Protocol-v3 signed-dispatch envelope.
 
-    Identical to :class:`DispatchTaskRequest` plus the four signing fields.
-    Signed payload (canonical JSON) is::
-
-        {"op": "dispatch",
-         "dispatcher_id": ...,
-         "title": ...,
-         "prompt": ...,
-         "scope_globs": [...],
-         "base_commit": ...,
-         "branch": ...,
-         "timestamp": ...,
-         "nonce": ...}
-
-    The signature covers only the immutable fields above. Optional fields
-    (``todo_id``, ``timeout_minutes``, ``priority``, ``metadata``,
-    ``required_tools``, ``required_tags``, ``tenant``, ``workspace_root``,
-    ``require_base_commit``) are *not* in the signed payload -- they are
-    routing hints that the bearer token already authenticates.
+    The signature covers every execution-semantic field from
+    :class:`DispatchTaskRequest` plus ``op``, ``dispatcher_id``, ``timestamp``,
+    and ``nonce``. ``approval_id`` is deliberately excluded so a held brief can
+    be approved and re-posted without changing the operator-approved envelope.
     """
 
     dispatcher_id: str = Field(..., min_length=8, max_length=120)
@@ -2956,6 +2898,7 @@ def create_app(config: BlackboardConfig) -> FastAPI:
     app.state.labels_snapshot_report = snapshot_report
     app.state.blackboard = blackboard
     app.state.token = config.token
+    app.state.scoped_tokens = config.scoped_tokens or {}
     app.state.started_at = time.time()
     app.state.config = config
 
@@ -3149,6 +3092,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--scoped-tokens-json",
+        default=os.environ.get("FORGEWIRE_HUB_SCOPED_TOKENS_JSON"),
+        help=(
+            "Optional JSON object mapping additional bearer token values to "
+            "operation scopes, e.g. {\"token\":[\"secrets\",\"approvals:write\"]}. "
+            "The primary hub token always retains all scopes."
+        ),
+    )
+    parser.add_argument(
         "--labels-snapshot",
         default=os.environ.get("FORGEWIRE_HUB_LABELS_SNAPSHOT"),
         help=(
@@ -3164,6 +3116,30 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 
+def _parse_scoped_tokens(raw: str | None) -> dict[str, set[str]]:
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"invalid scoped token JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise SystemExit("scoped token JSON must be an object mapping token to scopes")
+    out: dict[str, set[str]] = {}
+    for token, scopes in parsed.items():
+        token_s = str(token).strip()
+        if len(token_s) < 16:
+            raise SystemExit("scoped token values must be >= 16 characters")
+        if isinstance(scopes, str):
+            scope_set = {scopes}
+        elif isinstance(scopes, list):
+            scope_set = {str(scope) for scope in scopes}
+        else:
+            raise SystemExit(f"scopes for token {token_s[:4]}... must be a string or list")
+        out[token_s] = {scope.strip() for scope in scope_set if scope.strip()}
+    return out
+
+
 def main(argv: list[str] | None = None) -> None:
     import uvicorn
 
@@ -3174,7 +3150,8 @@ def main(argv: list[str] | None = None) -> None:
         host=args.host,
         port=args.port,
         min_runner_version=args.min_runner_version,
-        require_signed_dispatch=args.require_signed_dispatch,
+        require_signed_dispatch=True,
+        scoped_tokens=_parse_scoped_tokens(args.scoped_tokens_json),
         rqlite_host=args.rqlite_host,
         rqlite_port=args.rqlite_port,
         rqlite_consistency=args.rqlite_consistency,

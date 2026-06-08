@@ -8,12 +8,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from forgewire_fabric.hub.server import SecretPutRequest
 
-from ._deps import get_context, require_auth
+from ._deps import get_context, require_scope
 
 router = APIRouter()
 
 
-@router.post("/secrets", dependencies=[Depends(require_auth)])
+@router.post("/secrets", dependencies=[Depends(require_scope("secrets"))])
 def put_or_rotate_secret(request: Request, payload: SecretPutRequest) -> dict[str, Any]:
     blackboard = get_context(request).blackboard
     existed = any(row.get("name") == payload.name for row in blackboard.list_secrets())
@@ -27,12 +27,12 @@ def put_or_rotate_secret(request: Request, payload: SecretPutRequest) -> dict[st
     return {"secret": meta, "rotated": existed}
 
 
-@router.get("/secrets", dependencies=[Depends(require_auth)])
+@router.get("/secrets", dependencies=[Depends(require_scope("secrets"))])
 def list_secrets(request: Request) -> dict[str, Any]:
     return {"secrets": get_context(request).blackboard.list_secrets()}
 
 
-@router.delete("/secrets/{name}", dependencies=[Depends(require_auth)])
+@router.delete("/secrets/{name}", dependencies=[Depends(require_scope("secrets"))])
 def delete_secret(request: Request, name: str) -> dict[str, Any]:
     if not name:
         raise HTTPException(status_code=400, detail="name required")

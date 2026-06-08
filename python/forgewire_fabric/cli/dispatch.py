@@ -41,8 +41,7 @@ from ._helpers import _P, _P_home, _async, _candidates_from_env, _client, _load_
     "signed",
     default=None,
     help=(
-        "Force signed (POST /tasks/v2) or unsigned (POST /tasks) dispatch. "
-        "Default: signed if a dispatcher identity file exists, else unsigned."
+        "Protocol v3 requires signed POST /tasks/v2. --unsigned is rejected."
     ),
 )
 @click.option(
@@ -81,24 +80,49 @@ def dispatch(
     }
     payload = {k: v for k, v in payload.items() if v is not None}
 
-    # Decide signed vs unsigned. Auto: signed iff an identity file exists.
+    if signed is False:
+        raise click.ClickException("Protocol v3 requires signed dispatch; remove --unsigned.")
     from forgewire_fabric.dispatcher.identity import (
         DEFAULT_IDENTITY_PATH,
         load_or_create,
     )
 
     target_path = Path(identity_path) if identity_path else DEFAULT_IDENTITY_PATH
-    use_signed = signed if signed is not None else target_path.exists()
+    ident = load_or_create(target_path)
+    _async(_dispatch_signed(ident, payload))
 
-    if use_signed:
-        ident = load_or_create(target_path)
-        _async(_dispatch_signed(ident, payload))
-    else:
-        async def _go() -> None:
-            async with _client() as c:
-                _print_json(await c.dispatch_task(payload))
 
-        _async(_go())
+def _dispatch_v3_envelope(
+    dispatcher_id: str,
+    payload: dict[str, Any],
+    timestamp: int,
+    nonce: str,
+) -> dict[str, Any]:
+    return {
+        "op": "dispatch",
+        "dispatcher_id": dispatcher_id,
+        "title": payload["title"],
+        "prompt": payload["prompt"],
+        "scope_globs": list(payload["scope_globs"]),
+        "base_commit": payload["base_commit"],
+        "branch": payload["branch"],
+        "todo_id": payload.get("todo_id"),
+        "timeout_minutes": payload.get("timeout_minutes", 60),
+        "priority": payload.get("priority", 100),
+        "metadata": payload.get("metadata"),
+        "required_tools": payload.get("required_tools"),
+        "required_tags": payload.get("required_tags"),
+        "required_capabilities": payload.get("required_capabilities"),
+        "secrets_needed": payload.get("secrets_needed"),
+        "network_egress": payload.get("network_egress"),
+        "tenant": payload.get("tenant"),
+        "workspace_root": payload.get("workspace_root"),
+        "require_base_commit": payload.get("require_base_commit", False),
+        "kind": payload.get("kind", "agent"),
+        "max_cost_usd": payload.get("max_cost_usd"),
+        "timestamp": timestamp,
+        "nonce": nonce,
+    }
 
 
 async def _dispatch_signed(ident: Any, payload: dict[str, Any]) -> None:
@@ -110,17 +134,7 @@ async def _dispatch_signed(ident: Any, payload: dict[str, Any]) -> None:
 
     timestamp = int(_time.time())
     nonce = _secrets.token_hex(16)
-    signed_body = {
-        "op": "dispatch",
-        "dispatcher_id": ident.dispatcher_id,
-        "title": payload["title"],
-        "prompt": payload["prompt"],
-        "scope_globs": list(payload["scope_globs"]),
-        "base_commit": payload["base_commit"],
-        "branch": payload["branch"],
-        "timestamp": timestamp,
-        "nonce": nonce,
-    }
+    signed_body = _dispatch_v3_envelope(ident.dispatcher_id, payload, timestamp, nonce)
     canonical = _json.dumps(signed_body, sort_keys=True, separators=(",", ":")).encode("utf-8")
     sig = ident.sign(canonical)
     full = dict(payload)
@@ -146,8 +160,7 @@ async def _dispatch_signed(ident: Any, payload: dict[str, Any]) -> None:
         # Re-sign with a fresh nonce/timestamp and retry the dispatch.
         timestamp = int(_time.time())
         nonce = _secrets.token_hex(16)
-        signed_body["timestamp"] = timestamp
-        signed_body["nonce"] = nonce
+        signed_body = _dispatch_v3_envelope(ident.dispatcher_id, payload, timestamp, nonce)
         canonical = _json.dumps(signed_body, sort_keys=True, separators=(",", ":")).encode("utf-8")
         full["timestamp"] = timestamp
         full["nonce"] = nonce

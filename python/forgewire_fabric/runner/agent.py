@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import signal
 import sys
 from dataclasses import dataclass, field
 from typing import Any
@@ -273,6 +274,60 @@ class RunnerSession:
 
 TaskExecutor = Callable[[dict[str, Any], RunnerSession], Awaitable[dict[str, Any]]]
 
+INTENT_PREFIX = "FW_INTENT:"
+
+
+def _parse_intent_line(line: str) -> tuple[str, list[str], list[str], str | None]:
+    rest = line[len(INTENT_PREFIX):]
+    kind, _, kvs = rest.partition(":")
+    paths: list[str] = []
+    hosts: list[str] = []
+    command: str | None = None
+    if kvs:
+        for kv in kvs.split(":"):
+            key, sep, value = kv.partition("=")
+            if not sep:
+                continue
+            key = key.strip()
+            value = value.strip()
+            if key == "path":
+                paths.append(value)
+            elif key == "host":
+                hosts.append(value)
+            elif key in {"command", "cmd"}:
+                command = value
+    return kind.strip() or "unknown", paths, hosts, command
+
+
+async def _post_intent_fail_closed(
+    *,
+    session: RunnerSession,
+    task: dict[str, Any],
+    task_id: int,
+    kind: str,
+    paths: list[str],
+    hosts: list[str],
+    command: str | None,
+) -> tuple[bool, str | None]:
+    try:
+        await session.client.post_intent(
+            task_id,
+            worker_id=session.runner_id,
+            kind=kind,
+            paths=paths,
+            hosts=hosts,
+            command=command,
+            workspace_root=str(session.config.workspace_root),
+            branch=str(task.get("branch") or "") or None,
+        )
+        return True, None
+    except BlackboardError as exc:
+        if exc.status_code == 428:
+            return False, f"policy_hold: intent {kind} requires approval"
+        if exc.status_code == 403:
+            return False, f"policy_denied: intent {kind} — {exc.body}"
+        return False, f"intent policy check failed closed: {exc}"
+
 
 async def shell_executor(task: dict[str, Any], session: RunnerSession) -> dict[str, Any]:
     """Default executor: run ``task['prompt']`` as a shell command.
@@ -303,6 +358,7 @@ async def shell_executor(task: dict[str, Any], session: RunnerSession) -> dict[s
             cwd=session.config.workspace_root,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=(sys.platform != "win32"),
         )
     except OSError as exc:
         return {
@@ -311,12 +367,48 @@ async def shell_executor(task: dict[str, Any], session: RunnerSession) -> dict[s
             "error": f"spawn failed: {exc}",
         }
 
+    intent_error: str | None = None
+
     async def _pump(stream: asyncio.StreamReader, channel: str) -> None:
+        nonlocal intent_error
         while True:
             raw = await stream.readline()
             if not raw:
                 return
             line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+            if line.startswith(INTENT_PREFIX):
+                kind, paths, hosts, command = _parse_intent_line(line)
+                allowed, error = await _post_intent_fail_closed(
+                    session=session,
+                    task=task,
+                    task_id=task_id,
+                    kind=kind,
+                    paths=paths,
+                    hosts=hosts,
+                    command=command,
+                )
+                if not allowed:
+                    intent_error = error or f"intent {kind} rejected"
+                    try:
+                        if sys.platform != "win32" and proc.pid is not None:
+                            os.killpg(proc.pid, signal.SIGKILL)
+                        else:
+                            proc.kill()
+                    except ProcessLookupError:
+                        pass
+                    return
+                try:
+                    await session.client.append_stream(
+                        task_id,
+                        {
+                            "worker_id": session.runner_id,
+                            "channel": channel,
+                            "line": f"[intent:{kind}] allowed",
+                        },
+                    )
+                except BlackboardError as exc:
+                    LOGGER.warning("append_stream failed: %s", exc)
+                continue
             log_lines.append(f"[{channel}] {line}")
             try:
                 await session.client.append_stream(
@@ -332,12 +424,12 @@ async def shell_executor(task: dict[str, Any], session: RunnerSession) -> dict[s
         _pump(proc.stderr, "stderr"),
     )
     rc = await proc.wait()
-    status = "done" if rc == 0 else "failed"
+    status = "failed" if intent_error else ("done" if rc == 0 else "failed")
     return {
         "worker_id": session.runner_id,
         "status": status,
         "log_tail": "\n".join(log_lines[-50:]),
-        "error": None if rc == 0 else f"exit code {rc}",
+        "error": intent_error if intent_error else (None if rc == 0 else f"exit code {rc}"),
     }
 
 

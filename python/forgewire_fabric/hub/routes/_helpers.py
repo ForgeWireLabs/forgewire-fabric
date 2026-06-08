@@ -21,6 +21,41 @@ def signed_payload(payload: dict[str, Any]) -> bytes:
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
+
+def dispatch_v3_signed_payload(payload: Any) -> bytes:
+    """Canonical protocol-v3 dispatch envelope.
+
+    Protocol v3 signs every execution-semantic field, not just the
+    historic v2 core. Approval IDs remain outside the signed envelope so
+    an operator hold can be consumed after the original brief is approved.
+    """
+    body = {
+        "op": "dispatch",
+        "dispatcher_id": payload.dispatcher_id,
+        "title": payload.title,
+        "prompt": payload.prompt,
+        "scope_globs": list(payload.scope_globs),
+        "base_commit": payload.base_commit,
+        "branch": payload.branch,
+        "todo_id": payload.todo_id,
+        "timeout_minutes": payload.timeout_minutes,
+        "priority": payload.priority,
+        "metadata": payload.metadata,
+        "required_tools": payload.required_tools,
+        "required_tags": payload.required_tags,
+        "required_capabilities": payload.required_capabilities,
+        "secrets_needed": payload.secrets_needed,
+        "network_egress": payload.network_egress,
+        "tenant": payload.tenant,
+        "workspace_root": payload.workspace_root,
+        "require_base_commit": payload.require_base_commit,
+        "kind": payload.kind,
+        "max_cost_usd": payload.max_cost_usd,
+        "timestamp": payload.timestamp,
+        "nonce": payload.nonce,
+    }
+    return signed_payload(body)
+
 def check_skew(timestamp: int) -> None:
     now = int(time.time())
     if abs(now - int(timestamp)) > SIGNATURE_MAX_SKEW_SECONDS:
