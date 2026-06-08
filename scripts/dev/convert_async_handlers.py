@@ -15,7 +15,7 @@ def find_function_body(start: int) -> int:
     # Determine indent of `async def` line
     line = lines[start]
     indent = len(line) - len(line.lstrip())
-    body_indent = indent + 4
+    indent + 4
     i = start + 1
     while i < len(lines):
         ln = lines[i]
