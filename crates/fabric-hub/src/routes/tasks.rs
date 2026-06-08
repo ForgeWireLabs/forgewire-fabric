@@ -411,5 +411,11 @@ fn dispatch_params(p: &DispatchPayload, dispatcher_id: Option<&str>) -> CreateTa
         secrets_needed: p.secrets_needed.clone(),
         network_egress: p.network_egress.clone(),
         dispatcher_id: dispatcher_id.map(|s| s.to_owned()),
+        // Phase 2.8: dispatch discriminator carried by the brief lands in
+        // M2.8.2. For now (M2.8.1, schema-only landing) we pass None through
+        // — the rqlite column already exists, defaults to NULL, and the
+        // backfill query has retro-tagged existing kind='agent' rows as
+        // 'prompt'.
+        dispatch: None,
     }
 }

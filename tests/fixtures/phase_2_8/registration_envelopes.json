@@ -1,0 +1,170 @@
+{
+  "_comment": "Phase 2.8 M2.8.0 — registration envelope shapes. Field order and key names are byte-exact contract; canonical JSON re-serialization must sort keys alphabetically. See SPEC.md.",
+  "envelopes": [
+    {
+      "case": "fabric_only_claude_code",
+      "description": "An always-on Claude Code session registering as a Fabric runner with two MCP servers wired (filesystem + claude-skills).",
+      "registration": {
+        "runner_id": "runner-precision-claude",
+        "public_key": "0000000000000000000000000000000000000000000000000000000000000001",
+        "hostname": "DESKTOP-228U8GL",
+        "os": "windows-11",
+        "arch": "x86_64",
+        "cpu_model": "Intel Core i7-9700K",
+        "cpu_count": 8,
+        "ram_mb": 32768,
+        "gpu": "NVIDIA RTX 3070",
+        "tools": ["git", "python", "rustc", "cargo"],
+        "tags": ["forgewire:1"],
+        "scope_prefixes": [],
+        "tenant": null,
+        "workspace_root": "C:/Projects/forgewire",
+        "runner_version": "0.6.0-rust",
+        "protocol_version": 3,
+        "max_concurrent": 1,
+        "metadata": {"flavor": "claude-code-session"},
+        "timestamp": 1717851600,
+        "nonce": "deadbeef0000000000000000deadbeef",
+        "signature": "PLACEHOLDER_signed_envelope_for_test_only",
+        "kinds": ["agent"],
+        "agent_type": "claude-code",
+        "mcp_manifest": {
+          "schema_version": 1,
+          "servers": [
+            {
+              "server_id": "filesystem",
+              "tools": [
+                {"name": "read_file", "description": "Read file contents", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
+                {"name": "write_file", "description": "Write file contents", "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}}
+              ],
+              "resources": [
+                {"uri": "file:///C:/Projects/forgewire", "name": "forgewire repo root", "mime_type": "inode/directory"}
+              ],
+              "prompts": []
+            },
+            {
+              "server_id": "claude-skills",
+              "tools": [],
+              "resources": [],
+              "prompts": [
+                {"name": "code-review", "description": "Review the current diff for correctness", "arguments": [{"name": "effort", "required": false}, {"name": "focus", "required": false}]},
+                {"name": "debug", "description": "Diagnose a bug from a failing test", "arguments": [{"name": "test", "required": true}]}
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case": "loom_only_shell_executor",
+      "description": "OptiPlex Loom runner — pure shell executor, no LLM. No mcp_manifest, agent_type=null.",
+      "registration": {
+        "runner_id": "runner-optiplex-loom",
+        "public_key": "0000000000000000000000000000000000000000000000000000000000000002",
+        "hostname": "DESKTOP-38GVF8D",
+        "os": "windows-10",
+        "arch": "x86_64",
+        "cpu_model": "Intel Core i5-7500",
+        "cpu_count": 4,
+        "ram_mb": 16384,
+        "gpu": null,
+        "tools": ["git", "python", "node", "npm", "cargo", "rustc"],
+        "tags": ["forgewire:1"],
+        "scope_prefixes": [],
+        "tenant": null,
+        "workspace_root": "C:/Projects/forgewire",
+        "runner_version": "0.6.0-rust",
+        "protocol_version": 3,
+        "max_concurrent": 4,
+        "metadata": {"flavor": "loom-shell-executor"},
+        "timestamp": 1717851601,
+        "nonce": "feedface0000000000000000feedface",
+        "signature": "PLACEHOLDER_signed_envelope_for_test_only",
+        "kinds": ["command"],
+        "agent_type": null,
+        "mcp_manifest": null
+      }
+    },
+    {
+      "case": "both_kinds_combined_host",
+      "description": "A single physical box running both an agent runner and a Loom shell executor — registered once with kinds=[agent,command].",
+      "registration": {
+        "runner_id": "runner-combined-host",
+        "public_key": "0000000000000000000000000000000000000000000000000000000000000003",
+        "hostname": "FORGEWIRE-LAB",
+        "os": "linux-debian-12",
+        "arch": "x86_64",
+        "cpu_model": "AMD Ryzen 9 5950X",
+        "cpu_count": 32,
+        "ram_mb": 65536,
+        "gpu": "NVIDIA A6000",
+        "tools": ["git", "python", "cargo", "rustc", "docker", "pytest"],
+        "tags": ["forgewire:1", "lab:1"],
+        "scope_prefixes": [],
+        "tenant": null,
+        "workspace_root": "/srv/forgewire",
+        "runner_version": "0.6.0-rust",
+        "protocol_version": 3,
+        "max_concurrent": 8,
+        "metadata": {"flavor": "lab-combined"},
+        "timestamp": 1717851602,
+        "nonce": "cafebabe0000000000000000cafebabe",
+        "signature": "PLACEHOLDER_signed_envelope_for_test_only",
+        "kinds": ["agent", "command"],
+        "agent_type": "forgewire-orchestrator",
+        "mcp_manifest": {
+          "schema_version": 1,
+          "servers": [
+            {
+              "server_id": "git",
+              "tools": [
+                {"name": "git__commit", "description": "Create a git commit", "input_schema": {"type": "object", "properties": {"message": {"type": "string"}, "files": {"type": "array"}}, "required": ["message"]}},
+                {"name": "git__log", "description": "Show commit log", "input_schema": {"type": "object", "properties": {"limit": {"type": "integer"}}}}
+              ],
+              "resources": [],
+              "prompts": []
+            },
+            {
+              "server_id": "forgewire-personas",
+              "tools": [],
+              "resources": [],
+              "prompts": [
+                {"name": "persona:Researcher", "description": "Researcher persona", "arguments": []},
+                {"name": "persona:Engineer", "description": "Engineer persona", "arguments": []}
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "case": "legacy_v3_no_kinds",
+      "description": "Pre-2.8 runner that does not send the new fields. Hub backfills kinds=[agent], agent_type=null, mcp_manifest=null and emits legacy_runner_registration audit event.",
+      "registration": {
+        "runner_id": "runner-legacy-v3",
+        "public_key": "0000000000000000000000000000000000000000000000000000000000000004",
+        "hostname": "OLD-LAPTOP",
+        "os": "windows-10",
+        "arch": "x86_64",
+        "tools": ["git"],
+        "tags": ["forgewire:1"],
+        "scope_prefixes": [],
+        "tenant": null,
+        "workspace_root": null,
+        "runner_version": "0.5.0-rust",
+        "protocol_version": 3,
+        "max_concurrent": 1,
+        "metadata": {},
+        "timestamp": 1717851603,
+        "nonce": "00000000111111112222222233333333",
+        "signature": "PLACEHOLDER_signed_envelope_for_test_only"
+      },
+      "expected_after_backfill": {
+        "kinds": ["agent"],
+        "agent_type": null,
+        "mcp_manifest": null,
+        "mcp_manifest_version": 0
+      }
+    }
+  ]
+}

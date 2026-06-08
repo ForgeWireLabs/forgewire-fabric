@@ -64,6 +64,11 @@ pub struct CreateTaskParams {
     pub secrets_needed: Option<Vec<String>>,
     pub network_egress: Option<Value>,
     pub dispatcher_id: Option<String>,
+    /// Phase 2.8: agent-dispatch discriminator. NULL when kind=="command".
+    /// One of "skill" | "tool" | "prompt" when kind=="agent". Backward-compat:
+    /// missing on legacy briefs is backfilled to "prompt" by the hub.
+    #[serde(default)]
+    pub dispatch: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,6 +100,9 @@ pub struct TaskRow {
     pub secrets_needed: Option<Value>,
     pub network_egress: Option<Value>,
     pub dispatcher_id: Option<String>,
+    /// Phase 2.8: agent-dispatch discriminator. See `CreateTaskParams::dispatch`.
+    #[serde(default)]
+    pub dispatch: Option<String>,
 }
 
 /// Atomic claim result — either the task was claimed or someone else got it.
@@ -159,6 +167,27 @@ pub struct RunnerRow {
     pub last_heartbeat: String,
     pub first_seen: String,
     pub last_nonce: Option<String>,
+    /// Phase 2.8: hard runner-kind property. JSON array of "agent" | "command".
+    /// Backfilled to `["agent"]` for pre-2.8 rows. Replaces the tag-based
+    /// `kind:<x>` filter at routing time.
+    #[serde(default = "default_kinds")]
+    pub kinds: Value,
+    /// Phase 2.8: free-form agent type label (e.g. "claude-code", "vscode",
+    /// "forgewire-orchestrator"). NULL for Loom-only runners.
+    #[serde(default)]
+    pub agent_type: Option<String>,
+    /// Phase 2.8: full MCP manifest (tools / resources / prompts per server)
+    /// introspected from the runner's MCPServerRegistry. NULL for Loom-only
+    /// runners. See SPEC.md for the locked shape.
+    #[serde(default)]
+    pub mcp_manifest: Option<Value>,
+    /// Phase 2.8: monotonically increasing on each manifest change.
+    #[serde(default)]
+    pub mcp_manifest_version: i64,
+}
+
+fn default_kinds() -> Value {
+    serde_json::json!(["agent"])
 }
 
 #[async_trait]
@@ -472,6 +501,62 @@ pub trait BudgetStore: Send + Sync {
     async fn current_budget(&self, now: &str) -> StoreResult<CurrentBudget>;
 }
 
+// -- Runner capability index (M2.8.1, Phase 2.8) -----------------------------
+
+/// Normalized capability advertised by a Fabric runner. One row per
+/// `(runner_id, capability_kind, name)` derived from the runner's
+/// `mcp_manifest`. Used by the capability router to answer "which runners
+/// advertise tool X / prompt Y / resource URI Z?".
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RunnerCapabilityRow {
+    pub runner_id: String,
+    /// One of "tool" | "resource" | "prompt".
+    pub capability_kind: String,
+    /// Tool name, resource URI, or prompt name.
+    pub name: String,
+    /// `server_id` from the manifest's `servers[]` entry that supplied this
+    /// capability. Disambiguates multi-server manifests.
+    pub source_server: String,
+    pub description: Option<String>,
+    /// JSON blob carrying per-kind extras: tool `input_schema`, resource
+    /// `mime_type`, or prompt `arguments`.
+    #[serde(default)]
+    pub extra: Value,
+}
+
+#[async_trait]
+pub trait RunnerCapabilityStore: Send + Sync {
+    /// Atomically replace the full capability set for a runner. Pre-existing
+    /// rows for `runner_id` are deleted and the supplied `rows` inserted in a
+    /// single rqlite transaction. Used after `upsert_runner` so the index
+    /// never lags the manifest.
+    async fn replace_runner_capabilities(
+        &self,
+        runner_id: &str,
+        rows: &[RunnerCapabilityRow],
+        now: &str,
+    ) -> StoreResult<()>;
+
+    /// Capabilities currently advertised by `runner_id`.
+    async fn runner_capabilities(
+        &self,
+        runner_id: &str,
+    ) -> StoreResult<Vec<RunnerCapabilityRow>>;
+
+    /// Runners that advertise `name` under `capability_kind`. The capability
+    /// router intersects this set with the eligible-runner set when handling
+    /// `dispatch ∈ {"skill","tool"}` and `target.required_resources`.
+    async fn query_runners_by_capability(
+        &self,
+        capability_kind: &str,
+        name: &str,
+    ) -> StoreResult<Vec<String>>;
+
+    /// Wipe all capability rows for a runner — invoked when a runner is
+    /// deleted or transitions to Loom-only (`kinds = ["command"]`).
+    async fn delete_runner_capabilities(&self, runner_id: &str) -> StoreResult<()>;
+}
+
 // -- Composite trait ---------------------------------------------------------
 
 /// The full store contract. A backend implements all sub-traits.
@@ -493,6 +578,7 @@ pub trait FabricStore:
     + SchemaStore
     + CostStore
     + BudgetStore
+    + RunnerCapabilityStore
     + Send
     + Sync
 {

@@ -1,0 +1,136 @@
+{
+  "_comment": "Phase 2.8 M2.8.0 — task brief shapes for Loom + 3 Fabric dispatch variants. See SPEC.md.",
+  "briefs": [
+    {
+      "case": "loom_command_pytest",
+      "description": "Run pytest on a remote Loom host — streamed stdout/stderr, exit_code in result.",
+      "brief": {
+        "kind": "command",
+        "dispatch": null,
+        "title": "pytest -q tests/runner",
+        "command": ["pytest", "-q", "tests/runner"],
+        "cwd": "C:/Projects/forgewire",
+        "env": {"PYTHONIOENCODING": "utf-8"},
+        "stdin": null,
+        "timeout_seconds": 600,
+        "streaming": true,
+        "target": {
+          "host_alias": null,
+          "host_id": "runner-optiplex-loom",
+          "required_tools": ["pytest"],
+          "tenant": null
+        },
+        "metadata": {"dispatched_from": "claude-code-laptop"}
+      }
+    },
+    {
+      "case": "loom_command_cargo_build",
+      "description": "Build the fabric workspace on a remote Loom host. No host pin — any host with cargo eligible.",
+      "brief": {
+        "kind": "command",
+        "dispatch": null,
+        "title": "cargo build workspace",
+        "command": ["cargo", "build", "--workspace", "--release"],
+        "cwd": "C:/Projects/forgewire/forgewire-fabric",
+        "env": {"RUST_LOG": "info"},
+        "stdin": null,
+        "timeout_seconds": 1800,
+        "streaming": true,
+        "target": {
+          "host_alias": null,
+          "host_id": null,
+          "required_tools": ["cargo", "rustc"],
+          "tenant": null
+        },
+        "metadata": {}
+      }
+    },
+    {
+      "case": "fabric_skill_code_review",
+      "description": "Dispatch a code-review skill to any agent that advertises it. Capability router intersects with runner_capabilities WHERE kind='prompt' AND name='code-review'.",
+      "brief": {
+        "kind": "agent",
+        "dispatch": "skill",
+        "skill": "code-review",
+        "args": {"effort": "high", "focus": "src/hub/routes.rs"},
+        "context": {
+          "repo": "forgewire",
+          "base_commit": "4a7b96be1",
+          "branch": "main",
+          "scope_globs": ["src/hub/**"]
+        },
+        "target": {
+          "agent_type": null,
+          "runner_id": null,
+          "required_tools": [],
+          "required_resources": [],
+          "tenant": null
+        },
+        "metadata": {}
+      }
+    },
+    {
+      "case": "fabric_tool_git_commit",
+      "description": "Dispatch a git__commit tool call to any agent that advertises it.",
+      "brief": {
+        "kind": "agent",
+        "dispatch": "tool",
+        "tool": "git__commit",
+        "input": {"message": "feat: phase 2.8 schema v4", "files": ["crates/fabric-store/src/lib.rs"]},
+        "context": {
+          "repo": "forgewire",
+          "base_commit": "4a7b96be1",
+          "branch": "main",
+          "scope_globs": ["crates/fabric-store/**"]
+        },
+        "target": {
+          "agent_type": null,
+          "runner_id": null,
+          "required_tools": [],
+          "required_resources": [],
+          "tenant": null
+        },
+        "metadata": {}
+      }
+    },
+    {
+      "case": "fabric_prompt_freeform",
+      "description": "Fallback freeform prompt dispatch — no skill/tool discriminator. Existing Phase 2.5 behavior preserved.",
+      "brief": {
+        "kind": "agent",
+        "dispatch": "prompt",
+        "title": "Investigate flaky cluster test",
+        "prompt": "Investigate why test_cluster_quorum_loss is intermittently failing. Reproduce locally, identify the race, propose a fix.",
+        "context": {
+          "repo": "forgewire",
+          "base_commit": "4a7b96be1",
+          "branch": "main",
+          "scope_globs": ["tests/cluster/**", "crates/fabric-hub/**"]
+        },
+        "target": {
+          "agent_type": "claude-code",
+          "runner_id": null,
+          "required_tools": [],
+          "required_resources": [],
+          "tenant": null
+        },
+        "metadata": {}
+      }
+    },
+    {
+      "case": "legacy_v3_no_kind",
+      "description": "Pre-2.8 brief missing kind/dispatch. Hub treats as kind=agent + dispatch=prompt and emits legacy_dispatch_shape audit event.",
+      "brief": {
+        "title": "Old-style dispatch",
+        "prompt": "Some intent...",
+        "scope_globs": ["src/**"],
+        "base_commit": "4a7b96be1",
+        "branch": "main"
+      },
+      "expected_after_backfill": {
+        "kind": "agent",
+        "dispatch": "prompt"
+      }
+    }
+  ]
+}

@@ -1,0 +1,115 @@
+{
+  "_comment": "Phase 2.8 M2.8.0 — capability router decision fixtures. Pre-state is `runners` + `runner_capabilities` rows; brief drives routing; expected is the runner_id picked (or the deny reason). Implementation reference: M2.8.2 fabric-claim-router extension.",
+  "pre_state": {
+    "runners": [
+      {"runner_id": "agent-A", "kinds": ["agent"],            "agent_type": "claude-code",   "tenant": null,    "drain_requested": false, "load": 0, "scope_prefixes": []},
+      {"runner_id": "agent-B", "kinds": ["agent"],            "agent_type": "vscode",        "tenant": null,    "drain_requested": false, "load": 1, "scope_prefixes": []},
+      {"runner_id": "agent-C", "kinds": ["agent"],            "agent_type": "claude-code",   "tenant": "acme",  "drain_requested": false, "load": 0, "scope_prefixes": []},
+      {"runner_id": "agent-D", "kinds": ["agent"],            "agent_type": "claude-code",   "tenant": null,    "drain_requested": true,  "load": 0, "scope_prefixes": []},
+      {"runner_id": "loom-X",  "kinds": ["command"],          "agent_type": null,            "tenant": null,    "drain_requested": false, "load": 0, "scope_prefixes": []},
+      {"runner_id": "loom-Y",  "kinds": ["command"],          "agent_type": null,            "tenant": null,    "drain_requested": false, "load": 2, "scope_prefixes": []},
+      {"runner_id": "combo-Z", "kinds": ["agent","command"],  "agent_type": "hermes",        "tenant": null,    "drain_requested": false, "load": 0, "scope_prefixes": []}
+    ],
+    "runner_capabilities": [
+      {"runner_id": "agent-A",  "capability_kind": "prompt", "name": "code-review",     "source_server": "claude-skills"},
+      {"runner_id": "agent-A",  "capability_kind": "tool",   "name": "git__commit",     "source_server": "git"},
+      {"runner_id": "agent-B",  "capability_kind": "prompt", "name": "code-review",     "source_server": "vscode-skills"},
+      {"runner_id": "agent-C",  "capability_kind": "prompt", "name": "code-review",     "source_server": "claude-skills"},
+      {"runner_id": "agent-D",  "capability_kind": "prompt", "name": "code-review",     "source_server": "claude-skills"},
+      {"runner_id": "combo-Z",  "capability_kind": "prompt", "name": "debug",           "source_server": "hermes-skills"},
+      {"runner_id": "combo-Z",  "capability_kind": "tool",   "name": "shell__exec",     "source_server": "shell"},
+      {"runner_id": "agent-A",  "capability_kind": "resource","name": "file:///srv/data","source_server": "filesystem"}
+    ]
+  },
+  "decisions": [
+    {
+      "case": "skill_single_match",
+      "brief": {"kind": "agent", "dispatch": "tool", "tool": "git__commit"},
+      "expected": {"runner_id": "agent-A"}
+    },
+    {
+      "case": "skill_multi_match_tiebreak_by_load",
+      "brief": {"kind": "agent", "dispatch": "skill", "skill": "code-review"},
+      "eligible": ["agent-A", "agent-B"],
+      "expected": {"runner_id": "agent-A", "reason": "least_loaded_among_eligible"}
+    },
+    {
+      "case": "skill_no_runner_advertises",
+      "brief": {"kind": "agent", "dispatch": "skill", "skill": "no-such-skill"},
+      "expected": {"deny_reason": "no_runner_advertises_capability", "requested": {"capability_kind": "prompt", "name": "no-such-skill"}}
+    },
+    {
+      "case": "skill_drained_runner_excluded",
+      "brief": {"kind": "agent", "dispatch": "skill", "skill": "code-review", "target": {"runner_id": "agent-D"}},
+      "expected": {"deny_reason": "runner_drained"}
+    },
+    {
+      "case": "skill_tenant_filter_includes_only_acme",
+      "brief": {"kind": "agent", "dispatch": "skill", "skill": "code-review", "target": {"tenant": "acme"}},
+      "expected": {"runner_id": "agent-C"}
+    },
+    {
+      "case": "skill_tenant_filter_no_match",
+      "brief": {"kind": "agent", "dispatch": "skill", "skill": "code-review", "target": {"tenant": "wonka"}},
+      "expected": {"deny_reason": "no_eligible_runner", "filtered_by": "tenant"}
+    },
+    {
+      "case": "skill_agent_type_pin",
+      "brief": {"kind": "agent", "dispatch": "skill", "skill": "code-review", "target": {"agent_type": "vscode"}},
+      "expected": {"runner_id": "agent-B"}
+    },
+    {
+      "case": "skill_runner_id_pin_wins_over_load",
+      "brief": {"kind": "agent", "dispatch": "skill", "skill": "code-review", "target": {"runner_id": "agent-B"}},
+      "expected": {"runner_id": "agent-B"}
+    },
+    {
+      "case": "skill_required_resource_intersect",
+      "brief": {"kind": "agent", "dispatch": "skill", "skill": "code-review", "target": {"required_resources": ["file:///srv/data"]}},
+      "expected": {"runner_id": "agent-A", "reason": "only_runner_with_required_resource"}
+    },
+    {
+      "case": "skill_must_not_route_to_loom_only_runner",
+      "brief": {"kind": "agent", "dispatch": "skill", "skill": "code-review", "target": {"runner_id": "loom-X"}},
+      "expected": {"deny_reason": "runner_kind_mismatch", "expected_kind": "agent"}
+    },
+    {
+      "case": "tool_dispatch_picks_capable_runner",
+      "brief": {"kind": "agent", "dispatch": "tool", "tool": "shell__exec"},
+      "expected": {"runner_id": "combo-Z"}
+    },
+    {
+      "case": "prompt_dispatch_skips_capability_filter",
+      "brief": {"kind": "agent", "dispatch": "prompt", "target": {"agent_type": "claude-code"}},
+      "eligible": ["agent-A", "agent-C", "agent-D"],
+      "expected": {"runner_id": "agent-A", "reason": "least_loaded_among_eligible_after_drain_and_tenant_filter"}
+    },
+    {
+      "case": "loom_command_routes_to_loom_queue",
+      "brief": {"kind": "command", "command": ["echo", "hi"], "target": {"required_tools": []}},
+      "eligible": ["loom-X", "loom-Y", "combo-Z"],
+      "expected": {"runner_id": "loom-X", "reason": "least_loaded_among_loom_kind"}
+    },
+    {
+      "case": "loom_command_host_id_pin",
+      "brief": {"kind": "command", "command": ["echo", "hi"], "target": {"host_id": "loom-Y"}},
+      "expected": {"runner_id": "loom-Y"}
+    },
+    {
+      "case": "loom_command_required_tool_filter",
+      "brief": {"kind": "command", "command": ["cargo", "build"], "target": {"required_tools": ["cargo"]}},
+      "note": "All loom runners in this fixture advertise tools=[]; capability filter rejects all → no_eligible_runner.",
+      "expected": {"deny_reason": "no_eligible_runner", "filtered_by": "required_tools"}
+    },
+    {
+      "case": "loom_command_must_not_route_to_agent_only_runner",
+      "brief": {"kind": "command", "command": ["echo", "hi"], "target": {"host_id": "agent-A"}},
+      "expected": {"deny_reason": "runner_kind_mismatch", "expected_kind": "command"}
+    },
+    {
+      "case": "skill_combo_runner_eligible_for_agent_kind",
+      "brief": {"kind": "agent", "dispatch": "skill", "skill": "debug"},
+      "expected": {"runner_id": "combo-Z"}
+    }
+  ]
+}

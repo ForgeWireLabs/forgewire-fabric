@@ -1,0 +1,62 @@
+{
+  "_comment": "Phase 2.8 M2.8.0 — schema v3 → v4 backfill rules. Given the pre-migration row state, the post-migration projection must match exactly. See SPEC.md.",
+  "runners": [
+    {
+      "case": "legacy_agent_runner_with_kind_agent_tag",
+      "pre": {
+        "runner_id": "r-legacy-agent",
+        "tags": ["forgewire:1", "kind:agent", "persona:Engineer"]
+      },
+      "post": {
+        "runner_id": "r-legacy-agent",
+        "tags": ["forgewire:1", "kind:agent", "persona:Engineer"],
+        "kinds": ["agent"],
+        "agent_type": null,
+        "mcp_manifest": null,
+        "mcp_manifest_version": 0
+      }
+    },
+    {
+      "case": "legacy_loom_runner_with_kind_command_tag",
+      "pre": {
+        "runner_id": "r-legacy-loom",
+        "tags": ["forgewire:1", "kind:command"]
+      },
+      "post": {
+        "runner_id": "r-legacy-loom",
+        "tags": ["forgewire:1", "kind:command"],
+        "kinds": ["command"],
+        "agent_type": null,
+        "mcp_manifest": null,
+        "mcp_manifest_version": 0
+      }
+    },
+    {
+      "case": "legacy_runner_no_kind_tag_at_all",
+      "pre": {
+        "runner_id": "r-legacy-untagged",
+        "tags": ["forgewire:1"]
+      },
+      "post": {
+        "runner_id": "r-legacy-untagged",
+        "tags": ["forgewire:1"],
+        "kinds": ["agent"],
+        "agent_type": null,
+        "mcp_manifest": null,
+        "mcp_manifest_version": 0
+      }
+    }
+  ],
+  "tasks": [
+    {
+      "case": "legacy_agent_task_becomes_prompt_dispatch",
+      "pre": {"id": 101, "kind": "agent"},
+      "post": {"id": 101, "kind": "agent", "dispatch": "prompt"}
+    },
+    {
+      "case": "legacy_command_task_no_dispatch",
+      "pre": {"id": 102, "kind": "command"},
+      "post": {"id": 102, "kind": "command", "dispatch": null}
+    }
+  ]
+}

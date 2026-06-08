@@ -1,0 +1,100 @@
+{
+  "_comment": "Phase 2.8 M2.8.0 — manifest → normalized runner_capabilities rows. Drives the pure-function `mcp_manifest::normalize_manifest_to_rows` test in fabric-store-rqlite. See SPEC.md normalization rules.",
+  "cases": [
+    {
+      "case": "fabric_only_claude_code_projection",
+      "runner_id": "runner-precision-claude",
+      "manifest": {
+        "schema_version": 1,
+        "servers": [
+          {
+            "server_id": "filesystem",
+            "tools": [
+              {"name": "read_file", "description": "Read file contents", "input_schema": {"type": "object"}},
+              {"name": "write_file", "description": "Write file contents", "input_schema": {"type": "object"}}
+            ],
+            "resources": [
+              {"uri": "file:///C:/Projects/forgewire", "name": "forgewire repo root", "mime_type": "inode/directory"}
+            ],
+            "prompts": []
+          },
+          {
+            "server_id": "claude-skills",
+            "tools": [],
+            "resources": [],
+            "prompts": [
+              {"name": "code-review", "description": "Review the current diff", "arguments": []},
+              {"name": "debug", "description": "Diagnose a bug", "arguments": []}
+            ]
+          }
+        ]
+      },
+      "expected_rows": [
+        {"runner_id": "runner-precision-claude", "capability_kind": "tool",     "name": "read_file",                            "source_server": "filesystem",    "description": "Read file contents"},
+        {"runner_id": "runner-precision-claude", "capability_kind": "tool",     "name": "write_file",                           "source_server": "filesystem",    "description": "Write file contents"},
+        {"runner_id": "runner-precision-claude", "capability_kind": "resource", "name": "file:///C:/Projects/forgewire",        "source_server": "filesystem",    "description": "forgewire repo root"},
+        {"runner_id": "runner-precision-claude", "capability_kind": "prompt",   "name": "code-review",                          "source_server": "claude-skills", "description": "Review the current diff"},
+        {"runner_id": "runner-precision-claude", "capability_kind": "prompt",   "name": "debug",                                "source_server": "claude-skills", "description": "Diagnose a bug"}
+      ]
+    },
+    {
+      "case": "loom_only_no_projection",
+      "runner_id": "runner-optiplex-loom",
+      "manifest": null,
+      "expected_rows": []
+    },
+    {
+      "case": "empty_manifest_no_projection",
+      "runner_id": "runner-empty",
+      "manifest": {"schema_version": 1, "servers": []},
+      "expected_rows": []
+    },
+    {
+      "case": "multi_server_collision_first_wins",
+      "runner_id": "runner-collision",
+      "manifest": {
+        "schema_version": 1,
+        "servers": [
+          {"server_id": "server-a", "tools": [{"name": "git__commit", "description": "from server-a", "input_schema": {}}], "resources": [], "prompts": []},
+          {"server_id": "server-b", "tools": [{"name": "git__commit", "description": "from server-b", "input_schema": {}}], "resources": [], "prompts": []}
+        ]
+      },
+      "expected_rows": [
+        {"runner_id": "runner-collision", "capability_kind": "tool", "name": "git__commit", "source_server": "server-a", "description": "from server-a"}
+      ]
+    },
+    {
+      "case": "combined_host_full_projection",
+      "runner_id": "runner-combined-host",
+      "manifest": {
+        "schema_version": 1,
+        "servers": [
+          {
+            "server_id": "git",
+            "tools": [
+              {"name": "git__commit", "description": "Create a git commit", "input_schema": {"type": "object"}},
+              {"name": "git__log", "description": "Show commit log", "input_schema": {"type": "object"}}
+            ],
+            "resources": [],
+            "prompts": []
+          },
+          {
+            "server_id": "forgewire-personas",
+            "tools": [],
+            "resources": [],
+            "prompts": [
+              {"name": "persona:Researcher", "description": "Researcher persona", "arguments": []},
+              {"name": "persona:Engineer", "description": "Engineer persona", "arguments": []}
+            ]
+          }
+        ]
+      },
+      "expected_rows": [
+        {"runner_id": "runner-combined-host", "capability_kind": "tool",   "name": "git__commit",        "source_server": "git",                "description": "Create a git commit"},
+        {"runner_id": "runner-combined-host", "capability_kind": "tool",   "name": "git__log",           "source_server": "git",                "description": "Show commit log"},
+        {"runner_id": "runner-combined-host", "capability_kind": "prompt", "name": "persona:Researcher", "source_server": "forgewire-personas", "description": "Researcher persona"},
+        {"runner_id": "runner-combined-host", "capability_kind": "prompt", "name": "persona:Engineer",   "source_server": "forgewire-personas", "description": "Engineer persona"}
+      ]
+    }
+  ]
+}
