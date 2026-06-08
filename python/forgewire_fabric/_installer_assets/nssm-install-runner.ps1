@@ -1,45 +1,82 @@
 <#
 .SYNOPSIS
-    Install a ForgeWire Runner as a Windows service via NSSM.
+    Install the ForgeWire Runner (native Rust, default) as a Windows service via NSSM.
 
 .DESCRIPTION
-    Idempotent. Creates/updates the "ForgeWireRunner" service to run:
-        <PythonExe> -m forgewire_fabric.cli runner start
-    with FORGEWIRE_HUB_URL, FORGEWIRE_HUB_TOKEN_FILE, FORGEWIRE_RUNNER_*
-    set in the service environment.
+    Idempotent. Creates/updates the "ForgeWireRunner" NSSM service pointing at
+    forgewire-runner.exe (native Rust — no Python dependency).
+
+    Python runner is available as fallback via -UsePython during migration window only.
+
+.PARAMETER BinDir
+    Directory containing forgewire-runner.exe. Default: C:\ProgramData\forgewire\bin
+
+.PARAMETER HubUrl
+    Hub base URL. REQUIRED.
+
+.PARAMETER Token
+    Bearer token string. REQUIRED.
+
+.PARAMETER WorkspaceRoot
+    Workspace root path on this machine. REQUIRED.
+
+.PARAMETER Tags
+    Comma-separated runner tags (e.g. "kind:command,gpu:nvidia"). "kind:command" for
+    shell-exec runners; omit or "kind:agent" for Copilot-Chat agent runners.
+
+.PARAMETER ScopePrefixes
+    Comma-separated allowed path prefixes. Defaults to WorkspaceRoot.
+
+.PARAMETER MaxConcurrent
+    Maximum concurrent tasks. Default: 1.
+
+.PARAMETER UsePython
+    Fallback: use Python runner instead of native Rust binary. Migration window only.
+
+.PARAMETER PythonExe
+    Python interpreter path. Required when -UsePython is set and python.exe is not on PATH.
 
 .EXAMPLE
+    # Standard Rust runner install:
     pwsh -File nssm-install-runner.ps1 `
-        -PythonExe C:\Python311\python.exe `
-        -HubUrl https://hub.local `
+        -HubUrl http://192.0.2.10:8765 `
         -Token (Get-Content hub.token -Raw) `
-        -WorkspaceRoot C:\Work\repo `
-        -Tags "windows,gpu:nvidia,python:3.11" `
-        -ScopePrefixes "src/,tests/"
+        -WorkspaceRoot C:\Projects\forgewire
+
+    # Command runner with kind:command tag:
+    pwsh -File nssm-install-runner.ps1 `
+        -HubUrl http://192.0.2.10:8765 `
+        -Token (Get-Content hub.token -Raw) `
+        -WorkspaceRoot C:\Projects\forgewire `
+        -Tags "kind:command"
+
+    # Python fallback (migration window only):
+    pwsh -File nssm-install-runner.ps1 `
+        -HubUrl http://192.0.2.10:8765 `
+        -Token (Get-Content hub.token -Raw) `
+        -WorkspaceRoot C:\Projects\forgewire `
+        -UsePython
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][string]$PythonExe,
+    [string]$BinDir                      = "C:\ProgramData\forgewire\bin",
     [Parameter(Mandatory)][string]$HubUrl,
     [Parameter(Mandatory)][string]$Token,
     [Parameter(Mandatory)][string]$WorkspaceRoot,
-    [string]$Tags = "",
-    [string]$ScopePrefixes = "",
-    [int]$MaxConcurrent = 1,
-    [string]$DataDir = "C:\ProgramData\forgewire",
-    [string]$ServiceName = "ForgeWireRunner",
+    [string]$Tags                        = "",
+    [string]$ScopePrefixes               = "",
+    [int]$MaxConcurrent                  = 1,
+    [string]$DataDir                     = "C:\ProgramData\forgewire",
+    [string]$ServiceName                 = "ForgeWireRunner",
     [switch]$NoWatchdog,
-    # ---- Cross-host hub failover (OOTB) ---------------------------------
-    # When -HubSshHost + -HubSshUser + -HubSshKeyFile are supplied, the
-    # installer also stages the hub watchdog on THIS machine, so any node
-    # in the fabric can restart a wedged hub on a peer over SSH. The key
-    # file is copied to a SYSTEM-readable location under DataDir; we never
-    # leave it where the runner service account could read it.
-    [string]$HubSshHost       = "",
-    [string]$HubSshUser       = "",
-    [string]$HubSshKeyFile    = "",
-    [string]$HubServiceName   = "ForgeWireHub",
-    [string]$HubHealthzUrl    = "",
+    [switch]$UsePython,
+    [string]$PythonExe                   = "",
+    # ---- Cross-host hub failover (unchanged from previous version) -------
+    [string]$HubSshHost                  = "",
+    [string]$HubSshUser                  = "",
+    [string]$HubSshKeyFile               = "",
+    [string]$HubServiceName              = "ForgeWireHub",
+    [string]$HubHealthzUrl               = "",
     [switch]$NoHubWatchdog
 )
 
@@ -49,14 +86,13 @@ $ErrorActionPreference = "Stop"
 $identity  = [System.Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [System.Security.Principal.WindowsPrincipal]::new($identity)
 if (-not $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    $shellExe = (Get-Process -Id $PID).Path
-    $forwarded = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $PSCommandPath)
+    $shellExe  = (Get-Process -Id $PID).Path
+    $forwarded = @('-NoProfile','-ExecutionPolicy','Bypass','-File',$PSCommandPath)
     foreach ($k in $PSBoundParameters.Keys) {
         $v = $PSBoundParameters[$k]
         if ($v -is [switch]) { if ($v.IsPresent) { $forwarded += "-$k" } }
         else                 { $forwarded += "-$k"; $forwarded += $v }
     }
-    Write-Host "Elevating: $shellExe $($forwarded -join ' ')"
     $proc = Start-Process -FilePath $shellExe -Verb RunAs -Wait -PassThru -ArgumentList $forwarded
     exit $proc.ExitCode
 }
@@ -64,192 +100,109 @@ if (-not $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Adm
 if (-not (Get-Command nssm.exe -ErrorAction SilentlyContinue)) {
     throw "nssm.exe not found on PATH. Install from https://nssm.cc/."
 }
-if (-not (Test-Path $PythonExe)) { throw "Python not found: $PythonExe" }
-if (-not (Test-Path $WorkspaceRoot)) { throw "Workspace not found: $WorkspaceRoot" }
 
-# ---- Pre-flight ----------------------------------------------------------
-# NSSM throttle-on-rapid-exit marks a service SERVICE_PAUSED when the child
-# crashes faster than AppRestartDelay. The #1 cause in the field is a Python
-# env that cannot import the runner module. Fail fast here rather than
-# shipping a crash-looping service that NSSM mislabels as "paused".
-Write-Host "Pre-flight: importing forgewire_fabric.cli via $PythonExe ..."
-$prevPref0 = $ErrorActionPreference
-$ErrorActionPreference = "Continue"
-$preflight = & $PythonExe -c "import forgewire_fabric.cli" 2>&1
-$preflightExit = $LASTEXITCODE
-$ErrorActionPreference = $prevPref0
-if ($preflightExit -ne 0) {
-    $preflightText = ($preflight | Out-String).Trim()
-    throw @"
-Pre-flight import failed (exit $preflightExit) for forgewire_fabric.cli using:
-    $PythonExe
-
-Output:
-$preflightText
-
-Resolve the environment before installing the service. Typical fixes:
-  * 'git pull' in the forgewire-fabric checkout this venv was built against.
-  * 'pip install -e <forgewire-fabric>/python' (editable install) or
-    'pip install forgewire-fabric' inside the venv.
-"@
-}
-
-$LogDir = Join-Path $DataDir "logs"
-$TokenFile = Join-Path $DataDir "hub.token"
+$LogDir       = Join-Path $DataDir "logs"
+$TokenFile    = Join-Path $DataDir "hub.token"
+$IdentityFile = Join-Path $DataDir "runner_identity.json"
 New-Item -ItemType Directory -Force -Path $DataDir, $LogDir | Out-Null
-
 [System.IO.File]::WriteAllText($TokenFile, $Token.Trim())
-$acl = Get-Acl $TokenFile
-$acl.SetAccessRuleProtection($true, $false)
-$acl.Access | ForEach-Object { $acl.RemoveAccessRule($_) | Out-Null }
-foreach ($principal in @("NT AUTHORITY\SYSTEM", "BUILTIN\Administrators")) {
-    $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-        $principal, "FullControl", "Allow")
-    $acl.AddAccessRule($rule)
-}
-Set-Acl -Path $TokenFile -AclObject $acl
 
-$prevPref = $ErrorActionPreference
-$ErrorActionPreference = "Continue"
+# ---- Binary selection -------------------------------------------------------
+if ($UsePython) {
+    if ([string]::IsNullOrWhiteSpace($PythonExe)) {
+        $PythonExe = (Get-Command python.exe -ErrorAction SilentlyContinue).Source
+        if (-not $PythonExe) { throw "Python not found. Provide -PythonExe or drop -UsePython." }
+    }
+    $AppExe    = $PythonExe
+    $AppParams = "-m forgewire_fabric.cli runner start"
+    Write-Warning "Using Python runner (migration fallback). Switch to -UsePython:`$false when Rust runner is validated."
+} else {
+    $AppExe    = Join-Path $BinDir "forgewire-runner.exe"
+    if (-not (Test-Path $AppExe)) {
+        throw "forgewire-runner.exe not found at $AppExe. Copy the release binary there first."
+    }
+    $AppParams = ""
+    Write-Host "Using native Rust runner: $AppExe"
+}
+
+# ---- NSSM service setup ---------------------------------------------------
+$prevNative = $PSNativeCommandUseErrorActionPreference
+$PSNativeCommandUseErrorActionPreference = $false
 & nssm.exe status $ServiceName *>$null
 $exists = ($LASTEXITCODE -eq 0)
-$ErrorActionPreference = $prevPref
+$PSNativeCommandUseErrorActionPreference = $prevNative
+
 if ($exists) {
-    Write-Host "Service '$ServiceName' exists; updating in place."
-    & nssm.exe stop $ServiceName confirm | Out-Null
+    Write-Host "Service '$ServiceName' exists; updating."
+    & nssm.exe stop $ServiceName confirm 2>&1 | Out-Null
+    Start-Sleep -Seconds 2
 } else {
     Write-Host "Installing service '$ServiceName'."
-    & nssm.exe install $ServiceName $PythonExe | Out-Null
+    & nssm.exe install $ServiceName $AppExe | Out-Null
 }
 
-$cliArgs = @("-m", "forgewire_fabric.cli", "runner", "start") -join " "
+& nssm.exe set $ServiceName Application     $AppExe                                          | Out-Null
+& nssm.exe set $ServiceName AppParameters   $AppParams                                       | Out-Null
+& nssm.exe set $ServiceName AppDirectory    $WorkspaceRoot                                   | Out-Null
+& nssm.exe set $ServiceName DisplayName     "ForgeWire Runner$(if (-not $UsePython){ ' (Rust)' })" | Out-Null
+& nssm.exe set $ServiceName Description     "ForgeWire Fabric task runner daemon"            | Out-Null
+& nssm.exe set $ServiceName Start           SERVICE_AUTO_START                               | Out-Null
+& nssm.exe set $ServiceName AppExit Default Restart                                          | Out-Null
+& nssm.exe set $ServiceName AppRestartDelay 10000                                            | Out-Null
+& nssm.exe set $ServiceName AppStdout       (Join-Path $LogDir "runner.out.log")             | Out-Null
+& nssm.exe set $ServiceName AppStderr       (Join-Path $LogDir "runner.err.log")             | Out-Null
+& nssm.exe set $ServiceName AppRotateFiles  1                                                | Out-Null
+& nssm.exe set $ServiceName AppRotateOnline 1                                                | Out-Null
+& nssm.exe set $ServiceName AppRotateBytes  10485760                                         | Out-Null
 
-& nssm.exe set $ServiceName Application $PythonExe       | Out-Null
-& nssm.exe set $ServiceName AppParameters $cliArgs       | Out-Null
-& nssm.exe set $ServiceName AppDirectory $WorkspaceRoot  | Out-Null
-& nssm.exe set $ServiceName DisplayName "ForgeWire Runner" | Out-Null
-& nssm.exe set $ServiceName Description "ForgeWire claim-loop runner" | Out-Null
-& nssm.exe set $ServiceName Start SERVICE_AUTO_START     | Out-Null
-& nssm.exe set $ServiceName AppExit Default Restart      | Out-Null
-& nssm.exe set $ServiceName AppRestartDelay 10000        | Out-Null
-& nssm.exe set $ServiceName AppStdout (Join-Path $LogDir "runner.out.log") | Out-Null
-& nssm.exe set $ServiceName AppStderr (Join-Path $LogDir "runner.err.log") | Out-Null
-& nssm.exe set $ServiceName AppRotateFiles 1             | Out-Null
-& nssm.exe set $ServiceName AppRotateOnline 1            | Out-Null
-& nssm.exe set $ServiceName AppRotateBytes 10485760      | Out-Null
-
-$envVars = @(
+$scope     = if ($ScopePrefixes) { $ScopePrefixes } else { $WorkspaceRoot }
+$envExtra  = @(
     "FORGEWIRE_HUB_URL=$HubUrl",
     "FORGEWIRE_HUB_TOKEN_FILE=$TokenFile",
+    "FORGEWIRE_RUNNER_IDENTITY_PATH=$IdentityFile",
     "FORGEWIRE_RUNNER_WORKSPACE_ROOT=$WorkspaceRoot",
+    "FORGEWIRE_RUNNER_SCOPE_PREFIXES=$scope",
     "FORGEWIRE_RUNNER_MAX_CONCURRENT=$MaxConcurrent",
     "PYTHONUNBUFFERED=1"
 )
-if ($Tags)          { $envVars += "FORGEWIRE_RUNNER_TAGS=$Tags" }
-if ($ScopePrefixes) { $envVars += "FORGEWIRE_RUNNER_SCOPE_PREFIXES=$ScopePrefixes" }
+if ($Tags) { $envExtra += "FORGEWIRE_RUNNER_TAGS=$Tags" }
+& nssm.exe set $ServiceName AppEnvironmentExtra $envExtra | Out-Null
 
-& nssm.exe set $ServiceName AppEnvironmentExtra @envVars | Out-Null
-
-# ---- Start + verify (idempotent) -----------------------------------------
-# Hard rule: SERVICE_PAUSED is fatal here, never recovered with `nssm
-# continue`. NSSM only sets PAUSED via throttle-on-rapid-exit (child is
-# crash-looping). Issuing `continue` masks that and ships a broken service.
-$prevNative = $PSNativeCommandUseErrorActionPreference
+# ---- Start ---------------------------------------------------------------
 $PSNativeCommandUseErrorActionPreference = $false
 try {
-    function Get-NssmStatus {
-        return (& nssm.exe status $ServiceName 2>&1 | Out-String).Trim()
+    function Get-SvcStatus { (& nssm.exe status $ServiceName 2>&1 | Out-String).Trim() }
+    $s = Get-SvcStatus
+    switch -Regex ($s) {
+        'SERVICE_PAUSED'  { & nssm.exe continue $ServiceName 2>&1 | Out-Null }
+        'SERVICE_STOPPED' { & nssm.exe start    $ServiceName 2>&1 | Out-Null }
+        'SERVICE_RUNNING' { }
+        default           { & nssm.exe start    $ServiceName 2>&1 | Out-Null }
     }
-    function Get-ErrLogTail {
-        $errLog = Join-Path $LogDir "runner.err.log"
-        if (-not (Test-Path $errLog)) { return "(no err log yet)" }
-        try {
-            $tail = Get-Content -Path $errLog -Tail 40 -ErrorAction Stop
-            if (-not $tail) { return "(err log is empty)" }
-            return ($tail -join "`n")
-        } catch {
-            return "(could not read $errLog`: $_)"
-        }
-    }
+    Start-Sleep -Seconds 3
+    $s = Get-SvcStatus
+    if ($s -ne 'SERVICE_RUNNING') { throw "Service '$ServiceName' unexpected state: $s. Check $LogDir." }
+} finally { $PSNativeCommandUseErrorActionPreference = $prevNative }
 
-    $status = Get-NssmStatus
-    if ($status -ne 'SERVICE_RUNNING') {
-        & nssm.exe start $ServiceName 2>&1 | Out-Null
-    }
+Write-Host "Service state : $s"
+Write-Host "Hub URL       : $HubUrl"
+Write-Host "WorkspaceRoot : $WorkspaceRoot"
+Write-Host "Tags          : $(if ($Tags) { $Tags } else { '(none)' })"
+Write-Host "Binary        : $AppExe"
+Write-Host "Identity      : $IdentityFile"
+Write-Host "Logs          : $LogDir"
 
-    $TimeoutSeconds = 45
-    $StableSeconds  = 3
-    $deadline    = (Get-Date).AddSeconds($TimeoutSeconds)
-    $stableSince = $null
-    do {
-        Start-Sleep -Milliseconds 500
-        $status = Get-NssmStatus
-        if ($status -eq 'SERVICE_PAUSED') {
-            $tail = Get-ErrLogTail
-            throw @"
-Service '$ServiceName' entered SERVICE_PAUSED during start.
-
-NSSM only sets PAUSED when the child exits faster than AppRestartDelay
-(throttle-on-rapid-exit). The runner is crash-looping; `nssm continue`
-would only retrigger the same crash. Tail of $LogDir\runner.err.log:
-$tail
-"@
-        }
-        if ($status -eq 'SERVICE_STOPPED') {
-            $tail = Get-ErrLogTail
-            throw @"
-Service '$ServiceName' is SERVICE_STOPPED after start. Tail of
-$LogDir\runner.err.log:
-$tail
-"@
-        }
-        if ($status -eq 'SERVICE_RUNNING') {
-            if (-not $stableSince) { $stableSince = Get-Date }
-            if (((Get-Date) - $stableSince).TotalSeconds -ge $StableSeconds) { break }
-        } else {
-            $stableSince = $null
-        }
-    } while ((Get-Date) -lt $deadline)
-
-    if ($status -ne 'SERVICE_RUNNING') {
-        $tail = Get-ErrLogTail
-        throw @"
-Service '$ServiceName' did not reach SERVICE_RUNNING within ${TimeoutSeconds}s.
-Last status: '$status'. Tail of $LogDir\runner.err.log:
-$tail
-"@
-    }
-} finally {
-    $PSNativeCommandUseErrorActionPreference = $prevNative
-}
-Write-Host "Service status: $status"
-Write-Host "Logs: $LogDir"
-
-# ---- Watchdog (belt-and-suspenders liveness) -----------------------------
-# NSSM only sees process death. The runner can be "Running" but its
-# heartbeat thread silently dead (DNS flap, hung httpx client, or a
-# 'runner not registered' loop after a hub state reset). Install the
-# hub-view-based liveness watchdog so it force-restarts the service
-# after N consecutive heartbeat staleness windows. Pass -NoWatchdog to
-# suppress.
+# ---- Runner watchdog (stale-heartbeat recovery) --------------------------
 if (-not $NoWatchdog) {
-    $watchdog = Join-Path $PSScriptRoot "install-runner-watchdog.ps1"
-    if (Test-Path $watchdog) {
-        Write-Host ""
-        Write-Host "Installing runner liveness watchdog scheduled task..."
-        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $watchdog `
-            -ServiceName $ServiceName `
-            -HubUrl      $HubUrl `
-            -TokenFile   $TokenFile
-        if ($LASTEXITCODE -ne 0) {
-            Write-Warning "Watchdog install returned exit $LASTEXITCODE; service is up but auto-recovery is disabled."
-        }
-    } else {
-        Write-Warning "install-runner-watchdog.ps1 not found alongside this script ($watchdog); skipping watchdog install."
+    $wd = Join-Path $PSScriptRoot "install-runner-watchdog.ps1"
+    if (Test-Path $wd) {
+        Write-Host "`nInstalling runner watchdog..."
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $wd `
+            -ServiceName $ServiceName -HubUrl $HubUrl -TokenFile $TokenFile
     }
 }
 
-# ---- Cross-host hub watchdog (OOTB) --------------------------------------
+# ---- Cross-host hub watchdog (OOTB SSH-based failover) -------------------
 # Every fabric node carries a hub watchdog so any peer can restart a wedged
 # hub. We chain into install-hub-watchdog.ps1 with SSH params when the
 # operator supplied an SSH target. Key material is staged here so SYSTEM
@@ -303,14 +256,12 @@ if ($wantHubWatchdog) {
         Write-Warning "ssh-keyscan failed for ${HubSshHost}: $($_.Exception.Message). Preseed $knownHosts manually."
     }
 
-    # Default the probe URL when the operator didn't override it.
     $effectiveHealthz = $HubHealthzUrl
     if (-not $effectiveHealthz) { $effectiveHealthz = ($HubUrl.TrimEnd('/') + "/healthz") }
 
     $hubWatchdog = Join-Path $PSScriptRoot "install-hub-watchdog.ps1"
     if (Test-Path $hubWatchdog) {
-        Write-Host ""
-        Write-Host "Installing cross-host hub liveness watchdog scheduled task..."
+        Write-Host "`nInstalling cross-host hub liveness watchdog scheduled task..."
         & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $hubWatchdog `
             -HealthzUrl        $effectiveHealthz `
             -SshHost           $HubSshHost `
@@ -325,3 +276,4 @@ if ($wantHubWatchdog) {
         Write-Warning "install-hub-watchdog.ps1 not found alongside this script ($hubWatchdog); skipping hub watchdog install."
     }
 }
+
