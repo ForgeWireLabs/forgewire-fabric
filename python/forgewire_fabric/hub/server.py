@@ -2926,7 +2926,7 @@ def create_app(config: BlackboardConfig) -> FastAPI:
         _mdns_handle = advertise_hub(
             port=config.port,
             protocol_version=PROTOCOL_VERSION,
-            token_preview=config.token[-8:] if config.token else "",
+            token=config.token,
         )
         if _mdns_handle:
             LOGGER.info("mDNS hub advertisement active")
@@ -3207,7 +3207,7 @@ def main(argv: list[str] | None = None) -> None:
         advertisement = advertise_hub(
             port=config.port,
             protocol_version=PROTOCOL_VERSION,
-            token_preview=config.token[-8:] if len(config.token) >= 8 else "",
+            token=config.token,
         )
     try:
         uvicorn.run(app, host=config.host, port=config.port, log_level=args.log_level)

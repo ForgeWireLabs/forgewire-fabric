@@ -9,14 +9,16 @@ the always-on control plane; runners reach *it*, not the other way around.
 
 TXT record fields:
 
-* ``proto``  -- ``hub_protocol_version`` (e.g. ``2``)
-* ``token``  -- short token preview (last 8 hex chars) for human verification
-                only; the real auth is the bearer token shipped via SCP.
-* ``path``   -- always ``/`` (reserved for future REST prefixes).
+* ``proto``      -- ``hub_protocol_version`` (e.g. ``2``)
+* ``token_hash`` -- ``sha256(token)[:16]`` hex; same as the Rust beacon.
+                    Clients that hold the token can confirm cluster membership
+                    by comparing hashes. Never the token itself or a suffix.
+* ``path``       -- always ``/`` (reserved for future REST prefixes).
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import socket
 from dataclasses import dataclass
@@ -25,6 +27,11 @@ from typing import Any
 LOGGER = logging.getLogger("forgewire_fabric.discovery")
 
 SERVICE_TYPE = "_forgewire-hub._tcp.local."
+
+
+def _token_hash(token: str) -> str:
+    """sha256(token)[:16] hex — mirrors the Rust beacon token_hash()."""
+    return hashlib.sha256(token.encode()).hexdigest()[:16]
 
 
 @dataclass(slots=True)
@@ -64,7 +71,7 @@ def advertise_hub(
     *,
     port: int,
     protocol_version: int,
-    token_preview: str = "",
+    token: str = "",
     instance_name: str | None = None,
 ) -> HubAdvertisement | None:
     """Advertise the running hub on the local LAN via mDNS.
@@ -84,7 +91,7 @@ def advertise_hub(
     address = _local_ipv4()
     properties = {
         "proto": str(protocol_version),
-        "token": token_preview,
+        "token_hash": _token_hash(token) if token else "",
         "path": "/",
     }
     try:
@@ -146,7 +153,7 @@ def discover_hubs(timeout: float = 3.0) -> list[dict[str, Any]]:
                     "protocol_version": proto,
                     "addresses": addresses,
                     "name": name,
-                    "token_preview": props.get("token", ""),
+                    "token_hash": props.get("token_hash", ""),
                 }
             )
 
