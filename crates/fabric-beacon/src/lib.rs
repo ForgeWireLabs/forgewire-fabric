@@ -320,13 +320,13 @@ pub struct DiscoveredHub {
     pub source: IpAddr,
 }
 
-/// Discover hubs on the LAN within `timeout`. If `want_token_hash` is `Some`,
-/// only hubs whose advertised hash matches are returned (same-cluster filter).
+/// Discover hubs by querying explicit `targets` (unicast or broadcast addresses).
 ///
-/// Returns hubs in arrival order, de-duplicated by `url`. An empty vec means
-/// nothing answered (hub down, different broadcast domain, or firewalled).
-pub fn discover(
-    udp_port: u16,
+/// Lower-level than [`discover`]; use this when you know the hub's address or
+/// need deterministic loopback querying (e.g. in tests). The socket is bound
+/// ephemerally; `set_broadcast` is enabled so broadcast targets still work.
+pub fn discover_addrs(
+    targets: &[SocketAddr],
     timeout: Duration,
     want_token_hash: Option<&str>,
 ) -> io::Result<Vec<DiscoveredHub>> {
@@ -334,10 +334,9 @@ pub fn discover(
     socket.set_broadcast(true)?;
     socket.set_read_timeout(Some(Duration::from_millis(250)))?;
 
-    let targets = broadcast_targets(udp_port);
     let query = serde_json::to_vec(&Beacon::query()).unwrap_or_default();
     let send_query = |s: &UdpSocket| {
-        for t in &targets {
+        for t in targets {
             let _ = s.send_to(&query, *t);
         }
     };
@@ -350,7 +349,6 @@ pub fn discover(
     let mut buf = [0u8; MAX_DATAGRAM];
 
     while Instant::now() < deadline {
-        // Re-query periodically to tolerate UDP loss.
         if last_query.elapsed() >= Duration::from_millis(600) {
             send_query(&socket);
             last_query = Instant::now();
@@ -360,7 +358,7 @@ pub fn discover(
                 if let Some(b) = parse(&buf[..n]).filter(Beacon::is_hub) {
                     if let Some(want) = want_token_hash {
                         if !b.token_hash.is_empty() && b.token_hash != want {
-                            continue; // different cluster
+                            continue;
                         }
                     }
                     let url = format!("http://{}:{}", src.ip(), b.port);
@@ -386,6 +384,19 @@ pub fn discover(
     }
 
     Ok(order.into_iter().filter_map(|k| found.remove(&k)).collect())
+}
+
+/// Discover hubs on the LAN within `timeout`. If `want_token_hash` is `Some`,
+/// only hubs whose advertised hash matches are returned (same-cluster filter).
+///
+/// Returns hubs in arrival order, de-duplicated by `url`. An empty vec means
+/// nothing answered (hub down, different broadcast domain, or firewalled).
+pub fn discover(
+    udp_port: u16,
+    timeout: Duration,
+    want_token_hash: Option<&str>,
+) -> io::Result<Vec<DiscoveredHub>> {
+    discover_addrs(&broadcast_targets(udp_port), timeout, want_token_hash)
 }
 
 #[cfg(test)]
@@ -419,6 +430,10 @@ mod tests {
             proto: 3,
             name: "lab".into(),
             token_hash: token_hash("t"),
+            raft_port: 4002,
+            rqlite_http_port: 4001,
+            rqlite_voters: 1,
+            rqlite_nodes: 1,
         };
         let b = advert.beacon();
         let bytes = serde_json::to_vec(&b).unwrap();
@@ -448,32 +463,48 @@ mod tests {
         assert!(!b.is_hub());
     }
 
-    /// End-to-end on loopback: a responder thread answers a discover() query.
+    /// End-to-end on loopback: a responder thread answers a discover_addrs() query.
+    ///
+    /// Uses discover_addrs() with an explicit 127.0.0.1 unicast target instead of
+    /// discover() (broadcast). On Windows with a hotspot adapter the OS does not
+    /// loop broadcast packets back to sockets on the same machine, making a
+    /// broadcast-based loopback test environment-dependent. Unicast to 127.0.0.1
+    /// is always reliable.
     #[test]
     fn loopback_discover_finds_responder() {
         // Use an uncommon port to avoid clashing with a real hub on the test box.
-        let port = 49321;
+        let port: u16 = 49321;
         let advert = HubAdvert {
             hub_id: "loopback-hub".into(),
             http_port: 8765,
             proto: 3,
             name: "test".into(),
             token_hash: token_hash("cluster-token"),
+            raft_port: 4002,
+            rqlite_http_port: 4001,
+            rqlite_voters: 1,
+            rqlite_nodes: 1,
         };
         std::thread::spawn(move || {
             let _ = serve(advert, port, Duration::from_millis(200));
         });
         std::thread::sleep(Duration::from_millis(150));
 
-        let hubs = discover(port, Duration::from_millis(1500), Some(&token_hash("cluster-token")))
-            .expect("discover ok");
+        let loopback = SocketAddr::from(([127, 0, 0, 1], port));
+
+        let hubs = discover_addrs(
+            &[loopback],
+            Duration::from_millis(1500),
+            Some(&token_hash("cluster-token")),
+        )
+        .expect("discover ok");
         assert!(
             hubs.iter().any(|h| h.hub_id == "loopback-hub" && h.url.ends_with(":8765")),
             "expected to discover the loopback responder, got {hubs:?}"
         );
 
         // Wrong token hash filters it out.
-        let none = discover(port, Duration::from_millis(800), Some("0000000000000000"))
+        let none = discover_addrs(&[loopback], Duration::from_millis(800), Some("0000000000000000"))
             .expect("discover ok");
         assert!(none.is_empty(), "wrong-cluster filter should hide it, got {none:?}");
     }
