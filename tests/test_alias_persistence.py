@@ -117,11 +117,12 @@ def _register(
 
 
 def _backdate_heartbeat(db_path: Path, runner_id: str, seconds_ago: int) -> None:
-    
     cutoff = time.strftime(
         "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - seconds_ago)
     )
-    # NOTE: rqlite backend — direct DB modification via rqlite HTTP
+    bb = Blackboard(db_path)
+    with bb._connect() as conn:
+        conn.execute(
             "UPDATE runners SET last_heartbeat = ? WHERE runner_id = ?",
             (cutoff, runner_id),
         )
