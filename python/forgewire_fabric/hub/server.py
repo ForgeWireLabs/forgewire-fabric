@@ -1,4 +1,4 @@
-﻿"""ForgeWire hub HTTP/SSE service.
+"""ForgeWire hub HTTP/SSE service.
 
 Runs on the always-on hub host. Exposes a small REST + SSE API used by:
 

@@ -1,4 +1,4 @@
-﻿"""ForgeWire stream-counter facade.
+"""ForgeWire stream-counter facade.
 
 Resolves at import time to the Rust-accelerated
 `forgewire_runtime.StreamCounter` when available, otherwise falls back to a

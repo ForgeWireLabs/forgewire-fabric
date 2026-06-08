@@ -1,4 +1,4 @@
-﻿"""Tests for the M2.5.1 approval queue.
+"""Tests for the M2.5.1 approval queue.
 
 When the hub policy says ``REQUIRE_APPROVAL`` (e.g. dispatch targeting a
 protected branch) the gate now seeds a pending approval row, returns 428

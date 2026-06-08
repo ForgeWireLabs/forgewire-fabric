@@ -1,4 +1,4 @@
-﻿# M2.7.0 Oracle Baseline
+# M2.7.0 Oracle Baseline
 
 > **Captured:** 2026-05-31
 > **Tag:** `oracle/v2.7.0-baseline` → commit `978098a`

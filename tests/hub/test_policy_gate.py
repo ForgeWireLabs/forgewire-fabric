@@ -1,4 +1,4 @@
-﻿"""End-to-end tests for the M2.5.1+M2.5.2 hub-side dispatch/completion gate.
+"""End-to-end tests for the M2.5.1+M2.5.2 hub-side dispatch/completion gate.
 
 These exercise the substrate-owned ``HubDispatchGate`` through the FastAPI
 app built by :func:`forgewire_fabric.hub.server.create_app`. The goal is to

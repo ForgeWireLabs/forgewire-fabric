@@ -1,4 +1,4 @@
-﻿"""End-to-end hub tests against a live rqlite cluster.
+"""End-to-end hub tests against a live rqlite cluster.
 
 Runs the same flows as :mod:`test_dispatcher_signing` but with
 ``backend="rqlite"`` so we exercise:

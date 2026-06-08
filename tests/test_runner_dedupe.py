@@ -1,4 +1,4 @@
-﻿"""Regression: one physical host must map to exactly one runner row.
+"""Regression: one physical host must map to exactly one runner row.
 
 Covers two structural defenses that together make the "duplicate runner
 per host" symptom impossible:

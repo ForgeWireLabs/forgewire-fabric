@@ -1,4 +1,4 @@
-﻿"""Regression: hub-side aliases + runner routing intent must survive
+"""Regression: hub-side aliases + runner routing intent must survive
 code updates, schema upgrades, and hardware migrations.
 
 The persistence model this file locks in:

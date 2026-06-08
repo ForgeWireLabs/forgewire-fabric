@@ -1,4 +1,4 @@
-﻿"""M2.5.5: hub-side sealed secret broker.
+"""M2.5.5: hub-side sealed secret broker.
 
 Stores caller-supplied secrets (think ``GITHUB_TOKEN``, ``OPENAI_API_KEY``)
 encrypted at rest with a hub-local master key, and decrypts them on demand

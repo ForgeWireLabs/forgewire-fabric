@@ -1,4 +1,4 @@
-﻿"""Async HTTP client for the blackboard REST API.
+"""Async HTTP client for the blackboard REST API.
 
 Used by both MCP servers (dispatcher and runner). Single source of truth for
 endpoints, auth, and error mapping.

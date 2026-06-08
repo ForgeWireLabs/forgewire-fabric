@@ -1,4 +1,4 @@
-﻿"""rqlite HTTP adapter — provides the minimal connection interface used by the hub.
+"""rqlite HTTP adapter — provides the minimal connection interface used by the hub.
 
 Provides ``connect()`` returning a ``Connection`` whose API is a drop-in
 subset of :mod:`sqlite3` sufficient for ``forgewire_fabric.hub.server``:

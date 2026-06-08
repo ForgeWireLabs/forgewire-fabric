@@ -1,4 +1,4 @@
-﻿"""M2.6.4 regression coverage for FastAPI lifespan startup.
+"""M2.6.4 regression coverage for FastAPI lifespan startup.
 
 The hub used to register startup hooks with deprecated ``@app.on_event``.
 Booting the app through ``TestClient`` should no longer emit FastAPI's

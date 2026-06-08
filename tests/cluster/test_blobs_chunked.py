@@ -1,4 +1,4 @@
-﻿"""Tests for the chunked blob fabric over the in-memory cluster transport."""
+"""Tests for the chunked blob fabric over the in-memory cluster transport."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-﻿-- ForgeWire hub schema — v2 snapshot (oracle/v2.7.0-baseline)
+-- ForgeWire hub schema — v2 snapshot (oracle/v2.7.0-baseline)
 -- Captured: 2026-05-31
 -- Source: python/forgewire_fabric/hub/schema.sql + additive migrations in server.py
 --

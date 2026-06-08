@@ -1,4 +1,4 @@
-﻿# Store Migration Compatibility Metadata
+# Store Migration Compatibility Metadata
 
 > **Oracle tag:** `oracle/v2.7.0-baseline`
 > **Schema version at capture:** 2 (rows 1 and 2 in `schema_version` table)

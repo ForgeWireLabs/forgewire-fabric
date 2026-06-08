@@ -1,4 +1,4 @@
-﻿"""Tests for the M2.5.3 hash-chained audit log, replay, and export.
+"""Tests for the M2.5.3 hash-chained audit log, replay, and export.
 
 Exercises the real FastAPI hub against rqlite.
 Verifies that:

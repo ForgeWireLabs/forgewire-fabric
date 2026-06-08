@@ -1,4 +1,4 @@
-﻿"""v0.4: hub-side observability for runner claim/heartbeat failures.
+"""v0.4: hub-side observability for runner claim/heartbeat failures.
 
 Exercises the additive heartbeat fields (claim_failures_total,
 claim_failures_consecutive, last_claim_error, heartbeat_failures_total)

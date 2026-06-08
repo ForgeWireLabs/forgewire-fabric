@@ -1,4 +1,4 @@
-﻿"""M2.7.0 golden-fixture generator.
+"""M2.7.0 golden-fixture generator.
 
 Run from the repo root:
 

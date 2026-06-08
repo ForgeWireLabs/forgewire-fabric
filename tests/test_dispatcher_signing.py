@@ -1,4 +1,4 @@
-﻿"""M2.4: dispatcher-side envelope signing tests.
+"""M2.4: dispatcher-side envelope signing tests.
 
 These tests exercise the hub server end-to-end via FastAPI's TestClient.
 No mocking: a real rqlite blackboard, a real ed25519 key pair, and the real

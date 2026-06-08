@@ -30,7 +30,7 @@ def _first_str_arg(call: ast.Call) -> str | None:
 
 def main() -> int:
     src_path = pathlib.Path("python/forgewire_fabric/hub/server.py")
-    tree = ast.parse(src_path.read_text(encoding="utf-8"))
+    tree = ast.parse(src_path.read_text(encoding="utf-8-sig"))
 
     hits: list[tuple[int, str]] = []
 
