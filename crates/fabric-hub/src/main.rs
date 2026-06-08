@@ -43,6 +43,28 @@ use tracing::{info, warn};
 const PROTOCOL_VERSION: i64 = 3;
 const PACKAGE_VERSION: &str = "0.7.1";
 
+/// Probe the rqlite cluster for voter + total node counts.
+/// Returns (voters, total_nodes). Falls back to (1, 1) if unreachable.
+fn probe_rqlite_cluster(rqlite_url: &str) -> (u16, u16) {
+    let Ok(resp) = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .and_then(|c| c.get(format!("{rqlite_url}/nodes?nonvoters")).send())
+    else {
+        return (1, 1);
+    };
+    let Ok(map) = resp.json::<serde_json::Value>() else {
+        return (1, 1);
+    };
+    let nodes = map.as_object().map(|o| o.len()).unwrap_or(1);
+    let voters = map.as_object()
+        .map(|o| o.values()
+            .filter(|v| v.get("voter").and_then(|b| b.as_bool()).unwrap_or(false))
+            .count())
+        .unwrap_or(1);
+    (voters as u16, nodes as u16)
+}
+
 /// Ensure rqlite is reachable, starting the OS service if needed.
 ///
 /// Probes `http://{host}:{port}/status`. If unreachable, attempts to start:
@@ -164,19 +186,43 @@ async fn main() {
         let hostname = std::env::var("COMPUTERNAME")
             .or_else(|_| std::env::var("HOSTNAME"))
             .unwrap_or_else(|_| "forgewire-hub".into());
-        let advert = fabric_beacon::HubAdvert {
-            hub_id: hostname.clone(),
-            http_port: port,
-            proto: PROTOCOL_VERSION,
-            name: hostname,
-            token_hash: fabric_beacon::token_hash(&token),
-        };
+
+        // Capture rqlite connection details for the beacon (so joining nodes can
+        // auto-discover the cluster without a pre-configured join address).
+        let b_rqlite_host = std::env::var("FORGEWIRE_HUB_RQLITE_HOST")
+            .unwrap_or_else(|_| "127.0.0.1".into());
+        let b_rqlite_http: u16 = std::env::var("FORGEWIRE_HUB_RQLITE_PORT")
+            .ok().and_then(|v| v.parse().ok()).unwrap_or(4001);
+        let b_rqlite_raft: u16 = std::env::var("FORGEWIRE_HUB_RQLITE_RAFT_PORT")
+            .ok().and_then(|v| v.parse().ok()).unwrap_or(4002);
+        let b_token_hash = fabric_beacon::token_hash(&token);
+        let b_hostname = hostname.clone();
+        let b_hub_port = port;
+
         std::thread::spawn(move || {
-            if let Err(e) = fabric_beacon::serve(advert, beacon_port, std::time::Duration::from_secs(5)) {
-                tracing::warn!("discovery beacon disabled: cannot bind UDP {beacon_port}: {e}");
+            // Probe rqlite cluster state every beacon cycle and embed live voter /
+            // node counts so installing machines can make the right join decision.
+            let rqlite_url = format!("http://{b_rqlite_host}:{b_rqlite_http}");
+            loop {
+                let (voters, nodes) = probe_rqlite_cluster(&rqlite_url);
+                let advert = fabric_beacon::HubAdvert {
+                    hub_id: b_hostname.clone(),
+                    http_port: b_hub_port,
+                    proto: PROTOCOL_VERSION,
+                    name: b_hostname.clone(),
+                    token_hash: b_token_hash.clone(),
+                    raft_port: b_rqlite_raft,
+                    rqlite_http_port: b_rqlite_http,
+                    rqlite_voters: voters,
+                    rqlite_nodes: nodes,
+                };
+                if let Err(e) = fabric_beacon::serve_once(advert, beacon_port) {
+                    tracing::warn!("beacon cycle failed: {e}");
+                }
+                std::thread::sleep(std::time::Duration::from_secs(5));
             }
         });
-        tracing::info!("discovery beacon broadcasting on udp/{beacon_port}");
+        tracing::info!("discovery beacon broadcasting on udp/{beacon_port} (includes rqlite cluster info)");
     }
 
     // ── rqlite backend (only option) ──────────────────────────────────────
@@ -211,13 +257,28 @@ async fn main() {
     // ── Cluster topology manager ──────────────────────────────────────────────
     // Runs in the background: enforces the voter/standby rule and triggers
     // periodic snapshots to keep the Raft log compact.
-    //   2 nodes → 1 voter (stable leader) + 1 non-voter (hot standby)
-    //   3+ nodes → all voters (full Raft quorum)
+    //   1-2 nodes → 1 voter (stable leader) + 0-1 non-voter (hot standby)
+    //   3+ nodes  → all voters (full Raft quorum)
+    //
+    // is_bootstrap: true when this node is the sole voter (i.e. it either
+    // just bootstrapped a new cluster, or was already the only voter).
+    // This marks it as the preferred leader so 3+-node clusters restore
+    // leadership to it after a failover.
     {
         let cm_host = rqlite_host.clone();
         let cm_port = rqlite_port;
+        let local_node_id = std::env::var("COMPUTERNAME")
+            .or_else(|_| std::env::var("HOSTNAME"))
+            .unwrap_or_else(|_| "unknown".into())
+            .to_lowercase() + "-rqlite";
+        // Detect bootstrap: this node is a voter AND the only node in the cluster.
+        let (voters, total_nodes) = probe_rqlite_cluster(&format!("http://{rqlite_host}:{rqlite_port}"));
+        let is_bootstrap = voters == 1 && total_nodes == 1;
+        if is_bootstrap {
+            info!(node = %local_node_id, "bootstrap node detected — will record as preferred leader");
+        }
         tokio::spawn(async move {
-            cluster_manager::run(cm_host, cm_port).await;
+            cluster_manager::run(cm_host, cm_port, local_node_id, is_bootstrap).await;
         });
     }
 

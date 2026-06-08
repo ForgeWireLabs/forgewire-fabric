@@ -113,8 +113,7 @@ async fn trigger_snapshot(base_url: &str) {
 
 // ── topology logic ────────────────────────────────────────────────────────────
 
-async fn apply_topology(base_url: &str) -> anyhow::Result<Option<String>> {
-    let nodes = fetch_nodes(base_url).await?;
+async fn apply_topology_from(base_url: &str, nodes: &[RqliteNode]) -> anyhow::Result<Option<String>> {
     let total = nodes.len();
     if total == 0 { return Ok(None); }
 
@@ -215,11 +214,129 @@ async fn apply_topology(base_url: &str) -> anyhow::Result<Option<String>> {
     }
 }
 
+// ── preferred leader (3+ node case) ──────────────────────────────────────────
+//
+// In a 3+ node cluster with full Raft quorum, failover can move leadership to
+// any voter. The "preferred leader" is the node that bootstrapped the cluster
+// (the first machine installed). When it comes back online after a failover,
+// we request a leadership transfer back to it.
+//
+// The preferred leader node ID is stored in a rqlite label
+// `cluster.preferred_leader_node_id`. The bootstrap node writes it on first
+// startup; subsequent nodes read it and never overwrite it.
+
+const PREFERRED_LEADER_LABEL: &str = "cluster.preferred_leader_node_id";
+
+async fn get_preferred_leader(base_url: &str) -> Option<String> {
+    let resp = http_client()
+        .get(format!("{base_url}/db/query?level=strong"))
+        .json(&serde_json::json!([[
+            "SELECT value_json FROM labels WHERE key = ?",
+            PREFERRED_LEADER_LABEL
+        ]]))
+        .send().await.ok()?;
+    let v: serde_json::Value = resp.json().await.ok()?;
+    let raw = v["results"][0]["values"][0][0].as_str()?;
+    // value_json is a JSON-encoded string: "\"node-id\""
+    serde_json::from_str::<String>(raw).ok()
+}
+
+async fn set_preferred_leader(base_url: &str, node_id: &str) -> anyhow::Result<()> {
+    let value_json = serde_json::to_string(node_id)?;
+    http_client()
+        .post(format!("{base_url}/db/execute"))
+        .json(&serde_json::json!([[
+            "INSERT INTO labels (key, value_json, updated_at) VALUES (?, ?, ?) \
+             ON CONFLICT(key) DO NOTHING",
+            PREFERRED_LEADER_LABEL,
+            value_json,
+            chrono_now_iso(),
+        ]]))
+        .send().await?;
+    Ok(())
+}
+
+fn chrono_now_iso() -> String {
+    // Hand-rolled ISO timestamp — no date crate dep.
+    let d = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = d.as_secs();
+    let mins   = (secs / 60) % 60;
+    let hours  = (secs / 3600) % 24;
+    let mut days = (secs / 86400) as i64;
+    let mut year = 1970i64;
+    loop {
+        let diy = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) { 366 } else { 365 };
+        if days < diy { break; }
+        days -= diy; year += 1;
+    }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let md = [31i64, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut month = 0usize;
+    for (i, &m) in md.iter().enumerate() {
+        if days < m { month = i; break; }
+        days -= m;
+    }
+    let secs_in_min = secs % 60;
+    format!("{year:04}-{:02}-{:02}T{hours:02}:{mins:02}:{secs_in_min:02}Z", month + 1, days + 1)
+}
+
+/// For 3+ node clusters: if the preferred leader is back online and not the
+/// current leader, request a leadership transfer to it.
+async fn maybe_transfer_leadership(base_url: &str, nodes: &[RqliteNode]) -> anyhow::Result<()> {
+    let total = nodes.len();
+    if total < 3 { return Ok(()); }  // only relevant for full-quorum clusters
+
+    let preferred_id = match get_preferred_leader(base_url).await {
+        Some(id) => id,
+        None => return Ok(()),  // no preference recorded yet
+    };
+
+    let current_leader = nodes.iter().find(|n| n.leader);
+    let preferred_node = nodes.iter().find(|n| n.id == preferred_id);
+
+    match (current_leader, preferred_node) {
+        (Some(leader), Some(preferred)) if leader.id != preferred_id && preferred.reachable && preferred.voter => {
+            info!(
+                from = %leader.id,
+                to   = %preferred_id,
+                "requesting leadership transfer to preferred leader (original bootstrap node)"
+            );
+            // rqlite v10: POST /leader with the target node ID
+            let r = http_client()
+                .post(format!("{}/leader", leader.api_addr))
+                .json(&serde_json::json!({ "id": preferred_id }))
+                .send().await?;
+            if r.status().is_success() {
+                info!("leadership transfer requested to {preferred_id}");
+            } else {
+                warn!("leadership transfer returned {}", r.status());
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 // ── entry point ───────────────────────────────────────────────────────────────
 
 /// Spawn the cluster topology manager as a background task.
-pub async fn run(rqlite_host: String, rqlite_port: u16) {
+///
+/// Also accepts the local node ID and whether this node bootstrapped
+/// (was the first node) so it can record the preferred leader.
+pub async fn run(rqlite_host: String, rqlite_port: u16, local_node_id: String, is_bootstrap: bool) {
     let base_url = format!("http://{rqlite_host}:{rqlite_port}");
+
+    // If this node bootstrapped the cluster, record it as the preferred leader.
+    // Uses INSERT ... ON CONFLICT DO NOTHING so subsequent nodes never overwrite.
+    if is_bootstrap {
+        if let Err(e) = set_preferred_leader(&base_url, &local_node_id).await {
+            warn!("could not record preferred leader (non-fatal): {e}");
+        } else {
+            info!(node = %local_node_id, "recorded as preferred leader (bootstrap node)");
+        }
+    }
 
     let mut topo_tick     = tokio::time::interval(Duration::from_secs(POLL_INTERVAL_SECS));
     let mut snapshot_tick = tokio::time::interval(Duration::from_secs(SNAPSHOT_INTERVAL_SECS));
@@ -238,10 +355,19 @@ pub async fn run(rqlite_host: String, rqlite_port: u16) {
     loop {
         tokio::select! {
             _ = topo_tick.tick() => {
-                match apply_topology(&base_url).await {
-                    Ok(Some(action)) => info!(action = %action, "cluster topology adjusted"),
-                    Ok(None)         => {}
-                    Err(e)           => warn!("topology check failed (non-fatal): {e}"),
+                match fetch_nodes(&base_url).await {
+                    Ok(nodes) => {
+                        match apply_topology_from(&base_url, &nodes).await {
+                            Ok(Some(action)) => info!(action = %action, "cluster topology adjusted"),
+                            Ok(None)         => {}
+                            Err(e)           => warn!("topology adjustment failed: {e}"),
+                        }
+                        // For 3+ node clusters, restore preferred leader if needed.
+                        if let Err(e) = maybe_transfer_leadership(&base_url, &nodes).await {
+                            warn!("leadership transfer check failed (non-fatal): {e}");
+                        }
+                    }
+                    Err(e) => warn!("topology check failed (non-fatal): {e}"),
                 }
             }
             _ = snapshot_tick.tick() => {

@@ -48,14 +48,18 @@ param(
     [int]$HttpPort        = 4001,
     [int]$RaftPort        = 4002,
     [string]$NodeId       = "",
+    # JoinAddress is OPTIONAL — leave empty to auto-discover via LAN beacon.
+    # Only set this if you want to force a specific join target.
     [string]$JoinAddress  = "",
-    # Address other nodes use to reach THIS node's raft/http. 127.0.0.1 for a
-    # single-host node (survives DHCP); the LAN IP for a multi-host cluster so
-    # peers can actually connect. The node-id stays stable, so rqlite tolerates
-    # this address changing across restarts (the node re-announces its new IP).
-    [string]$AdvertiseHost = "127.0.0.1",
+    # Address other nodes use to reach THIS node's raft/http. Auto-detected
+    # from the LAN IP if empty. Override only for unusual network topologies.
+    [string]$AdvertiseHost = "",
     [string]$RqliteVersion = "10.0.3",
-    [string]$ServiceName  = "ForgeWireRqlite"
+    [string]$ServiceName  = "ForgeWireRqlite",
+    # UDP beacon port — must match FORGEWIRE_BEACON_PORT on the hub.
+    [int]$BeaconPort      = 48765,
+    # How long to listen for a beacon before assuming this is the first node.
+    [int]$BeaconTimeoutMs = 3000
 )
 
 $ErrorActionPreference = "Stop"
@@ -90,6 +94,85 @@ $LogDir        = Join-Path $DataDir "logs"
 $RqlitedExe    = Join-Path $RqliteDir "rqlited.exe"
 
 New-Item -ItemType Directory -Force -Path $DataDir, $RqliteDataDir, $LogDir, $RqliteDir | Out-Null
+
+# ---- Auto-detect LAN IP if not specified -----------------------------------
+if (-not $AdvertiseHost) {
+    $AdvertiseHost = (Get-NetIPAddress -AddressFamily IPv4 |
+        Where-Object { $_.IPAddress -ne '127.0.0.1' -and $_.PrefixOrigin -ne 'WellKnown' } |
+        Sort-Object -Property InterfaceMetric |
+        Select-Object -First 1).IPAddress
+    if (-not $AdvertiseHost) { $AdvertiseHost = "127.0.0.1" }
+    Write-Host "Auto-detected LAN address: $AdvertiseHost"
+}
+
+# ---- LAN beacon discovery --------------------------------------------------
+# Listen for ForgeWire hub beacons on the LAN. The beacon carries the rqlite
+# Raft address so this node can join the existing cluster without any operator
+# configuration. If no beacon arrives within the timeout, this is the first
+# node and will bootstrap as the single voter leader.
+#
+# Beacon format (JSON over UDP): { magic:"FWBEACON", role:"hub", port:<hub_http>,
+#   raft_port:<rqlite_raft>, rqlite_http_port:<rqlite_http>,
+#   rqlite_voters:<n>, rqlite_nodes:<n>, ... }
+
+function Invoke-BeaconDiscovery {
+    param([int]$ListenPort, [int]$TimeoutMs)
+
+    Write-Host "Listening for ForgeWire cluster beacon on UDP $ListenPort (${TimeoutMs}ms)..." -ForegroundColor Cyan
+
+    $udp = $null
+    try {
+        $udp = [System.Net.Sockets.UdpClient]::new($ListenPort)
+        $udp.EnableBroadcast = $true
+        $udp.Client.ReceiveTimeout = $TimeoutMs
+
+        # Send a query broadcast so existing hubs reply immediately.
+        $query = [System.Text.Encoding]::UTF8.GetBytes(
+            '{"magic":"FWBEACON","v":1,"role":"query","hub_id":"","port":0,"proto":0,"name":"","token_hash":"","ts":0,"raft_port":0,"rqlite_http_port":0,"rqlite_voters":0,"rqlite_nodes":0}'
+        )
+        $broadcast = [System.Net.IPEndPoint]::new([System.Net.IPAddress]::Broadcast, $ListenPort)
+        $udp.Send($query, $query.Length, $broadcast) | Out-Null
+
+        $remote = [System.Net.IPEndPoint]::new([System.Net.IPAddress]::Any, 0)
+        $bytes  = $udp.Receive([ref]$remote)
+        $json   = [System.Text.Encoding]::UTF8.GetString($bytes)
+        $beacon = $json | ConvertFrom-Json
+
+        if ($beacon.magic -eq 'FWBEACON' -and $beacon.role -eq 'hub') {
+            $sourceIp = $remote.Address.ToString()
+            Write-Host "  Beacon received from $sourceIp (hub: $($beacon.name))" -ForegroundColor Green
+            return @{
+                SourceIp       = $sourceIp
+                RaftPort       = if ($beacon.raft_port -gt 0) { $beacon.raft_port } else { 4002 }
+                RqliteHttpPort = if ($beacon.rqlite_http_port -gt 0) { $beacon.rqlite_http_port } else { 4001 }
+                RqliteVoters   = $beacon.rqlite_voters
+                RqliteNodes    = $beacon.rqlite_nodes
+                HubName        = $beacon.name
+            }
+        }
+    } catch [System.Net.Sockets.SocketException] {
+        # Timeout — no beacon received.
+    } catch {
+        Write-Warning "Beacon discovery error: $($_.Exception.Message)"
+    } finally {
+        if ($udp) { $udp.Close() }
+    }
+    return $null
+}
+
+$discoveredCluster = $null
+if (-not $JoinAddress) {
+    $discoveredCluster = Invoke-BeaconDiscovery -ListenPort $BeaconPort -TimeoutMs $BeaconTimeoutMs
+    if ($discoveredCluster) {
+        $JoinAddress = "$($discoveredCluster.SourceIp):$($discoveredCluster.RaftPort)"
+        Write-Host "  Auto-join target: $JoinAddress" -ForegroundColor Green
+        Write-Host "  Cluster state:    $($discoveredCluster.RqliteVoters) voter(s) / $($discoveredCluster.RqliteNodes) node(s) total"
+    } else {
+        Write-Host "  No beacon — this is the FIRST node. Bootstrapping as single-voter leader." -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "Join address explicitly set: $JoinAddress"
+}
 
 # ---- Download rqlite if missing -------------------------------------------
 if (-not (Test-Path $RqlitedExe)) {
@@ -175,40 +258,58 @@ foreach ($p in @($HttpPort, $RaftPort)) {
 # background cluster manager promotes it to voter automatically when a
 # third node joins, and demotes back to standby if the cluster shrinks.
 
-$joinAsVoter = $true  # default: bootstrap or 3+-node join (all voters)
+# ---- Determine voter / standby role -----------------------------------------
+# Topology rules (enforced here at install time; the hub's cluster_manager
+# monitors and corrects at runtime):
+#
+#   1 node   → voter (bootstrap single leader)
+#   2 nodes  → new node joins as NON-VOTER (hot standby, never votes)
+#              Single stable leader; no Raft elections on slow heartbeats.
+#   3+ nodes → all voters (full Raft quorum)
+#
+# The decision is made from beacon data (already fetched above) or by probing
+# the existing cluster's /nodes endpoint. NO operator input required.
+
+$joinAsVoter = $true  # default: first node or 3+-node join
 
 if ($JoinAddress) {
-    # Derive the leader HTTP address from the Raft join address.
-    $joinHost = $JoinAddress.Split(":")[0]
-    $leaderHttp = "http://${joinHost}:$HttpPort"
+    # We have a join target (either from beacon or explicit param).
+    # Determine voter count from beacon if available, otherwise probe rqlite.
+    $voterCount = 0
+    $totalCount = 0
 
-    Write-Host "Checking existing cluster voter count at $leaderHttp ..."
-    try {
-        $nodes = Invoke-RestMethod -Uri "$leaderHttp/nodes" -TimeoutSec 5 -ErrorAction Stop
-        $voterCount = ($nodes.PSObject.Properties.Value | Where-Object { $_.voter -eq $true }).Count
-        $totalCount = $nodes.PSObject.Properties.Count
-
-        Write-Host "  Cluster has $totalCount node(s), $voterCount voter(s)."
-
-        if ($voterCount -eq 1 -and $totalCount -eq 1) {
-            # Exactly one voter already — this is the 2nd node. Join as standby.
-            $joinAsVoter = $false
-            Write-Host "  → Joining as NON-VOTER (hot standby). Will be promoted to voter when a 3rd node joins." -ForegroundColor Cyan
-        } elseif ($voterCount -ge 2) {
-            # Three or more voters already in the cluster — join as voter.
-            $joinAsVoter = $true
-            Write-Host "  → Joining as VOTER (full Raft quorum, $($voterCount + 1) voters after join)." -ForegroundColor Green
-        } else {
-            # Fallback: join as voter.
-            $joinAsVoter = $true
-            Write-Host "  → Joining as VOTER (default)." -ForegroundColor Green
+    if ($discoveredCluster) {
+        # Beacon already told us the cluster state — use it directly.
+        $voterCount = [int]$discoveredCluster.RqliteVoters
+        $totalCount = [int]$discoveredCluster.RqliteNodes
+        Write-Host "Cluster state from beacon: $voterCount voter(s), $totalCount total node(s)."
+    } else {
+        # Explicit -JoinAddress without beacon — probe rqlite directly.
+        $joinHost   = $JoinAddress.Split(":")[0]
+        $leaderHttp = "http://${joinHost}:$HttpPort"
+        Write-Host "Probing cluster at $leaderHttp ..."
+        try {
+            $nodes      = Invoke-RestMethod -Uri "$leaderHttp/nodes?nonvoters" -TimeoutSec 5 -ErrorAction Stop
+            $voterCount = ($nodes.PSObject.Properties.Value | Where-Object { $_.voter -eq $true }).Count
+            $totalCount = $nodes.PSObject.Properties.Count
+            Write-Host "  Cluster has $totalCount node(s), $voterCount voter(s)."
+        } catch {
+            Write-Warning "Could not probe $leaderHttp — joining as voter (safe default)."
+            $voterCount = 99  # unknown, treat as 3+ so we join as voter
         }
-    } catch {
-        Write-Warning "Could not reach leader at $leaderHttp ($($_.Exception.Message)) — joining as voter (safe default)."
-        $joinAsVoter = $true
     }
-} else {
-    Write-Host "No -JoinAddress — bootstrapping as single-node leader (voter)."
+
+    if ($voterCount -le 1 -and $totalCount -le 1) {
+        # Only 1 existing node (the leader) — this is the 2nd node.
+        # Join as non-voter (hot standby). Promoted automatically if 3rd joins.
+        $joinAsVoter = $false
+        Write-Host "  → 2-node topology: joining as NON-VOTER (hot standby)." -ForegroundColor Cyan
+        Write-Host "     The hub cluster manager will promote to voter when a 3rd node joins."
+    } else {
+        # 3rd or later node — join as voter (full quorum).
+        $joinAsVoter = $true
+        Write-Host "  → 3+ node topology: joining as VOTER (full Raft quorum)." -ForegroundColor Green
+    }
 }
 
 # ---- Build rqlite startup arguments -----------------------------------------

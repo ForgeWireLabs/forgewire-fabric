@@ -26,7 +26,7 @@ hex.workspace = true
 sha2 = "0.10"
 thiserror.workspace = true
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 anyhow = "1"
 axum = { version = "0.8", features = ["json"] }
 tower = "0.5"

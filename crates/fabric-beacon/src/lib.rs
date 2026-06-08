@@ -76,6 +76,22 @@ pub struct Beacon {
     pub token_hash: String,
     #[serde(default)]
     pub ts: u64,
+    /// rqlite Raft port on this hub's host. Joining nodes use
+    /// `<beacon source IP>:<raft_port>` to join the rqlite cluster.
+    /// Default 4002; 0 means not advertised (legacy hub).
+    #[serde(default)]
+    pub raft_port: u16,
+    /// rqlite HTTP port on this hub's host.
+    /// Default 4001; 0 means not advertised (legacy hub).
+    #[serde(default)]
+    pub rqlite_http_port: u16,
+    /// Number of rqlite voter nodes currently in the cluster.
+    /// Installing nodes use this to decide voter vs non-voter role.
+    #[serde(default)]
+    pub rqlite_voters: u16,
+    /// Number of rqlite nodes total (voters + non-voters).
+    #[serde(default)]
+    pub rqlite_nodes: u16,
 }
 
 impl Beacon {
@@ -90,6 +106,10 @@ impl Beacon {
             name: String::new(),
             token_hash: String::new(),
             ts: now_unix(),
+            raft_port: 0,
+            rqlite_http_port: 0,
+            rqlite_voters: 0,
+            rqlite_nodes: 0,
         }
     }
 
@@ -166,6 +186,14 @@ pub struct HubAdvert {
     pub proto: i64,
     pub name: String,
     pub token_hash: String,
+    /// rqlite Raft port — joining nodes use `<source_ip>:<raft_port>` to join.
+    pub raft_port: u16,
+    /// rqlite HTTP port — joining nodes use this to probe the cluster.
+    pub rqlite_http_port: u16,
+    /// Current voter count in the rqlite cluster (for join-role auto-detection).
+    pub rqlite_voters: u16,
+    /// Total node count in the rqlite cluster.
+    pub rqlite_nodes: u16,
 }
 
 impl HubAdvert {
@@ -180,6 +208,10 @@ impl HubAdvert {
             name: self.name.clone(),
             token_hash: self.token_hash.clone(),
             ts: now_unix(),
+            raft_port: self.raft_port,
+            rqlite_http_port: self.rqlite_http_port,
+            rqlite_voters: self.rqlite_voters,
+            rqlite_nodes: self.rqlite_nodes,
         }
     }
 }
@@ -227,6 +259,41 @@ pub fn serve(advert: HubAdvert, udp_port: u16, announce_interval: Duration) -> i
             }
         }
     }
+}
+
+/// Announce once and handle incoming queries for ~1 s, then return.
+///
+/// Used by the hub's beacon thread to refresh the cluster-state payload each
+/// cycle without blocking forever on a single socket binding.
+pub fn serve_once(advert: HubAdvert, udp_port: u16) -> io::Result<()> {
+    let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, udp_port)))?;
+    socket.set_broadcast(true)?;
+    socket.set_read_timeout(Some(Duration::from_millis(900)))?;
+
+    let targets = broadcast_targets(udp_port);
+    announce(&socket, &advert, &targets);
+
+    let mut buf = [0u8; MAX_DATAGRAM];
+    let deadline = Instant::now() + Duration::from_millis(1000);
+    loop {
+        if Instant::now() >= deadline {
+            break;
+        }
+        match socket.recv_from(&mut buf) {
+            Ok((n, src)) => {
+                if let Some(b) = parse(&buf[..n]) {
+                    if b.is_query() {
+                        if let Ok(bytes) = serde_json::to_vec(&advert.beacon()) {
+                            let _ = socket.send_to(&bytes, src);
+                        }
+                    }
+                }
+            }
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => break,
+            Err(_) => break,
+        }
+    }
+    Ok(())
 }
 
 fn announce(socket: &UdpSocket, advert: &HubAdvert, targets: &[SocketAddr]) {
