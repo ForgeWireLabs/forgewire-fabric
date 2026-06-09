@@ -69,6 +69,12 @@ pub struct CreateTaskParams {
     /// missing on legacy briefs is backfilled to "prompt" by the hub.
     #[serde(default)]
     pub dispatch: Option<String>,
+    /// Phase 2.8 (M2.8.2): skill name for dispatch="skill" briefs.
+    #[serde(default)]
+    pub skill: Option<String>,
+    /// Phase 2.8 (M2.8.2): tool name for dispatch="tool" briefs.
+    #[serde(default)]
+    pub tool: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,6 +109,12 @@ pub struct TaskRow {
     /// Phase 2.8: agent-dispatch discriminator. See `CreateTaskParams::dispatch`.
     #[serde(default)]
     pub dispatch: Option<String>,
+    /// Phase 2.8 (M2.8.2): skill name for dispatch="skill" briefs.
+    #[serde(default)]
+    pub skill: Option<String>,
+    /// Phase 2.8 (M2.8.2): tool name for dispatch="tool" briefs.
+    #[serde(default)]
+    pub tool: Option<String>,
 }
 
 /// Atomic claim result — either the task was claimed or someone else got it.

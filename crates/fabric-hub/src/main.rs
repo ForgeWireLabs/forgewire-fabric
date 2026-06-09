@@ -32,7 +32,7 @@ use axum::middleware;
 use axum::routing::{delete, get, post, put};
 use axum::Router;
 use fabric_hub::auth::require_bearer;
-use fabric_hub::routes::{admin, approvals, audit, cluster, cost, dispatchers, health, labels, runners, secrets, streams, tasks};
+use fabric_hub::routes::{admin, agents, approvals, audit, cluster, cost, dispatchers, health, labels, runners, secrets, streams, tasks};
 use fabric_hub::state::HubState;
 use fabric_policy::{BudgetPolicy, DispatchGate, FabricPolicy};
 use fabric_store::{FabricStore, SchemaStore};
@@ -359,6 +359,8 @@ async fn main() {
         .route("/tasks", post(tasks::dispatch_task))
         .route("/tasks/v2", post(tasks::dispatch_task_signed))
         .route("/tasks/claim-v2", post(tasks::claim_task_v2))
+        .route("/tasks/claim-loom", post(tasks::claim_task_loom))
+        .route("/tasks/claim-fabric", post(tasks::claim_task_fabric))
         .route("/tasks/{task_id}", get(tasks::get_task))
         // --- Task state & streams ---
         .route("/tasks/{task_id}/start", post(streams::mark_running))
@@ -387,6 +389,9 @@ async fn main() {
         .route("/approvals/{approval_id}", get(approvals::get_approval))
         .route("/approvals/{approval_id}/approve", post(approvals::approve_approval))
         .route("/approvals/{approval_id}/deny", post(approvals::deny_approval))
+        // --- Agents + capabilities (Phase 2.8 M2.8.2) ---
+        .route("/agents", get(agents::list_agents))
+        .route("/capabilities/{kind}/{name}", get(agents::get_capability))
         // --- Cluster / hosts ---
         .route("/cluster/health", get(cluster::cluster_health))
         .route("/hosts", get(cluster::list_hosts))
