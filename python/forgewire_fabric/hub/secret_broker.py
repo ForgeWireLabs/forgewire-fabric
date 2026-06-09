@@ -48,6 +48,7 @@ Mocking policy: there is none. Tests use real AES-GCM against
 from __future__ import annotations
 
 import base64
+from contextlib import suppress
 import logging
 import os
 import secrets as _stdlib_secrets
@@ -140,10 +141,8 @@ class FileKeyProvider:
                     handle.flush()
                     os.fsync(handle.fileno())
             except Exception:
-                try:
+                with suppress(OSError):
                     os.close(fd)
-                except OSError:
-                    pass
                 raise
             if sys.platform != "win32":
                 os.chmod(tmp, 0o600)
