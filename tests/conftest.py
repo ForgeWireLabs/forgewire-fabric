@@ -16,6 +16,11 @@ import urllib.request
 
 import pytest
 
+# The only two real machines in the cluster. Any other runner/worker is a ghost.
+_REAL_RUNNERS = frozenset({"DESKTOP-38GVF8D-runner", "DESKTOP-228U8GL-runner"})
+_REAL_HOSTNAMES = frozenset({"DESKTOP-38GVF8D", "DESKTOP-228U8GL",
+                              "desktop-38gvf8d", "desktop-228u8gl"})
+
 
 def _rqlite_available(host: str = "127.0.0.1", port: int = 4001) -> bool:
     """True if a rqlite node is reachable and has an elected leader."""
@@ -28,6 +33,33 @@ def _rqlite_available(host: str = "127.0.0.1", port: int = 4001) -> bool:
 
 
 RQLITE_UP = _rqlite_available()
+
+_RQLITE_EXECUTE_URL = "http://127.0.0.1:4001/db/execute"
+
+
+def _enforce_cluster_invariant() -> None:
+    """Delete ghost runners/workers and cancel stale queued tasks.
+
+    Called before and after every test so no test can pollute the cluster
+    with ghost state that affects subsequent tests.
+    """
+    real_ids = ", ".join(f"'{r}'" for r in sorted(_REAL_RUNNERS))
+    real_hosts = ", ".join(f"'{h}'" for h in sorted(_REAL_HOSTNAMES))
+    stmts = [
+        [f"DELETE FROM runners WHERE runner_id NOT IN ({real_ids})"],
+        [f"DELETE FROM workers WHERE hostname NOT IN ({real_hosts}) OR hostname IS NULL"],
+        ["DELETE FROM runner_nonces WHERE runner_id NOT IN (SELECT runner_id FROM runners)"],
+        ["UPDATE tasks SET status='cancelled', cancel_requested=1 WHERE status='queued'"],
+    ]
+    try:
+        data = json.dumps(stmts).encode()
+        req = urllib.request.Request(
+            _RQLITE_EXECUTE_URL, data=data, method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        urllib.request.urlopen(req, timeout=5).read()
+    except Exception as exc:
+        print(f"\n[conftest] cluster invariant enforcement failed (non-fatal): {exc}")
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -49,6 +81,22 @@ def pytest_collection_modifyitems(
     for item in items:
         if "integration" in item.keywords:
             item.add_marker(skip)
+
+
+@pytest.fixture(autouse=True)
+def _global_cluster_guard() -> None:
+    """Enforce cluster invariant before and after every test.
+
+    Deletes ghost runners/workers and cancels stale queued tasks so no
+    test can pollute the shared rqlite cluster for subsequent tests.
+    Only runs when rqlite is reachable.
+    """
+    if not RQLITE_UP:
+        yield
+        return
+    _enforce_cluster_invariant()
+    yield
+    _enforce_cluster_invariant()
 
 
 # SQLite backend was retired in M2.7.3. rqlite is the only valid backend.
