@@ -40,6 +40,9 @@ def _build_client() -> tuple[TestClient, Path]:
         token=HUB_TOKEN,
         host="127.0.0.1",
         port=0,
+        # These broker tests exercise the bearer-gated legacy dispatch path
+        # only to verify audit redaction; signed dispatch is covered elsewhere.
+        require_signed_dispatch=False,
     )
     return TestClient(create_app(cfg)), tmp
 
