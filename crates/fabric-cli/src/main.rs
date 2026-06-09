@@ -19,7 +19,6 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
 use fabric_client::HubClient;
-use fabric_identity::IdentityFile;
 use fabric_types::KeyPurpose;
 
 #[derive(Parser)]

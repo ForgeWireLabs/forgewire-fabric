@@ -13,8 +13,6 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use fabric_store::ApprovalStore;
-
 use crate::state::HubState;
 use crate::utils::utc_now;
 

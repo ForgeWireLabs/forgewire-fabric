@@ -8,8 +8,6 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use fabric_store::{DispatcherStore, HostRoleStore};
-
 use crate::state::HubState;
 use crate::utils::{check_skew, utc_now, verify_sig};
 

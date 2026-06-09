@@ -15,7 +15,6 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::state::HubState;
-use fabric_store::CostStore;
 
 #[derive(Deserialize)]
 pub struct SinceQuery {
@@ -34,9 +33,6 @@ fn since_iso(days: i64) -> String {
 
 fn epoch_to_iso(ts: i64) -> String {
     let ts = ts as u64;
-    let secs = ts % 60;
-    let mins = (ts / 60) % 60;
-    let hours = (ts / 3600) % 24;
     let mut days = (ts / 86400) as i64;
     let mut year = 1970i64;
     loop {

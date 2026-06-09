@@ -8,8 +8,6 @@ use axum::http::StatusCode;
 use axum::Json;
 use serde_json::{json, Value};
 
-use fabric_store::{AuditStore, HostRoleStore, LabelStore, RunnerStore, DispatcherStore};
-
 use crate::state::HubState;
 
 // ── GET /cluster/health ────────────────────────────────────────────────────

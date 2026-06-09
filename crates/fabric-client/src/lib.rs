@@ -13,7 +13,7 @@ use fabric_protocol::{canonicalize, sign_envelope_hex, sign_payload_hex};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use thiserror::Error;
-use tracing::{debug, warn};
+use tracing::debug;
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_RETRIES: u32 = 3;

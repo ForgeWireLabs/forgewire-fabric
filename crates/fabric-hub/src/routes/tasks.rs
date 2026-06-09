@@ -11,13 +11,11 @@ use std::sync::Arc;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 
 use fabric_claim_router::{pick_task, CandidateTask, RunnerView};
-use fabric_store::{
-    ClaimResult, CreateTaskParams, DispatcherStore, NonceStore, RunnerStore, SecretStore, TaskStore,
-};
+use fabric_store::{ClaimResult, CreateTaskParams};
 
 use crate::state::HubState;
 use crate::utils::{
@@ -149,8 +147,6 @@ pub async fn dispatch_task_signed(
     State(state): State<Arc<HubState>>,
     Json(payload): Json<SignedDispatchPayload>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    use fabric_store::DispatcherStore;
-
     check_skew(payload.timestamp).map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
 
     let public_key = state
@@ -342,7 +338,7 @@ pub async fn claim_task_v2(
 
     // Capability filtering
     let runner_caps = runner.capabilities.clone();
-    let runner_caps_map = runner_caps.as_object().cloned().unwrap_or_default();
+    let _runner_caps_map = runner_caps.as_object().cloned().unwrap_or_default();
 
     let candidates: Vec<CandidateTask> = queued
         .iter()

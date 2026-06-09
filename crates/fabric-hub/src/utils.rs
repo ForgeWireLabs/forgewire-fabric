@@ -1,6 +1,6 @@
 //! Shared utilities for hub route handlers.
 
-use fabric_audit::{audit_event_hash, AUDIT_GENESIS_HASH};
+use fabric_audit::audit_event_hash;
 use fabric_policy::BudgetPolicy;
 use fabric_store::{AuditAppendResult, AuditStore, BudgetStore, StoreError};
 use serde_json::Value;

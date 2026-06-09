@@ -8,7 +8,6 @@ use axum::Json;
 use serde_json::{json, Value};
 
 use crate::state::HubState;
-use fabric_store::AuditStore;
 
 pub async fn audit_for_task(
     State(state): State<Arc<HubState>>,
