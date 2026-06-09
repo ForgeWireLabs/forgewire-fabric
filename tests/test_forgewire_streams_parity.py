@@ -73,15 +73,15 @@ def _make_client() -> TestClient:
 
 
 def _setup_running_task(client: TestClient) -> int:
-    """Dispatch, claim, and start a task. Returns task_id."""
-    task = client.post("/tasks", json=_BASE_TASK, headers=BEARER).json()
-    task_id = task["id"]
+    """Dispatch, claim, and start a task. Returns the claimed task_id."""
+    client.post("/tasks", json=_BASE_TASK, headers=BEARER)
     claim = client.post(
         "/tasks/claim",
         json={"worker_id": "bench-worker", "hostname": "bench-host"},
         headers=BEARER,
     ).json()
     assert claim["task"] is not None, f"claim failed: {claim}"
+    task_id = claim["task"]["id"]
     client.post(f"/tasks/{task_id}/start", headers=BEARER)
     return task_id
 

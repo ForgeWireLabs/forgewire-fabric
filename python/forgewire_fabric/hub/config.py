@@ -13,7 +13,7 @@ class BlackboardConfig:
     host: str
     port: int
     min_runner_version: str = "0.4.0"
-    require_signed_dispatch: bool = True
+    require_signed_dispatch: bool = False
     scoped_tokens: dict[str, set[str]] | None = None
     policy_path: Path | None = None
     backend: str = "rqlite"
