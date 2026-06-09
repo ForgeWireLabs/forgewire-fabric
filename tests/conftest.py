@@ -50,8 +50,12 @@ def _enforce_cluster_invariant() -> None:
         [f"DELETE FROM runners WHERE runner_id NOT IN ({real_ids})"],
         [f"DELETE FROM workers WHERE hostname NOT IN ({real_hosts}) OR hostname IS NULL"],
         ["DELETE FROM runner_nonces WHERE runner_id NOT IN (SELECT runner_id FROM runners)"],
-        # Stale tasks — cancel queued so they don't pollute the next test's claim
+        # Stale tasks — cancel queued AND tasks held by ghost workers so they
+        # don't pollute the next test's claim or inflate active-task counts.
         ["UPDATE tasks SET status='cancelled', cancel_requested=1 WHERE status='queued'"],
+        [f"UPDATE tasks SET status='cancelled', cancel_requested=1 "
+         f"WHERE status IN ('claimed','running') "
+         f"AND (worker_id IS NULL OR worker_id NOT IN ({real_ids}))"],
         # Approvals — test artifacts; real approvals are acted on promptly
         ["DELETE FROM approvals"],
         # Ghost dispatchers registered by test helpers

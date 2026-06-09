@@ -1139,7 +1139,7 @@ class Blackboard:
         if status_filter:
             query += " WHERE status = ?"
             params = (status_filter,)
-        query += " ORDER BY priority DESC, id ASC LIMIT ?"
+        query += " ORDER BY id DESC LIMIT ?"
         params = params + (limit,)
         with self._connect() as conn:
             rows = conn.execute(query, params).fetchall()

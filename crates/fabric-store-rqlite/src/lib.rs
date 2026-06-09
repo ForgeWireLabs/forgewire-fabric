@@ -807,9 +807,9 @@ impl TaskStore for RqliteStore {
 
     async fn list_tasks(&self, status: Option<&str>, limit: i64) -> StoreResult<Vec<TaskRow>> {
         let rows = if let Some(s) = status {
-            self.query("SELECT * FROM tasks WHERE status = ? ORDER BY priority DESC, id ASC LIMIT ?", &[json!(s), json!(limit)]).await?
+            self.query("SELECT * FROM tasks WHERE status = ? ORDER BY id DESC LIMIT ?", &[json!(s), json!(limit)]).await?
         } else {
-            self.query("SELECT * FROM tasks ORDER BY priority DESC, id ASC LIMIT ?", &[json!(limit)]).await?
+            self.query("SELECT * FROM tasks ORDER BY id DESC LIMIT ?", &[json!(limit)]).await?
         };
         Ok(rows.iter().map(row_to_task).collect())
     }
