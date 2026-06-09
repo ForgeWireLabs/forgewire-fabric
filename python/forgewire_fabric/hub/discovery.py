@@ -1,32 +1,103 @@
-"""mDNS / Zeroconf hub advertisement and auto-discovery.
+"""Hub advertisement and auto-discovery.
 
-``zeroconf`` is a required dependency as of forgewire-fabric 0.14.0.
-The hub auto-advertises on startup; runners and the VSIX auto-discover.
+Two discovery paths are supported and tried in order:
 
-Service type: ``_forgewire-hub._tcp.local.`` -- distinct from the legacy
-``_forgewire-runner._tcp.local`` brainstormed in todo 23 because the hub is
-the always-on control plane; runners reach *it*, not the other way around.
+1. **UDP beacon** (Rust hub) — broadcasts ``FWBEACON`` queries on port 48765.
+   The hub replies with its port and ``token_hash`` from the source IP.
+   Zero dependencies beyond stdlib ``socket``.
 
-TXT record fields:
+2. **mDNS / Zeroconf** (Python hub) — advertises ``_forgewire-hub._tcp.local.``.
+   Requires the ``zeroconf`` package (required since forgewire-fabric 0.14.0).
 
-* ``proto``      -- ``hub_protocol_version`` (e.g. ``2``)
-* ``token_hash`` -- ``sha256(token)[:16]`` hex; same as the Rust beacon.
-                    Clients that hold the token can confirm cluster membership
-                    by comparing hashes. Never the token itself or a suffix.
+Both paths return the same dict shape: ``{host, port, protocol_version,
+token_hash, name}``.  ``discover_hub_url()`` tries beacon first (fast, < 1 s),
+then mDNS as a fallback.
+
+TXT / beacon fields:
+
+* ``proto``      -- ``hub_protocol_version`` (e.g. ``3``)
+* ``token_hash`` -- ``sha256(token)[:16]`` hex.  Clients with the token can
+                    confirm cluster membership by comparing hashes.
 * ``path``       -- always ``/`` (reserved for future REST prefixes).
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import socket
+import time as _time
 from dataclasses import dataclass
 from typing import Any
 
 LOGGER = logging.getLogger("forgewire_fabric.discovery")
 
 SERVICE_TYPE = "_forgewire-hub._tcp.local."
+BEACON_MAGIC = "FWBEACON"
+BEACON_VERSION = 1
+BEACON_PORT = 48765
+
+
+def discover_hubs_beacon(
+    timeout: float = 1.5,
+    want_token_hash: str = "",
+) -> list[dict[str, Any]]:
+    """Discover ForgeWire hubs via the Rust UDP beacon protocol.
+
+    Broadcasts a query on port 48765; collects replies for *timeout* seconds.
+    The hub URL is derived from the **source address** of each reply so it is
+    always correct regardless of DHCP or subnet changes.
+
+    Args:
+        timeout:          How long to listen for replies (seconds).
+        want_token_hash:  If non-empty, only return hubs whose ``token_hash``
+                          matches (same cluster).  Obtain via
+                          ``hashlib.sha256(token.encode()).hexdigest()[:16]``.
+    """
+    query = json.dumps(
+        {"magic": BEACON_MAGIC, "v": BEACON_VERSION, "role": "query"}
+    ).encode()
+    found: dict[str, dict[str, Any]] = {}
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        sock.settimeout(0.1)
+        sock.bind(("", 0))
+        sock.sendto(query, ("255.255.255.255", BEACON_PORT))
+        deadline = _time.monotonic() + timeout
+        while _time.monotonic() < deadline:
+            try:
+                data, (src_ip, _) = sock.recvfrom(4096)
+            except socket.timeout:
+                continue
+            try:
+                b = json.loads(data.decode("utf-8"))
+            except Exception:
+                continue
+            if (
+                b.get("magic") != BEACON_MAGIC
+                or b.get("v") != BEACON_VERSION
+                or b.get("role") != "hub"
+                or not b.get("port")
+            ):
+                continue
+            if want_token_hash and b.get("token_hash") and b["token_hash"] != want_token_hash:
+                continue
+            url = f"http://{src_ip}:{b['port']}"
+            if url not in found:
+                found[url] = {
+                    "host": src_ip,
+                    "port": int(b["port"]),
+                    "protocol_version": int(b.get("proto", 0)),
+                    "token_hash": b.get("token_hash", ""),
+                    "name": b.get("name", ""),
+                    "addresses": [src_ip],
+                }
+        sock.close()
+    except OSError as exc:
+        LOGGER.debug("beacon discovery failed: %s", exc)
+    return list(found.values())
 
 
 def _token_hash(token: str) -> str:
@@ -174,24 +245,40 @@ def discover_hubs(timeout: float = 3.0) -> list[dict[str, Any]]:
     return found
 
 
-def discover_hub_url(timeout: float = 4.0) -> str | None:
+def discover_hub_url(timeout: float = 4.0, want_token_hash: str = "") -> str | None:
     """Return the URL of the best hub on the LAN, or None.
 
-    Picks the hub with the highest protocol_version. Falls back to
-    FORGEWIRE_HUB_URL env var if no hub is discovered via mDNS.
-    """
+    Discovery order:
+    1. UDP beacon (Rust hub, stdlib-only, fast ~1 s)
+    2. mDNS/Zeroconf (Python hub, requires zeroconf package)
+    3. ``FORGEWIRE_HUB_URL`` env var fallback
 
+    Picks the hub with the highest ``protocol_version`` when multiple are found.
+    If *want_token_hash* is given, only same-cluster hubs are returned.
+    """
     import os
 
-    hubs = discover_hubs(timeout=timeout)
-    if hubs:
-        best = sorted(hubs, key=lambda h: h.get("protocol_version", 0), reverse=True)[0]
-        return f"http://{best['host']}:{best['port']}"
+    # 1. UDP beacon — works with the Rust hub and needs no extra packages.
+    beacon_hubs = discover_hubs_beacon(timeout=min(timeout * 0.4, 1.5), want_token_hash=want_token_hash)
+    if beacon_hubs:
+        best = sorted(beacon_hubs, key=lambda h: h.get("protocol_version", 0), reverse=True)[0]
+        url = f"http://{best['host']}:{best['port']}"
+        LOGGER.info("beacon discovered hub at %s (proto=%s)", url, best.get("protocol_version"))
+        return url
 
+    # 2. mDNS — works with the Python hub.
+    mdns_hubs = discover_hubs(timeout=max(timeout * 0.6, 2.0))
+    if mdns_hubs:
+        best = sorted(mdns_hubs, key=lambda h: h.get("protocol_version", 0), reverse=True)[0]
+        url = f"http://{best['host']}:{best['port']}"
+        LOGGER.info("mDNS discovered hub at %s", url)
+        return url
+
+    # 3. Env var fallback.
     env = os.environ.get("FORGEWIRE_HUB_URL", "").strip()
     if env:
-        LOGGER.info("no mDNS hub found; using FORGEWIRE_HUB_URL=%s", env)
+        LOGGER.info("no hub found via beacon/mDNS; using FORGEWIRE_HUB_URL=%s", env)
         return env
 
-    LOGGER.warning("no hub discovered via mDNS and FORGEWIRE_HUB_URL not set")
+    LOGGER.warning("no hub discovered via beacon or mDNS, and FORGEWIRE_HUB_URL not set")
     return None

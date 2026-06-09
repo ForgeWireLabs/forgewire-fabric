@@ -336,19 +336,28 @@ def _register_tools(registry: ToolRegistry, client: BlackboardClient) -> None:
     )
 
     async def discover_hub(args: dict[str, Any]) -> dict[str, Any]:
-        from forgewire_fabric.hub.discovery import discover_hubs
+        from forgewire_fabric.hub.discovery import discover_hubs_beacon, discover_hubs
 
         timeout = float(args.get("timeout_seconds", 3.0))
-        hits = discover_hubs(timeout=timeout)
-        return {"hubs": hits}
+        # Try UDP beacon first (finds Rust hub, no extra deps), then mDNS.
+        beacon_hits = discover_hubs_beacon(timeout=min(timeout * 0.4, 1.5))
+        mdns_hits = discover_hubs(timeout=max(timeout * 0.6, 2.0))
+        seen: set[str] = set()
+        hubs: list[dict[str, Any]] = []
+        for h in beacon_hits + mdns_hits:
+            key = f"{h['host']}:{h['port']}"
+            if key not in seen:
+                seen.add(key)
+                hubs.append(h)
+        return {"hubs": hubs}
 
     registry.register(
         name="discover_hub",
         description=(
-            "Browse the local LAN via mDNS for ForgeWire hubs advertising "
-            "_forgewire-hub._tcp. Returns hub host/port/protocol_version. "
-            "Useful for first-run dispatcher bootstrap when FORGEWIRE_HUB_URL "
-            "is not yet configured. Requires the optional 'zeroconf' package."
+            "Scan the local LAN for ForgeWire hubs via UDP beacon (Rust hub) "
+            "and mDNS (Python hub). Returns a list of {host, port, "
+            "protocol_version, token_hash, name} dicts. Use this to find the "
+            "hub URL when FORGEWIRE_HUB_URL is not configured."
         ),
         input_schema={
             "type": "object",

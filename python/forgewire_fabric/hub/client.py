@@ -532,9 +532,9 @@ def load_client_from_env() -> BlackboardClient:
     * ``BLACKBOARD_URL`` / ``BLACKBOARD_TOKEN`` / ``BLACKBOARD_TOKEN_FILE``
       / ``BLACKBOARD_DISCOVER`` -- legacy aliases (PhrenForge integration).
 
-    If no URL is set and ``*_DISCOVER=1`` is set, attempts an mDNS browse for
-    ``_forgewire-hub._tcp.local.`` and picks the first responder. Falls back
-    to ``http://127.0.0.1:8765`` otherwise.
+    If no URL is set and ``*_DISCOVER=1`` is set, attempts discovery via the
+    UDP beacon (Rust hub) first, then mDNS (Python hub). Falls back to
+    ``http://127.0.0.1:8765`` otherwise.
     """
     base = (
         os.environ.get("FORGEWIRE_HUB_URL", "").strip()
@@ -546,14 +546,10 @@ def load_client_from_env() -> BlackboardClient:
     ).lower() in {"1", "true", "yes", "on"}
     if not base and discover:
         try:
-            from forgewire_fabric.hub.discovery import discover_hubs
-
-            hits = discover_hubs(timeout=3.0)
+            from forgewire_fabric.hub.discovery import discover_hub_url
+            base = discover_hub_url(timeout=4.0) or ""
         except Exception:
-            hits = []
-        if hits:
-            top = hits[0]
-            base = f"http://{top['host']}:{top['port']}"
+            pass
     if not base:
         base = "http://127.0.0.1:8765"
     token = (
