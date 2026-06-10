@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import platform
 from typing import Any
 
 from mcp.server import Server
@@ -40,10 +42,122 @@ from forgewire_fabric.hub.client import (
     load_client_from_env,
 )
 from forgewire_fabric.hub.mcp_common import ToolRegistry
+from forgewire_fabric.runner.identity import RunnerIdentity, load_or_create
+from forgewire_fabric.runner.runner_capabilities import fresh_nonce, now_ts, sign_payload
 
 LOGGER = logging.getLogger("forgewire_fabric.fabric_mcp")
 
 TERMINAL_STATES = {"done", "failed", "cancelled", "timed_out"}
+
+
+class DispatcherSession:
+    """Dispatcher identity for signed ``POST /tasks/v2`` (protocol v3 Rust hub).
+
+    Loads (or generates) an ed25519 keypair from the standard dispatcher
+    identity file and registers with the hub once on startup.  Provides
+    :meth:`build_signed_payload` for constructing the full signed dispatch
+    body accepted by ``POST /tasks/v2``.
+
+    Falls back to unsigned dispatch on registration failure so the server
+    still works against Python hubs that have ``require_signed_dispatch=false``.
+    """
+
+    _DEFAULT_PATH_WIN = r"C:\ProgramData\forgewire\dispatcher_identity.json"
+    _DEFAULT_PATH_POSIX = "/var/lib/forgewire/dispatcher_identity.json"
+
+    def __init__(self, identity: RunnerIdentity) -> None:
+        self._identity = identity
+        self.dispatcher_id: str = identity.runner_id
+        self.registered: bool = False
+
+    @classmethod
+    def load_or_create(cls) -> "DispatcherSession":
+        path_env = os.environ.get("FORGEWIRE_DISPATCHER_IDENTITY")
+        if path_env:
+            from pathlib import Path
+            path = Path(path_env)
+        elif platform.system() == "Windows":
+            from pathlib import Path
+            path = Path(cls._DEFAULT_PATH_WIN)
+        else:
+            from pathlib import Path
+            path = Path(cls._DEFAULT_PATH_POSIX)
+        identity = load_or_create(path)
+        return cls(identity)
+
+    async def register(self, client: BlackboardClient) -> None:
+        ts = now_ts()
+        nonce = fresh_nonce()
+        envelope = {
+            "op": "register-dispatcher",
+            "dispatcher_id": self.dispatcher_id,
+            "public_key": self._identity.public_key_hex,
+            "timestamp": ts,
+            "nonce": nonce,
+        }
+        sig = sign_payload(self._identity, envelope)
+        try:
+            await client.register_dispatcher({
+                **envelope,
+                "signature": sig,
+                "label": f"fabric-mcp@{platform.node()}",
+                "hostname": platform.node(),
+                "metadata": {"source": "fabric_mcp"},
+            })
+            self.registered = True
+            LOGGER.info("dispatcher registered: %s", self.dispatcher_id)
+        except BlackboardError as exc:
+            LOGGER.warning("dispatcher registration failed (%s); unsigned dispatch will be used on Python hubs", exc)
+
+    def build_signed_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Return a copy of ``payload`` with dispatcher_id, timestamp, nonce, signature."""
+        ts = now_ts()
+        nonce = fresh_nonce()
+        envelope: dict[str, Any] = {
+            "op": "dispatch",
+            "dispatcher_id": self.dispatcher_id,
+            "title": payload.get("title") or "",
+            "prompt": payload.get("prompt") or "",
+            "scope_globs": payload.get("scope_globs") or [],
+            "base_commit": payload.get("base_commit") or ("0" * 40),
+            "branch": payload.get("branch") or "",
+            "todo_id": payload.get("todo_id"),
+            "timeout_minutes": payload.get("timeout_minutes") or 60,
+            "priority": payload.get("priority") or 100,
+            "metadata": payload.get("metadata") or {},
+            "required_tools": payload.get("required_tools"),
+            "required_tags": payload.get("required_tags"),
+            "required_capabilities": payload.get("required_capabilities"),
+            "secrets_needed": payload.get("secrets_needed"),
+            "network_egress": payload.get("network_egress"),
+            "tenant": payload.get("tenant"),
+            "workspace_root": payload.get("workspace_root"),
+            "require_base_commit": payload.get("require_base_commit") or False,
+            "kind": payload.get("kind") or "agent",
+            "max_cost_usd": payload.get("max_cost_usd"),
+            "timestamp": ts,
+            "nonce": nonce,
+        }
+        sig = sign_payload(self._identity, envelope)
+        return {
+            **payload,
+            "dispatcher_id": self.dispatcher_id,
+            "timestamp": ts,
+            "nonce": nonce,
+            "signature": sig,
+        }
+
+
+async def _dispatch(
+    client: BlackboardClient,
+    session: "DispatcherSession | None",
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Send a dispatch, using signed POST /tasks/v2 when a session is present."""
+    if session is not None and session.registered:
+        return await client.dispatch_task_signed(session.build_signed_payload(payload))
+    # Fallback: unsigned (Python hub with require_signed_dispatch=false).
+    return await client.dispatch_task(payload)
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -81,7 +195,11 @@ async def _validate_capability(
 # ── tool registration ──────────────────────────────────────────────────────────
 
 
-def _register_tools(registry: ToolRegistry, client: BlackboardClient) -> None:
+def _register_tools(
+    registry: ToolRegistry,
+    client: BlackboardClient,
+    session: "DispatcherSession | None" = None,
+) -> None:
 
     # ── list_agents ────────────────────────────────────────────────────────────
 
@@ -133,7 +251,7 @@ def _register_tools(registry: ToolRegistry, client: BlackboardClient) -> None:
             },
             "metadata": args.get("metadata") or {},
         }
-        return await client.dispatch_task(payload)
+        return await _dispatch(client, session, payload)
 
     registry.register(
         name="dispatch_skill",
@@ -214,7 +332,7 @@ def _register_tools(registry: ToolRegistry, client: BlackboardClient) -> None:
             },
             "metadata": args.get("metadata") or {},
         }
-        return await client.dispatch_task(payload)
+        return await _dispatch(client, session, payload)
 
     registry.register(
         name="dispatch_tool",
@@ -283,7 +401,7 @@ def _register_tools(registry: ToolRegistry, client: BlackboardClient) -> None:
             "require_base_commit": args.get("require_base_commit", False),
             "metadata": args.get("metadata") or {},
         }
-        return await client.dispatch_task(payload)
+        return await _dispatch(client, session, payload)
 
     registry.register(
         name="dispatch_prompt",
@@ -494,6 +612,29 @@ def _register_tools(registry: ToolRegistry, client: BlackboardClient) -> None:
         handler=drain_agent,
     )
 
+    # ── drain_runner (deprecated alias for drain_agent) ────────────────────────
+
+    async def drain_runner_compat(args: dict[str, Any]) -> dict[str, Any]:
+        LOGGER.warning(
+            "drain_runner is deprecated; use drain_agent instead. "
+            "This tool alias will be removed in M2.8.9."
+        )
+        return await drain_agent(args)
+
+    registry.register(
+        name="drain_runner",
+        description=(
+            "[DEPRECATED — use drain_agent] Dispatcher-initiated runner drain. "
+            "Kept for one release cycle; will be removed in M2.8.9."
+        ),
+        input_schema={
+            "type": "object",
+            "required": ["runner_id"],
+            "properties": {"runner_id": {"type": "string"}},
+        },
+        handler=drain_runner_compat,
+    )
+
     # ── discover_hub ───────────────────────────────────────────────────────────
 
     async def discover_hub(args: dict[str, Any]) -> dict[str, Any]:
@@ -563,9 +704,13 @@ def _register_tools(registry: ToolRegistry, client: BlackboardClient) -> None:
 async def _run() -> None:
     logging.basicConfig(level=logging.INFO)
     client = load_client_from_env()
+    # Load (or generate) a dispatcher identity and register with the hub so
+    # dispatch goes through signed POST /tasks/v2 (required by the Rust hub).
+    session = DispatcherSession.load_or_create()
+    await session.register(client)
     server = Server("forgewire-fabric")
     registry = ToolRegistry()
-    _register_tools(registry, client)
+    _register_tools(registry, client, session)
     registry.bind(server)
     try:
         async with stdio_server() as (read_stream, write_stream):
