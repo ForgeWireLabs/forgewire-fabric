@@ -140,6 +140,22 @@ def dispatch_task_signed(request: Request, payload: DispatchTaskSignedRequest) -
     signed = dispatch_v3_signed_payload(payload)
     if not verify_signature(public_key, signed, payload.signature):
         raise HTTPException(status_code=403, detail="invalid dispatch signature")
+    # M2.9.7 legacy flip: command-kind briefs where loom_command was not covered
+    # by the dispatcher signature are hard-rejected. The deprecation window is closed.
+    if payload.kind == "command" and payload.loom_command is None:
+        blackboard.append_audit_event(
+            kind="legacy_loom_unsigned_command",
+            task_id=None,
+            payload={
+                "dispatcher_id": payload.dispatcher_id,
+                "title": payload.title,
+                "warning": "command/cwd/env not covered by dispatcher signature; rejected",
+            },
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="unsigned Loom command brief rejected: dispatcher must sign command/cwd/env fields (upgrade to M2.9.1+)",
+        )
     try:
         blackboard.consume_dispatcher_nonce(payload.dispatcher_id, payload.nonce)
     except KeyError as exc:

@@ -251,7 +251,8 @@ pub async fn dispatch_task_signed(
     verify_sig(&public_key, &envelope, &payload.signature)
         .map_err(|e| (StatusCode::FORBIDDEN, e))?;
 
-    // Legacy unsigned-command brief: log audit event and continue during deprecation window.
+    // M2.9.7 legacy flip: unsigned command briefs are now hard-rejected (403).
+    // The deprecation window (M2.9.1–M2.9.6) is closed.
     if is_command && !has_signed_command {
         let _ = audit_append(
             &*state.store,
@@ -260,10 +261,14 @@ pub async fn dispatch_task_signed(
             &json!({
                 "dispatcher_id": payload.dispatcher_id,
                 "title": payload.base.title,
-                "warning": "command/cwd/env not covered by dispatcher signature; upgrade dispatcher",
+                "warning": "command/cwd/env not covered by dispatcher signature; rejected",
             }),
         )
         .await;
+        return Err((
+            StatusCode::FORBIDDEN,
+            "unsigned Loom command brief rejected: dispatcher must sign command/cwd/env fields (upgrade to M2.9.1+)".into(),
+        ));
     }
 
     state

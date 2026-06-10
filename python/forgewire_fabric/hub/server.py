@@ -2880,18 +2880,24 @@ class HostRoleRequest(BaseModel):
 
 
 class DispatchTaskSignedRequest(DispatchTaskRequest):
-    """Protocol-v3 signed-dispatch envelope.
+    """Protocol-v4 signed-dispatch envelope.
 
-    The signature covers every execution-semantic field from
-    :class:`DispatchTaskRequest` plus ``op``, ``dispatcher_id``, ``timestamp``,
-    and ``nonce``. ``approval_id`` is deliberately excluded so a held brief can
-    be approved and re-posted without changing the operator-approved envelope.
+    For ``kind='command'`` briefs the signature additionally covers the
+    executable payload (M2.9.1): ``loom_command``, ``loom_cwd``,
+    ``loom_env_keys``, and ``loom_env_digest``.  Absent these fields the
+    brief is rejected (M2.9.7 legacy flip — deprecation window closed).
     """
 
     dispatcher_id: str = Field(..., min_length=8, max_length=120)
     timestamp: int
     nonce: str = Field(..., min_length=8, max_length=80)
     signature: str
+    # M2.9.1 command-kind signed payload fields (required for kind='command').
+    loom_command: list[str] | None = None
+    loom_cwd: str | None = None
+    loom_env_keys: list[str] | None = None
+    loom_env_digest: str | None = None
+    loom_env: dict[str, str] | None = None
 
 
 # ---------------------------------------------------------------------------

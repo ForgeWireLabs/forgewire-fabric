@@ -23,13 +23,14 @@ def signed_payload(payload: dict[str, Any]) -> bytes:
 
 
 def dispatch_v3_signed_payload(payload: Any) -> bytes:
-    """Canonical protocol-v3 dispatch envelope.
+    """Canonical protocol-v4 dispatch envelope.
 
-    Protocol v3 signs every execution-semantic field, not just the
-    historic v2 core. Approval IDs remain outside the signed envelope so
-    an operator hold can be consumed after the original brief is approved.
+    Protocol v3 signs every execution-semantic field. Protocol v4 (M2.9.1)
+    additionally signs the executable payload for command-kind briefs so
+    the dispatcher signature covers what the runner will actually execute.
+    Approval IDs remain outside the signed envelope.
     """
-    body = {
+    body: dict[str, Any] = {
         "op": "dispatch",
         "dispatcher_id": payload.dispatcher_id,
         "title": payload.title,
@@ -54,6 +55,13 @@ def dispatch_v3_signed_payload(payload: Any) -> bytes:
         "timestamp": payload.timestamp,
         "nonce": payload.nonce,
     }
+    # M2.9.1: extend the signed envelope with the executable payload for
+    # command-kind dispatches so the signature covers what runs.
+    if payload.kind == "command" and getattr(payload, "loom_command", None) is not None:
+        body["loom_command"] = payload.loom_command
+        body["loom_cwd"] = getattr(payload, "loom_cwd", None)
+        body["loom_env_keys"] = getattr(payload, "loom_env_keys", None)
+        body["loom_env_digest"] = getattr(payload, "loom_env_digest", None)
     return signed_payload(body)
 
 def check_skew(timestamp: int) -> None:
