@@ -263,6 +263,49 @@ async def _heartbeat_loop(session: LoomSession) -> None:
                 await _register_with_retries(session)
 
 
+# Tracks the highest note id seen per task so polls are incremental.
+_stdin_note_cursors: dict[int, int] = {}
+
+STDIN_POLL_INTERVAL_SECONDS = 2
+
+
+async def _stdin_poll_loop(session: LoomSession) -> None:
+    """Drain 'dispatcher:stdin' notes into tracked subprocess stdin pipes."""
+    import json as _json
+
+    while True:
+        await asyncio.sleep(STDIN_POLL_INTERVAL_SECONDS)
+        for task_id, handle in list(session._processes.items()):
+            if handle.proc.returncode is not None:
+                continue
+            after_id = _stdin_note_cursors.get(task_id, 0)
+            try:
+                notes = await session.client.read_notes(task_id, after_id=after_id)
+            except BlackboardError:
+                continue
+            for note in notes:
+                note_id = note.get("id") or 0
+                if note_id > after_id:
+                    after_id = note_id
+                if note.get("author") != "dispatcher:stdin":
+                    continue
+                try:
+                    payload = _json.loads(note.get("body", "{}"))
+                except ValueError:
+                    continue
+                if payload.get("type") != "stdin":
+                    continue
+                lines: list[str] = payload.get("lines") or []
+                if lines and handle.proc.stdin is not None:
+                    try:
+                        for line in lines:
+                            handle.proc.stdin.write((line + "\n").encode())
+                        await handle.proc.stdin.drain()
+                    except (BrokenPipeError, ConnectionResetError):
+                        pass
+            _stdin_note_cursors[task_id] = after_id
+
+
 def _register_tools(registry: ToolRegistry, session: LoomSession) -> None:
     client = session.client
 
@@ -589,6 +632,7 @@ async def _run() -> None:
     )
     registration_task = asyncio.create_task(_register_with_retries(session))
     heartbeat_task = asyncio.create_task(_heartbeat_loop(session))
+    stdin_poll_task = asyncio.create_task(_stdin_poll_loop(session))
     server = Server("forgewire-loom-runner")
     registry = ToolRegistry()
     _register_tools(registry, session)
@@ -606,7 +650,8 @@ async def _run() -> None:
     finally:
         registration_task.cancel()
         heartbeat_task.cancel()
-        await asyncio.gather(registration_task, heartbeat_task, return_exceptions=True)
+        stdin_poll_task.cancel()
+        await asyncio.gather(registration_task, heartbeat_task, stdin_poll_task, return_exceptions=True)
         await client.aclose()
 
 
