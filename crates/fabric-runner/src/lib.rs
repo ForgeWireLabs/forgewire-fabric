@@ -389,6 +389,7 @@ async fn run_one_task(
                         test_summary: None,
                         log_tail: Some(tail),
                         error: Some(format!("policy_denied: intent {kind} — {detail}")),
+                        exit_code: None,
                     }
                 }
                 Some(IntentOutcome::ApprovalHold { kind, approval_id }) => {
@@ -405,6 +406,7 @@ async fn run_one_task(
                             "policy_hold: intent {kind} requires approval {approval_id}; \
                              re-dispatch after: forgewire-fabric approvals approve {approval_id}"
                         )),
+                        exit_code: None,
                     }
                 }
                 _ => TaskResult {
@@ -426,6 +428,7 @@ async fn run_one_task(
                     } else {
                         Some(format!("exit code {rc}"))
                     },
+                    exit_code: None,
                 },
             }
         }
@@ -438,6 +441,7 @@ async fn run_one_task(
             test_summary: None,
             log_tail: None,
             error: Some(format!("spawn failed: {e}")),
+            exit_code: None,
         },
     };
 

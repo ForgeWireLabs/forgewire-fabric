@@ -570,7 +570,7 @@ impl HubClient {
         task_id: i64,
         result: &TaskResult,
     ) -> Result<Value, ClientError> {
-        let body = json!({
+        let mut body = json!({
             "worker_id": result.worker_id,
             "status": result.status,
             "head_commit": result.head_commit,
@@ -580,6 +580,9 @@ impl HubClient {
             "log_tail": result.log_tail,
             "error": result.error,
         });
+        if let Some(rc) = result.exit_code {
+            body["exit_code"] = json!(rc);
+        }
         self.post(&format!("/tasks/{task_id}/result"), &body).await
     }
 
@@ -691,6 +694,8 @@ pub struct TaskResult {
     pub test_summary: Option<String>,
     pub log_tail: Option<String>,
     pub error: Option<String>,
+    /// Loom-only (command kind): process exit code. None for agent-kind results.
+    pub exit_code: Option<i64>,
 }
 
 // -- Helpers -----------------------------------------------------------------

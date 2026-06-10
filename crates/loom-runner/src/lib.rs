@@ -366,6 +366,7 @@ async fn run_one_task(client: Arc<HubClient>, identity: Arc<IdentityFile>, task:
                 test_summary: None,
                 log_tail: Some(tail),
                 error,
+                exit_code: Some(rc as i64),
             }
         }
         Err(e) => TaskResult {
@@ -377,6 +378,7 @@ async fn run_one_task(client: Arc<HubClient>, identity: Arc<IdentityFile>, task:
             test_summary: None,
             log_tail: None,
             error: Some(format!("spawn failed: {e}")),
+            exit_code: None,
         },
     };
 
