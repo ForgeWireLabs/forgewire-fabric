@@ -49,9 +49,9 @@ from forgewire_fabric.runner.mcp_introspection import build_mcp_manifest, manife
 
 LOGGER = logging.getLogger("forgewire_fabric.fabric_runner_mcp")
 
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 HEARTBEAT_INTERVAL_SECONDS = 20
-DEFAULT_VERSION = "0.4.1"
+DEFAULT_VERSION = "0.8.0"
 SELF_UPDATE_MIN_INTERVAL_SECONDS = 60
 
 

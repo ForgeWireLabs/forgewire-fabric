@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use crate::state::HubState;
 use crate::utils::{check_skew, utc_now, verify_sig};
 
-const PROTOCOL_VERSION: i64 = 3;
+const PROTOCOL_VERSION: i64 = 4;
 
 #[derive(Deserialize)]
 pub struct RegisterDispatcherPayload {

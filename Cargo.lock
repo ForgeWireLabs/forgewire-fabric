@@ -375,7 +375,7 @@ dependencies = [
 
 [[package]]
 name = "fabric-audit"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "fabric-protocol",
  "fabric-types",
@@ -388,7 +388,7 @@ dependencies = [
 
 [[package]]
 name = "fabric-beacon"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "hex",
  "serde",
@@ -398,14 +398,14 @@ dependencies = [
 
 [[package]]
 name = "fabric-claim-router"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "serde",
 ]
 
 [[package]]
 name = "fabric-cli"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "clap",
  "fabric-audit",
@@ -426,7 +426,7 @@ dependencies = [
 
 [[package]]
 name = "fabric-client"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "fabric-identity",
  "fabric-protocol",
@@ -443,7 +443,7 @@ dependencies = [
 
 [[package]]
 name = "fabric-hub"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -472,7 +472,7 @@ dependencies = [
 
 [[package]]
 name = "fabric-identity"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "ed25519-dalek",
  "fabric-protocol",
@@ -487,7 +487,7 @@ dependencies = [
 
 [[package]]
 name = "fabric-policy"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -497,7 +497,7 @@ dependencies = [
 
 [[package]]
 name = "fabric-protocol"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "ed25519-dalek",
  "hex",
@@ -508,7 +508,7 @@ dependencies = [
 
 [[package]]
 name = "fabric-py"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "fabric-claim-router",
  "fabric-protocol",
@@ -520,7 +520,7 @@ dependencies = [
 
 [[package]]
 name = "fabric-runner"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "fabric-beacon",
  "fabric-client",
@@ -538,7 +538,7 @@ dependencies = [
 
 [[package]]
 name = "fabric-store"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "fabric-types",
@@ -549,7 +549,7 @@ dependencies = [
 
 [[package]]
 name = "fabric-store-rqlite"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "async-trait",
  "fabric-audit",
@@ -565,14 +565,14 @@ dependencies = [
 
 [[package]]
 name = "fabric-streams"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "parking_lot",
 ]
 
 [[package]]
 name = "fabric-types"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1050,7 +1050,7 @@ checksum = "616ec5685824bcc94416c6d4a7a446eea774a31efd7062c8480ba6fd06d7a6e5"
 
 [[package]]
 name = "loom-runner"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "fabric-beacon",
  "fabric-client",

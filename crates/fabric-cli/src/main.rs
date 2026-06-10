@@ -393,7 +393,7 @@ async fn main() {
 
         Commands::Version => {
             println!("forgewire-fabric-cli {}", env!("CARGO_PKG_VERSION"));
-            println!("protocol_version: 3");
+            println!("protocol_version: 4");
             println!("runtime: native Rust");
         }
 

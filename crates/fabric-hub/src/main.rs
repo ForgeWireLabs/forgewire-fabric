@@ -40,8 +40,8 @@ use fabric_streams::{DurabilityProfile, StreamBuffer};
 use reqwest::Client as ReqwestClient;
 use tracing::{info, warn};
 
-const PROTOCOL_VERSION: i64 = 3;
-const PACKAGE_VERSION: &str = "0.7.1";
+const PROTOCOL_VERSION: i64 = 4;
+const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Probe the rqlite cluster for voter + total node counts.
 /// Returns (voters, total_nodes). Falls back to (1, 1) if unreachable.

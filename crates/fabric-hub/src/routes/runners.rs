@@ -12,8 +12,8 @@ use crate::state::HubState;
 use crate::utils::{check_skew, utc_now, verify_sig};
 
 // Protocol version bounds (matching Python PROTOCOL_VERSION / MIN_COMPATIBLE)
-const PROTOCOL_VERSION: i64 = 3;
-const MIN_COMPATIBLE: i64 = 2;
+const PROTOCOL_VERSION: i64 = 4;
+const MIN_COMPATIBLE: i64 = 4;
 
 #[derive(Deserialize)]
 pub struct RegisterPayload {

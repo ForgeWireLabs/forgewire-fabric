@@ -56,9 +56,9 @@ from forgewire_fabric.runner.runner_capabilities import (
 
 LOGGER = logging.getLogger("forgewire_fabric.loom_runner_mcp")
 
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4
 HEARTBEAT_INTERVAL_SECONDS = 20
-DEFAULT_VERSION = "0.4.1"
+DEFAULT_VERSION = "0.8.0"
 
 
 def _truthy(value: str | None) -> bool:
