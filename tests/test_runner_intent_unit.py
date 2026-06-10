@@ -1,7 +1,22 @@
+"""shell_executor intent-gate unit tests.
+
+These tests are ``async def`` so pytest-asyncio (AUTO mode) manages the
+ProactorEventLoop lifecycle on Windows.  Using ``asyncio.run()`` inside sync
+test functions after 200+ async tests had each spun up and torn down their own
+ProactorEventLoops caused stale IOCP-completion state that made subsequent
+subprocess spawns return exit code 1 unpredictably.
+
+The subprocess prompts use shell built-ins (``echo`` / ``&&``) so they work
+inside ``cmd /c`` on Windows and ``bash -lc`` on POSIX without depending on
+external binaries or quoting a Python executable path that may contain spaces.
+"""
+
 from __future__ import annotations
 
-import asyncio
+import sys
 import time
+
+import pytest
 
 from forgewire_fabric.hub.client import BlackboardError
 from forgewire_fabric.runner.agent import RunnerConfig, RunnerSession, shell_executor
@@ -40,29 +55,46 @@ def _session(tmp_path, client: InMemoryIntentClient) -> RunnerSession:
     )
 
 
-def test_python_shell_executor_allows_declared_intent(tmp_path) -> None:
+# ``echo`` is a built-in in both cmd.exe and bash — no PATH lookup, no quoting
+# issues, works in every shell the executor might use.
+#
+# Windows: cmd /c echo FW_INTENT:... && echo allowed
+# POSIX  : bash -lc echo FW_INTENT:... && echo allowed
+if sys.platform == "win32":
+    # ``echo`` in cmd.exe prints the literal text (no quote stripping).
+    # ``timeout /t N /nobreak >nul`` is the reliable cmd.exe sleep substitute.
+    _INTENT_EMIT = (
+        "echo FW_INTENT:network_egress:host=example.com && echo allowed"
+    )
+    _INTENT_EMIT_THEN_SLEEP = (
+        "echo FW_INTENT:network_egress:host=example.com && timeout /t 10 /nobreak >nul"
+    )
+else:
+    _INTENT_EMIT = (
+        "echo FW_INTENT:network_egress:host=example.com && echo allowed"
+    )
+    _INTENT_EMIT_THEN_SLEEP = (
+        "echo FW_INTENT:network_egress:host=example.com && sleep 10"
+    )
+
+
+@pytest.mark.asyncio
+async def test_python_shell_executor_allows_declared_intent(tmp_path) -> None:
     client = InMemoryIntentClient()
-    task = {
-        "id": 1,
-        "branch": "main",
-        "prompt": "printf 'FW_INTENT:network_egress:host=example.com\\nallowed\\n'",
-    }
-    result = asyncio.run(shell_executor(task, _session(tmp_path, client)))
+    task = {"id": 1, "branch": "main", "prompt": _INTENT_EMIT}
+    result = await shell_executor(task, _session(tmp_path, client))
     assert result["status"] == "done"
     assert client.intents[0]["kind"] == "network_egress"
     assert client.intents[0]["hosts"] == ["example.com"]
     assert all("FW_INTENT" not in row["line"] for row in client.streams)
 
 
-def test_python_shell_executor_fails_closed_when_intent_post_fails(tmp_path) -> None:
+@pytest.mark.asyncio
+async def test_python_shell_executor_fails_closed_when_intent_post_fails(tmp_path) -> None:
     client = InMemoryIntentClient(error=BlackboardError(0, "hub unavailable"))
-    task = {
-        "id": 1,
-        "branch": "main",
-        "prompt": "printf 'FW_INTENT:network_egress:host=example.com\\n'; sleep 5; echo unsafe",
-    }
+    task = {"id": 1, "branch": "main", "prompt": _INTENT_EMIT_THEN_SLEEP}
     started = time.monotonic()
-    result = asyncio.run(shell_executor(task, _session(tmp_path, client)))
-    assert time.monotonic() - started < 4
+    result = await shell_executor(task, _session(tmp_path, client))
+    assert time.monotonic() - started < 8
     assert result["status"] == "failed"
     assert "failed closed" in result["error"]
