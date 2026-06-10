@@ -174,6 +174,18 @@ class BlackboardClient:
         assert result is not None
         return result
 
+    async def list_agents(self) -> dict[str, Any]:
+        """GET /agents — Fabric runner registry (runners with 'agent' in kinds)."""
+        result = await self._request("GET", "/agents")
+        assert result is not None
+        return result
+
+    async def query_capability(self, kind: str, name: str) -> dict[str, Any]:
+        """GET /capabilities/{kind}/{name} — runners advertising this capability."""
+        result = await self._request("GET", f"/capabilities/{kind}/{name}")
+        assert result is not None
+        return result
+
     async def list_hosts(self) -> dict[str, Any]:
         result = await self._request("GET", "/hosts")
         assert result is not None
