@@ -28,9 +28,16 @@ def test_mcp_runner_uses_configured_hub_url(tmp_path, monkeypatch) -> None:
 
 
 def test_runner_mcp_registration_is_backgrounded() -> None:
-    body = (REPO_ROOT / "python" / "forgewire_fabric" / "hub" / "runner_mcp.py").read_text(encoding="utf-8")
+    # M2.8.4: runner_mcp.py is now a deprecated shim; the canonical
+    # implementation lives in fabric_runner_mcp.py.  Check the canonical file.
+    body = (REPO_ROOT / "python" / "forgewire_fabric" / "hub" / "fabric_runner_mcp.py").read_text(encoding="utf-8")
     assert "registration_task = asyncio.create_task(_register_with_retries(session))" in body
     assert "await _register_with_retries(session)\n    heartbeat_task" not in body
+
+    # Also verify runner_mcp.py is now a shim that re-exports from fabric_runner_mcp.
+    shim = (REPO_ROOT / "python" / "forgewire_fabric" / "hub" / "runner_mcp.py").read_text(encoding="utf-8")
+    assert "from forgewire_fabric.hub.fabric_runner_mcp import" in shim
+    assert "DeprecationWarning" in shim
 
 
 def test_dispatchers_view_collapsed_into_hosts() -> None:
