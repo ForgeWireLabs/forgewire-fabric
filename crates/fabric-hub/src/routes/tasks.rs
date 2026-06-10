@@ -15,6 +15,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use fabric_claim_router::{pick_task, CandidateTask, RunnerView};
+use fabric_policy::DispatchRequest;
 use fabric_store::{ClaimResult, CreateTaskParams, TaskRow};
 
 use crate::state::HubState;
@@ -64,6 +65,8 @@ pub struct DispatchPayload {
     pub cwd: Option<String>,
     pub env: Option<Value>,
     pub target: Option<Value>,
+    // M2.9.1 (F1): SHA-256 of canonical JSON of the sorted env map, set by signer.
+    pub loom_env_digest: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -169,33 +172,99 @@ pub async fn dispatch_task_signed(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "dispatcher not registered".into()))?;
 
-    let envelope = json!({
-        "op": "dispatch",
-        "dispatcher_id": payload.dispatcher_id,
-        "title": payload.base.title,
-        "prompt": payload.base.prompt,
-        "scope_globs": payload.base.scope_globs,
-        "base_commit": payload.base.base_commit,
-        "branch": payload.base.branch,
-        "todo_id": payload.base.todo_id,
-        "timeout_minutes": payload.base.timeout_minutes,
-        "priority": payload.base.priority,
-        "metadata": payload.base.metadata,
-        "required_tools": payload.base.required_tools,
-        "required_tags": payload.base.required_tags,
-        "required_capabilities": payload.base.required_capabilities,
-        "secrets_needed": payload.base.secrets_needed,
-        "network_egress": payload.base.network_egress,
-        "tenant": payload.base.tenant,
-        "workspace_root": payload.base.workspace_root,
-        "require_base_commit": payload.base.require_base_commit,
-        "kind": payload.base.kind,
-        "max_cost_usd": payload.base.max_cost_usd,
-        "timestamp": payload.timestamp,
-        "nonce": payload.nonce,
-    });
+    // M2.9.1 (F1): for command-kind briefs, detect whether the signer included
+    // the executable payload in the envelope. If the signed fields are present,
+    // include them in the reconstructed envelope so signature verification covers
+    // command/cwd/env_keys/env_digest. If absent (legacy brief), accept during
+    // the deprecation window and log a legacy audit event.
+    let is_command = payload.base.kind == "command";
+    let has_signed_command = is_command && payload.base.command.is_some() && payload.base.loom_env_digest.is_some();
+
+    let envelope = if has_signed_command {
+        let loom_command = payload.base.command.as_deref().unwrap_or(&[]);
+        let loom_cwd = payload.base.cwd.as_deref().unwrap_or("");
+        let loom_env_keys: Vec<String> = payload.base.env
+            .as_ref()
+            .and_then(|v| v.as_object())
+            .map(|obj| {
+                let mut keys: Vec<String> = obj.keys().cloned().collect();
+                keys.sort();
+                keys
+            })
+            .unwrap_or_default();
+        json!({
+            "op": "dispatch",
+            "dispatcher_id": payload.dispatcher_id,
+            "title": payload.base.title,
+            "prompt": payload.base.prompt,
+            "scope_globs": payload.base.scope_globs,
+            "base_commit": payload.base.base_commit,
+            "branch": payload.base.branch,
+            "todo_id": payload.base.todo_id,
+            "timeout_minutes": payload.base.timeout_minutes,
+            "priority": payload.base.priority,
+            "metadata": payload.base.metadata,
+            "required_tools": payload.base.required_tools,
+            "required_tags": payload.base.required_tags,
+            "required_capabilities": payload.base.required_capabilities,
+            "secrets_needed": payload.base.secrets_needed,
+            "network_egress": payload.base.network_egress,
+            "tenant": payload.base.tenant,
+            "workspace_root": payload.base.workspace_root,
+            "require_base_commit": payload.base.require_base_commit,
+            "kind": payload.base.kind,
+            "max_cost_usd": payload.base.max_cost_usd,
+            "timestamp": payload.timestamp,
+            "nonce": payload.nonce,
+            "loom_command": loom_command,
+            "loom_cwd": loom_cwd,
+            "loom_env_keys": loom_env_keys,
+            "loom_env_digest": payload.base.loom_env_digest,
+        })
+    } else {
+        json!({
+            "op": "dispatch",
+            "dispatcher_id": payload.dispatcher_id,
+            "title": payload.base.title,
+            "prompt": payload.base.prompt,
+            "scope_globs": payload.base.scope_globs,
+            "base_commit": payload.base.base_commit,
+            "branch": payload.base.branch,
+            "todo_id": payload.base.todo_id,
+            "timeout_minutes": payload.base.timeout_minutes,
+            "priority": payload.base.priority,
+            "metadata": payload.base.metadata,
+            "required_tools": payload.base.required_tools,
+            "required_tags": payload.base.required_tags,
+            "required_capabilities": payload.base.required_capabilities,
+            "secrets_needed": payload.base.secrets_needed,
+            "network_egress": payload.base.network_egress,
+            "tenant": payload.base.tenant,
+            "workspace_root": payload.base.workspace_root,
+            "require_base_commit": payload.base.require_base_commit,
+            "kind": payload.base.kind,
+            "max_cost_usd": payload.base.max_cost_usd,
+            "timestamp": payload.timestamp,
+            "nonce": payload.nonce,
+        })
+    };
     verify_sig(&public_key, &envelope, &payload.signature)
         .map_err(|e| (StatusCode::FORBIDDEN, e))?;
+
+    // Legacy unsigned-command brief: log audit event and continue during deprecation window.
+    if is_command && !has_signed_command {
+        let _ = audit_append(
+            &*state.store,
+            "legacy_loom_unsigned_command",
+            None,
+            &json!({
+                "dispatcher_id": payload.dispatcher_id,
+                "title": payload.base.title,
+                "warning": "command/cwd/env not covered by dispatcher signature; upgrade dispatcher",
+            }),
+        )
+        .await;
+    }
 
     state
         .store
@@ -230,6 +299,52 @@ pub async fn dispatch_task_signed(
         return Err((StatusCode::PAYMENT_REQUIRED, reason));
     }
 
+    // M2.9.2 (F2): evaluate the dispatch policy gate (forbidden-path, scope,
+    // branch protection, approval holds) before creating the task.
+    let gate_req = DispatchRequest {
+        task_id: String::new(), // not yet assigned
+        scope_globs: payload.base.scope_globs.clone(),
+        target_branch: if payload.base.branch.is_empty() { None } else { Some(payload.base.branch.clone()) },
+        dispatcher_id: Some(payload.dispatcher_id.clone()),
+        kind: payload.base.kind.clone(),
+        cwd: payload.base.cwd.clone(),
+    };
+    let gate_decision = state.gate.evaluate_dispatch(&gate_req);
+    if gate_decision.denied {
+        let reason = gate_decision.reasons.join("; ");
+        let _ = audit_append(
+            &*state.store,
+            "dispatch_denied",
+            None,
+            &json!({
+                "reason": "policy_denied",
+                "detail": reason,
+                "signed": true,
+                "dispatcher_id": payload.dispatcher_id,
+                "kind": payload.base.kind,
+            }),
+        )
+        .await;
+        return Err((StatusCode::FORBIDDEN, format!("dispatch denied by policy: {reason}")));
+    }
+    if gate_decision.needs_approval {
+        let reason = gate_decision.reasons.join("; ");
+        let _ = audit_append(
+            &*state.store,
+            "dispatch_held",
+            None,
+            &json!({
+                "reason": reason,
+                "signed": true,
+                "dispatcher_id": payload.dispatcher_id,
+                "kind": payload.base.kind,
+                "title": payload.base.title,
+            }),
+        )
+        .await;
+        return Err((StatusCode::FORBIDDEN, format!("dispatch requires approval: {reason}")));
+    }
+
     let p = dispatch_params(&payload.base, Some(&payload.dispatcher_id));
     let task = state
         .store
@@ -237,16 +352,43 @@ pub async fn dispatch_task_signed(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-    let audit_payload = json!({
-        "task_id": task.id,
-        "title": task.title,
-        "base_commit": task.base_commit,
-        "branch": task.branch,
-        "scope_globs": task.scope_globs,
-        "signed": true,
-        "dispatcher_id": payload.dispatcher_id,
-        "approval_id": payload.base.approval_id,
-    });
+    // M2.9.1 (F5): include the executed command in the audit chain so a Loom task's
+    // audit entry can answer "what command ran." Agent briefs have no command field.
+    let audit_payload = if has_signed_command {
+        let loom_env_keys: Vec<String> = payload.base.env
+            .as_ref()
+            .and_then(|v| v.as_object())
+            .map(|obj| {
+                let mut keys: Vec<String> = obj.keys().cloned().collect();
+                keys.sort();
+                keys
+            })
+            .unwrap_or_default();
+        json!({
+            "task_id": task.id,
+            "title": task.title,
+            "base_commit": task.base_commit,
+            "branch": task.branch,
+            "scope_globs": task.scope_globs,
+            "signed": true,
+            "dispatcher_id": payload.dispatcher_id,
+            "approval_id": payload.base.approval_id,
+            "loom_command": payload.base.command,
+            "loom_cwd": payload.base.cwd,
+            "loom_env_keys": loom_env_keys,
+        })
+    } else {
+        json!({
+            "task_id": task.id,
+            "title": task.title,
+            "base_commit": task.base_commit,
+            "branch": task.branch,
+            "scope_globs": task.scope_globs,
+            "signed": true,
+            "dispatcher_id": payload.dispatcher_id,
+            "approval_id": payload.base.approval_id,
+        })
+    };
     let _ = audit_append(&*state.store, "dispatch", Some(task.id), &audit_payload).await;
 
     Ok(Json(serde_json::to_value(task).unwrap_or(Value::Null)))
@@ -707,6 +849,40 @@ pub async fn claim_task_fabric(
     };
 
     do_claim(&*state, &eligible[chosen_idx], &payload.runner_id, &runner.hostname).await
+}
+
+// ---- POST /tasks/{task_id}/intent (M2.9.2 — runtime intent gate) -----------
+
+#[derive(serde::Deserialize)]
+pub struct IntentPayload {
+    pub action: String,
+}
+
+/// Runtime intent gate: evaluate whether a runner action requires approval.
+/// The loom-runner calls this before executing gated actions (shell_exec, etc.).
+/// Returns `{"allowed": true}` or `{"allowed": false, "reason": "..."}`.
+pub async fn evaluate_intent(
+    State(state): State<Arc<HubState>>,
+    Path(task_id): Path<i64>,
+    Json(payload): Json<IntentPayload>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let decision = state.gate.evaluate_intent(&payload.action);
+    let _ = audit_append(
+        &*state.store,
+        if decision.allowed { "intent_allowed" } else { "intent_denied" },
+        Some(task_id),
+        &json!({
+            "action": payload.action,
+            "allowed": decision.allowed,
+            "reasons": decision.reasons,
+        }),
+    )
+    .await;
+    Ok(Json(json!({
+        "allowed": decision.allowed,
+        "needs_approval": decision.needs_approval,
+        "reasons": decision.reasons,
+    })))
 }
 
 // ---- Helpers ---------------------------------------------------------------

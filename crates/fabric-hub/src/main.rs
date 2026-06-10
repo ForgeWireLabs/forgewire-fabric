@@ -372,6 +372,7 @@ async fn main() {
         .route("/tasks/{task_id}/result", post(streams::submit_result))
         .route("/tasks/{task_id}/notes", post(streams::post_note))
         .route("/tasks/{task_id}/notes", get(streams::read_notes))
+        .route("/tasks/{task_id}/intent", post(tasks::evaluate_intent))
         // --- Runners ---
         .route("/runners", get(runners::list_runners))
         .route("/runners/register", post(runners::register_runner))

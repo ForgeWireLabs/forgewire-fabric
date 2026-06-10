@@ -20,6 +20,7 @@ use std::time::Duration;
 use fabric_client::{ClaimPayload, ClaimResponse, HeartbeatStats, HubClient, RegisterPayload, TaskResult};
 use fabric_identity::IdentityFile;
 use fabric_types::KeyPurpose;
+use sha2::{Digest, Sha256};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -247,7 +248,7 @@ pub async fn claim_loop(
                     title = task["title"].as_str().unwrap_or("?"),
                     "loom runner claimed task"
                 );
-                run_one_task(client.clone(), identity.clone(), &task).await;
+                run_one_task(client.clone(), identity.clone(), config.clone(), &task).await;
             }
             Ok(ClaimResponse { task: None, info }) => {
                 if let Some(reason) = info["reason"].as_str() {
@@ -273,7 +274,7 @@ pub async fn claim_loop(
     }
 }
 
-async fn run_one_task(client: Arc<HubClient>, identity: Arc<IdentityFile>, task: &Value) {
+async fn run_one_task(client: Arc<HubClient>, identity: Arc<IdentityFile>, config: Arc<LoomConfig>, task: &Value) {
     let task_id = task["id"].as_i64().unwrap_or(0);
     let runner_id = identity.id.clone();
 
@@ -285,16 +286,94 @@ async fn run_one_task(client: Arc<HubClient>, identity: Arc<IdentityFile>, task:
     // Fall back to running the `prompt` field via shell for backward compat.
     let (program, args, cwd, timeout_secs) = resolve_command(task);
 
+    // M2.9.1 (F1): verify the env digest before spawn. If the brief carries a
+    // signed digest and it doesn't match the stored env map, refuse to run —
+    // defense-in-depth even though the runner trusts the hub.
+    if let Some(signed_digest) = task["loom_env_digest"].as_str() {
+        let env_obj = task["env"].as_object().map(|o| o.clone()).unwrap_or_default();
+        let actual_digest = compute_env_digest(&env_obj);
+        if actual_digest != signed_digest {
+            error!(
+                task_id,
+                expected = signed_digest,
+                actual = %actual_digest,
+                "loom env digest mismatch — refusing to spawn; brief may have been tampered"
+            );
+            let result = TaskResult {
+                worker_id: runner_id,
+                status: "failed".into(),
+                head_commit: None,
+                commits: vec![],
+                files_touched: vec![],
+                test_summary: None,
+                log_tail: None,
+                error: Some("env digest mismatch: refusing spawn".into()),
+                exit_code: None,
+            };
+            if let Err(e) = client.submit_result(task_id, &result).await {
+                error!(task_id, error = %e, "failed to submit loom task result");
+            }
+            return;
+        }
+    }
+
+    // M2.9.3 (F3): cwd containment — if scope_prefixes are configured, the resolved
+    // cwd must be under at least one of them. Belt-and-suspenders with the hub check.
+    if !cwd.is_empty() && !config.scope_prefixes.is_empty() {
+        let within_scope = config.scope_prefixes.iter().any(|prefix| {
+            let p = prefix.trim_end_matches('/');
+            cwd == p || cwd.starts_with(&format!("{p}/")) || cwd.starts_with(&format!("{p}\\"))
+        });
+        if !within_scope {
+            error!(
+                task_id,
+                cwd = %cwd,
+                scope_prefixes = ?config.scope_prefixes,
+                "loom cwd outside allowed scope — refusing spawn"
+            );
+            let result = TaskResult {
+                worker_id: runner_id,
+                status: "failed".into(),
+                head_commit: None,
+                commits: vec![],
+                files_touched: vec![],
+                test_summary: None,
+                log_tail: None,
+                error: Some(format!("cwd '{cwd}' outside allowed scope prefixes")),
+                exit_code: None,
+            };
+            if let Err(e) = client.submit_result(task_id, &result).await {
+                error!(task_id, error = %e, "failed to submit loom task result");
+            }
+            return;
+        }
+    }
+
     let mut cmd = Command::new(&program);
     cmd.args(&args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
+    // M2.9.3 (F3): start from a clean environment — never inherit the runner
+    // service's ambient env (which carries FORGEWIRE_HUB_TOKEN, key paths, etc.).
+    // Build the process env from an explicit allowlist plus the brief's loom_env.
+    cmd.env_clear();
+    for var in &[
+        "PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "SYSTEMDRIVE",
+        "TEMP", "TMP", "TMPDIR",
+        "LANG", "LC_ALL", "LC_CTYPE", "TZ",
+        "COMPUTERNAME", "USERNAME",
+    ] {
+        if let Ok(val) = std::env::var(var) {
+            cmd.env(var, val);
+        }
+    }
+
     if !cwd.is_empty() {
         cmd.current_dir(&cwd);
     }
 
-    // Inject env overrides from task brief.
+    // Inject env overrides from the signed brief only (not the service environment).
     if let Some(env_obj) = task["env"].as_object() {
         for (k, v) in env_obj {
             if let Some(val) = v.as_str() {
@@ -386,6 +465,33 @@ async fn run_one_task(client: Arc<HubClient>, identity: Arc<IdentityFile>, task:
     if let Err(e) = client.submit_result(task_id, &result).await {
         error!(task_id, error = %e, "failed to submit loom task result");
     }
+}
+
+/// Compute the SHA-256 of the canonical JSON of the sorted env map, matching
+/// the Python signer's `_loom_env_digest`. Returns the lowercase hex string.
+fn compute_env_digest(env_obj: &serde_json::Map<String, Value>) -> String {
+    let mut sorted: Vec<(&str, &str)> = env_obj
+        .iter()
+        .filter_map(|(k, v)| v.as_str().map(|s| (k.as_str(), s)))
+        .collect();
+    sorted.sort_by_key(|(k, _)| *k);
+    // Build canonical JSON: {"key":"val",...} with no spaces, sorted keys.
+    let mut canonical = String::from("{");
+    for (i, (k, v)) in sorted.iter().enumerate() {
+        if i > 0 {
+            canonical.push(',');
+        }
+        // JSON-encode key and value (simple: escape backslash and double-quote).
+        canonical.push('"');
+        canonical.push_str(&k.replace('\\', "\\\\").replace('"', "\\\""));
+        canonical.push_str("\":\"");
+        canonical.push_str(&v.replace('\\', "\\\\").replace('"', "\\\""));
+        canonical.push('"');
+    }
+    canonical.push('}');
+    let mut hasher = Sha256::new();
+    hasher.update(canonical.as_bytes());
+    hex::encode(hasher.finalize())
 }
 
 /// Extract argv, cwd, and timeout from a Loom task brief.

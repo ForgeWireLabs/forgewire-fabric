@@ -331,7 +331,16 @@ def _register_tools(registry: ToolRegistry, session: LoomSession) -> None:
         env_overrides: dict[str, str] = args.get("env") or {}
         timeout_seconds: int = int(args.get("timeout_seconds") or 0)
 
-        env = {**os.environ, **env_overrides}
+        # M2.9.3 (F3): build env from explicit allowlist + brief overrides only.
+        # Never inherit the service environment — it carries FORGEWIRE_HUB_TOKEN
+        # and other secret-bearing variables that commands must not see.
+        _ALLOWLIST = (
+            "PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "SYSTEMDRIVE",
+            "TEMP", "TMP", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "TZ",
+            "COMPUTERNAME", "USERNAME",
+        )
+        env = {k: v for k, v in os.environ.items() if k in _ALLOWLIST}
+        env.update(env_overrides)
 
         if len(session._processes) >= session.max_concurrent:
             return {"error": "max_concurrent reached", "running": len(session._processes)}

@@ -307,6 +307,9 @@ pub struct DispatchRequest {
     pub scope_globs: Vec<String>,
     pub target_branch: Option<String>,
     pub dispatcher_id: Option<String>,
+    // M2.9.2: command-kind fields for cwd-based forbidden-path and scope checks.
+    pub kind: String,
+    pub cwd: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -382,6 +385,34 @@ impl PolicyEngine {
                     return PolicyDecision::require_approval(format!(
                         "scope '{glob}' requires operator approval"
                     ));
+                }
+            }
+        }
+
+        // M2.9.2: for command-kind briefs, check cwd against forbidden paths and
+        // scope prefixes (belt-and-suspenders; the runner also checks at spawn).
+        if req.kind == "command" {
+            if let Some(ref cwd) = req.cwd {
+                if !cwd.is_empty() {
+                    for forbidden in &p.forbidden_paths {
+                        if glob_match(forbidden, cwd) || cwd.starts_with(forbidden.trim_end_matches("/**").trim_end_matches('*')) {
+                            return PolicyDecision::deny(format!(
+                                "cwd '{cwd}' overlaps forbidden path '{forbidden}'"
+                            ));
+                        }
+                    }
+                    // Scope-escape check: if scope_prefixes are configured and cwd
+                    // does not start with any of them, deny.
+                    if !req.scope_globs.is_empty()
+                        && !req.scope_globs.iter().any(|prefix| {
+                            let p = prefix.trim_end_matches("/**").trim_end_matches('*');
+                            p.is_empty() || cwd.starts_with(p)
+                        })
+                    {
+                        return PolicyDecision::deny(format!(
+                            "cwd '{cwd}' is outside the allowed scope prefixes"
+                        ));
+                    }
                 }
             }
         }
@@ -560,6 +591,8 @@ mod tests {
             scope_globs: vec![scope.into()],
             target_branch: branch.map(Into::into),
             dispatcher_id: None,
+            kind: "agent".into(),
+            cwd: None,
         }
     }
 

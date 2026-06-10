@@ -25,6 +25,7 @@ Env knobs:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json as _json
 import logging
 import os
@@ -46,6 +47,14 @@ from forgewire_fabric.runner.runner_capabilities import fresh_nonce, now_ts, sig
 LOGGER = logging.getLogger("forgewire_fabric.loom_mcp")
 
 TERMINAL_STATES = {"done", "failed", "cancelled", "timed_out"}
+
+
+def _loom_env_digest(env: dict[str, str]) -> str:
+    """SHA-256 of the canonical JSON of the sorted env map (values bound, keys auditable)."""
+    canonical = _json.dumps(
+        {k: env[k] for k in sorted(env)}, separators=(",", ":"), ensure_ascii=False
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
 
 
 class DispatcherSession:
@@ -139,6 +148,16 @@ class DispatcherSession:
             "timestamp": ts,
             "nonce": nonce,
         }
+        # M2.9.1 (F1): extend the signed envelope with the executable payload so
+        # the dispatcher signature covers what the runner will actually execute.
+        command: list[str] = payload.get("command") or []
+        cwd: str = payload.get("cwd") or ""
+        env_map: dict[str, str] = payload.get("env") or {}
+        if command:
+            envelope["loom_command"] = command
+            envelope["loom_cwd"] = cwd
+            envelope["loom_env_keys"] = sorted(env_map.keys())
+            envelope["loom_env_digest"] = _loom_env_digest(env_map)
         sig = sign_payload(self._identity, envelope)
         return {
             **payload,
@@ -146,6 +165,8 @@ class DispatcherSession:
             "timestamp": ts,
             "nonce": nonce,
             "signature": sig,
+            # Surface digest so the hub can re-verify and the runner can cross-check.
+            **({"loom_env_digest": envelope["loom_env_digest"]} if command else {}),
         }
 
 
