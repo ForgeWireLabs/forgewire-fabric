@@ -613,6 +613,12 @@ impl HubClient {
         self.post(&format!("/runners/{}/drain", identity.id), &body)
             .await
     }
+
+    /// M2.9.4 (F4): drain signed stdin batches with seq > after_seq.
+    /// Called by runners to feed queued lines into the running process stdin.
+    pub async fn get_task_input(&self, task_id: i64, after_seq: i64) -> Result<Value, ClientError> {
+        self.get(&format!("/tasks/{task_id}/input?after_seq={after_seq}")).await
+    }
 }
 
 // -- Payload types -----------------------------------------------------------

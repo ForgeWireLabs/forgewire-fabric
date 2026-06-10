@@ -498,6 +498,26 @@ class BlackboardClient:
         assert result is not None
         return result
 
+    # M2.9.4 (F4): signed stdin route -------------------------------------------
+
+    async def post_task_input(
+        self, task_id: int, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """POST a signed stdin batch to /tasks/{id}/input."""
+        result = await self._request("POST", f"/tasks/{task_id}/input", json=payload)
+        assert result is not None
+        return result
+
+    async def get_task_input(
+        self, task_id: int, *, after_seq: int = 0
+    ) -> dict[str, Any]:
+        """GET signed stdin batches with seq > after_seq."""
+        result = await self._request(
+            "GET", f"/tasks/{task_id}/input", params={"after_seq": after_seq}
+        )
+        assert result is not None
+        return result
+
     async def post_note(
         self, task_id: int, payload: dict[str, Any]
     ) -> dict[str, Any]:

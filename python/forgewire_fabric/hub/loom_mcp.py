@@ -11,7 +11,7 @@ Tools:
   run_command       -- convenience: dispatch + await_result on the Loom queue
   start_process     -- dispatch a command task without blocking (returns task_id)
   read_output       -- pull stdout/stderr lines since seq N
-  send_input        -- post stdin lines to a running process (note-transport)
+  send_input        -- post signed stdin lines to a running process
   kill_process      -- cancel / kill a running command task
   list_processes    -- list active command tasks (running / queued)
   await_result      -- block until terminal state
@@ -380,30 +380,47 @@ def _register_tools(
     )
 
     # ── send_input ─────────────────────────────────────────────────────────────
-    # Transport: note with body = JSON ``{"type": "stdin", "lines": [...]}``
-    # The Loom runner polls task notes and drains these into the process stdin
-    # pipe. (Note-transport is used because the Rust hub has no dedicated
-    # /tasks/{id}/input endpoint in M2.8.7; a first-class endpoint is tracked
-    # as a follow-up item.)
+    # M2.9.4 (F4): signed POST /tasks/{id}/input replaces the note-transport
+    # path. The dispatcher signs each batch so the hub can verify it before
+    # queuing, and the runner trusts only hub-verified entries.
+
+    _send_input_seq: list[int] = [0]  # mutable counter via single-element list
 
     async def send_input(args: dict[str, Any]) -> dict[str, Any]:
         task_id = int(args["task_id"])
         lines: list[str] = args["lines"]
-        note_body = _json.dumps({"type": "stdin", "lines": lines})
-        return await client.post_note(
-            task_id,
-            {"author": "dispatcher:stdin", "body": note_body},
-        )
+        if session is None or not session.registered:
+            return {"error": "dispatcher not registered; cannot send signed stdin"}
+        ts = now_ts()
+        nonce = fresh_nonce()
+        _send_input_seq[0] += 1
+        seq = _send_input_seq[0]
+        envelope: dict[str, Any] = {
+            "op": "task-input",
+            "task_id": task_id,
+            "dispatcher_id": session.dispatcher_id,
+            "lines": lines,
+            "seq": seq,
+            "timestamp": ts,
+            "nonce": nonce,
+        }
+        sig = sign_payload(session._identity, envelope)
+        return await client.post_task_input(task_id, {
+            "dispatcher_id": session.dispatcher_id,
+            "lines": lines,
+            "seq": seq,
+            "timestamp": ts,
+            "nonce": nonce,
+            "signature": sig,
+        })
 
     registry.register(
         name="send_input",
         description=(
-            "Post stdin lines to a running Loom process. Lines are queued via "
-            "the hub's note back-channel (author: 'dispatcher:stdin', body is "
-            "JSON ``{type:'stdin', lines:[...]}``) and written to the process "
-            "stdin pipe by the runner on its next poll cycle. Use for "
-            "interactive commands that read from stdin (e.g. confirmations, "
-            "REPL prompts)."
+            "Post signed stdin lines to a running Loom process. Lines are "
+            "delivered via the signed POST /tasks/{id}/input route and written "
+            "to the process stdin pipe by the runner. Use for interactive "
+            "commands that read from stdin (e.g. confirmations, REPL prompts)."
         ),
         input_schema={
             "type": "object",

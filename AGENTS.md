@@ -281,10 +281,32 @@ The thesis is binding. Stop and ask before:
 - Changing the v2 canonical payload shape.
 - Dropping the cross-host hub watchdog from the OOTB chain in §6.
 - Skipping the installer asset mirror in §4.
+- Hand-syncing `C:/Projects/forgewire-fabric` — use `scripts/dr/check_mirror_sync.ps1` first and sync via subtree push only.
 
 ---
 
-## 11. Pointers
+## 11. Standalone mirror (`C:/Projects/forgewire-fabric`) — provenance boundary
+
+The standalone mirror at `C:/Projects/forgewire-fabric` is a **published artifact**
+of this subtree, not a peer implementation repo. It must be synchronized only via
+`git subtree push` (or an equivalent artifact lane), never by hand-editing files
+directly in the mirror and committing.
+
+**Sync discipline:**
+1. Every sync commit must record the monorepo base commit in the message:
+   `sync: monorepo <40-hex> — <description>`.
+2. Before syncing, run `scripts/dr/check_mirror_sync.ps1` to verify the
+   mirror is currently in sync with its recorded base commit.
+3. After a subtree push, run the script again to confirm.
+
+**CI guard (M2.9.6):** `scripts/dr/check_mirror_sync.ps1` is the divergence
+guard. Wiring it into `.github/workflows/**` requires a human-reviewed PR
+(frozen surface — Hard rule §3). The script can be invoked manually or via any
+non-frozen CI mechanism.
+
+---
+
+## 13. Pointers
 
 - **Milestones / roadmap:** [`forgewire/todos/114-forgewire-fabric/`](../forgewire/todos/114-forgewire-fabric/)
 - **Phase doc (operator control plane):**

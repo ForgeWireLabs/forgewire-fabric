@@ -1,11 +1,18 @@
-﻿//! Shared hub state — passed to all route handlers via axum State.
+//! Shared hub state — passed to all route handlers via axum State.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
+
+use tokio::sync::Mutex;
 
 use fabric_policy::{BudgetPolicy, DispatchGate};
 use fabric_store::FabricStore;
 use fabric_streams::StreamBuffer;
+
+/// In-memory queue of signed stdin batches per task.
+/// Each entry is `(seq, lines)`. Flushed when a task completes.
+pub type InputQueue = Mutex<HashMap<i64, Vec<(i64, Vec<String>)>>>;
 
 pub struct HubState {
     pub store: Arc<dyn FabricStore>,
@@ -25,4 +32,7 @@ pub struct HubState {
     pub backend: String,
     /// Bounded write buffer for task stream lines.
     pub stream_buffer: Arc<StreamBuffer>,
+    /// M2.9.4 (F4): per-task signed stdin batches; populated by POST /tasks/{id}/input,
+    /// drained by runners via GET /tasks/{id}/input?after_seq=N.
+    pub input_queues: Arc<InputQueue>,
 }

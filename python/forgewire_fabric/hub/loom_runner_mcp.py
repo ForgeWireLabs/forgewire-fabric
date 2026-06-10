@@ -8,7 +8,6 @@ Tools surfaced to the dispatching agent:
 * ``claim_next_command``   -- claim from /tasks/claim-loom
 * ``start_process``        -- spawn the claimed command as a subprocess
 * ``report_output``        -- append a stdout/stderr line (alias for report_stream)
-* ``read_stdin_buffer``    -- drain buffered stdin posted by the dispatcher
 * ``report_exit``          -- terminal report with exit_code and log_tail
 * ``kill_process``         -- terminate a tracked process
 * ``list_processes``       -- enumerate tracked in-flight processes
@@ -23,6 +22,12 @@ Env knobs:
   FORGEWIRE_RUNNER_TENANT        -- tenant id
   FORGEWIRE_RUNNER_MAX_CONCURRENT -- concurrency cap (default 2)
   FORGEWIRE_RUNNER_VERSION       -- override version string
+
+.. TEST-ONLY REFERENCE — not a deployed daemon ..
+The canonical deployed Loom runner is the Rust ``forgewire-loom-runner`` binary
+(``crates/loom-runner``).  This Python module is a parity-reference and test
+harness.  It must NOT be shipped as the primary runner; a drift-guard test
+(``tests/test_loom_runner_parity.py``) asserts this banner is present.
 """
 
 from __future__ import annotations
@@ -78,7 +83,6 @@ class ProcessHandle:
         self.task_id = task_id
         self.proc = proc
         self.started_at = _time.time()
-        self.stdin_buffer: list[str] = []  # lines queued via read_stdin_buffer
 
 
 class LoomSession:
@@ -263,47 +267,37 @@ async def _heartbeat_loop(session: LoomSession) -> None:
                 await _register_with_retries(session)
 
 
-# Tracks the highest note id seen per task so polls are incremental.
-_stdin_note_cursors: dict[int, int] = {}
-
 STDIN_POLL_INTERVAL_SECONDS = 2
 
 
-async def _stdin_poll_loop(session: LoomSession) -> None:
-    """Drain 'dispatcher:stdin' notes into tracked subprocess stdin pipes."""
-    import json as _json
+async def _stdin_drain_loop(session: LoomSession) -> None:
+    """Poll GET /tasks/{id}/input and write signed stdin batches to subprocess pipes."""
+    cursors: dict[int, int] = {}
 
     while True:
         await asyncio.sleep(STDIN_POLL_INTERVAL_SECONDS)
         for task_id, handle in list(session._processes.items()):
             if handle.proc.returncode is not None:
                 continue
-            after_id = _stdin_note_cursors.get(task_id, 0)
+            after_seq = cursors.get(task_id, 0)
             try:
-                notes = await session.client.read_notes(task_id, after_id=after_id)
+                result = await session.client.get_task_input(task_id, after_seq=after_seq)
             except BlackboardError:
                 continue
-            for note in notes:
-                note_id = note.get("id") or 0
-                if note_id > after_id:
-                    after_id = note_id
-                if note.get("author") != "dispatcher:stdin":
-                    continue
-                try:
-                    payload = _json.loads(note.get("body", "{}"))
-                except ValueError:
-                    continue
-                if payload.get("type") != "stdin":
-                    continue
-                lines: list[str] = payload.get("lines") or []
+            entries = result.get("entries") or []
+            for entry in entries:
+                seq = entry.get("seq") or 0
+                if seq > after_seq:
+                    after_seq = seq
+                lines: list[str] = entry.get("lines") or []
                 if lines and handle.proc.stdin is not None:
                     try:
                         for line in lines:
                             handle.proc.stdin.write((line + "\n").encode())
                         await handle.proc.stdin.drain()
                     except (BrokenPipeError, ConnectionResetError):
-                        pass
-            _stdin_note_cursors[task_id] = after_id
+                        break
+            cursors[task_id] = after_seq
 
 
 def _register_tools(registry: ToolRegistry, session: LoomSession) -> None:
@@ -378,29 +372,15 @@ def _register_tools(registry: ToolRegistry, session: LoomSession) -> None:
         asyncio.create_task(_pump(proc.stdout, "stdout"))
         asyncio.create_task(_pump(proc.stderr, "stderr"))
 
-        async def _auto_finish() -> None:
-            rc = await proc.wait()
-            handle2 = session._processes.pop(task_id, None)
-            if handle2 is not None:
+        # M2.9.5 (F7): single finish path with optional timeout wrapper.
+        # Timeout sentinel -124 matches the Rust loom-runner's SIGXCPU-like constant.
+        async def _auto_finish(timeout_secs: int = 0) -> None:
+            rc: int
+            if timeout_secs > 0:
                 try:
-                    await client.submit_result(
-                        task_id,
-                        {
-                            "worker_id": session.runner_id,
-                            "status": "done" if rc == 0 else "failed",
-                            "exit_code": rc,
-                            "error": None if rc == 0 else f"exit code {rc}",
-                        },
-                    )
-                except BlackboardError as exc:
-                    LOGGER.warning("loom auto-finish submit failed: %s", exc)
-
-        if timeout_seconds > 0:
-            async def _with_timeout() -> None:
-                try:
-                    await asyncio.wait_for(_auto_finish_inner(proc), timeout=timeout_seconds)
+                    rc = await asyncio.wait_for(proc.wait(), timeout=float(timeout_secs))
                 except asyncio.TimeoutError:
-                    LOGGER.warning("loom task_id=%d timed out after %ds", task_id, timeout_seconds)
+                    LOGGER.warning("loom task_id=%d timed out after %ds", task_id, timeout_secs)
                     try:
                         proc.kill()
                     except ProcessLookupError:
@@ -414,31 +394,29 @@ def _register_tools(registry: ToolRegistry, session: LoomSession) -> None:
                                 "worker_id": session.runner_id,
                                 "status": "timed_out",
                                 "exit_code": -124,
-                                "error": f"timed out after {timeout_seconds}s",
+                                "error": f"timed out after {timeout_secs}s",
                             },
                         )
                     except BlackboardError:
                         pass
+                    return
+            else:
+                rc = await proc.wait()
+            session._processes.pop(task_id, None)
+            try:
+                await client.submit_result(
+                    task_id,
+                    {
+                        "worker_id": session.runner_id,
+                        "status": "done" if rc == 0 else "failed",
+                        "exit_code": rc,
+                        "error": None if rc == 0 else f"exit code {rc}",
+                    },
+                )
+            except BlackboardError as exc:
+                LOGGER.warning("loom auto-finish submit failed: %s", exc)
 
-            async def _auto_finish_inner(p: asyncio.subprocess.Process) -> None:
-                rc = await p.wait()
-                session._processes.pop(task_id, None)
-                try:
-                    await client.submit_result(
-                        task_id,
-                        {
-                            "worker_id": session.runner_id,
-                            "status": "done" if rc == 0 else "failed",
-                            "exit_code": rc,
-                            "error": None if rc == 0 else f"exit code {rc}",
-                        },
-                    )
-                except BlackboardError as exc:
-                    LOGGER.warning("loom auto-finish submit failed: %s", exc)
-
-            asyncio.create_task(_with_timeout())
-        else:
-            asyncio.create_task(_auto_finish())
+        asyncio.create_task(_auto_finish(timeout_seconds))
 
         return {"task_id": task_id, "pid": proc.pid, "status": "running"}
 
@@ -492,30 +470,6 @@ def _register_tools(registry: ToolRegistry, session: LoomSession) -> None:
             },
         },
         handler=report_output,
-    )
-
-    async def read_stdin_buffer(args: dict[str, Any]) -> dict[str, Any]:
-        task_id = int(args["task_id"])
-        handle = session._processes.get(task_id)
-        if handle is None:
-            return {"lines": [], "error": "no such process"}
-        lines = list(handle.stdin_buffer)
-        handle.stdin_buffer.clear()
-        return {"task_id": task_id, "lines": lines}
-
-    registry.register(
-        name="read_stdin_buffer",
-        description=(
-            "Drain the stdin buffer for a tracked process. Lines queued here "
-            "were posted by the dispatcher via the hub's send_input endpoint. "
-            "Write them to the process's stdin pipe after draining."
-        ),
-        input_schema={
-            "type": "object",
-            "required": ["task_id"],
-            "properties": {"task_id": {"type": "integer"}},
-        },
-        handler=read_stdin_buffer,
     )
 
     async def report_exit(args: dict[str, Any]) -> dict[str, Any]:
@@ -641,7 +595,7 @@ async def _run() -> None:
     )
     registration_task = asyncio.create_task(_register_with_retries(session))
     heartbeat_task = asyncio.create_task(_heartbeat_loop(session))
-    stdin_poll_task = asyncio.create_task(_stdin_poll_loop(session))
+    stdin_poll_task = asyncio.create_task(_stdin_drain_loop(session))
     server = Server("forgewire-loom-runner")
     registry = ToolRegistry()
     _register_tools(registry, session)

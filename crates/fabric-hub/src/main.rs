@@ -346,6 +346,7 @@ async fn main() {
         sidecar_integrity: "trusted_bearer".into(),
         backend: format!("rqlite:{rqlite_host}:{rqlite_port}"),
         stream_buffer: Arc::new(StreamBuffer::new(stream_profile)),
+        input_queues: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     });
 
     // Public routes (no auth)
@@ -373,6 +374,8 @@ async fn main() {
         .route("/tasks/{task_id}/notes", post(streams::post_note))
         .route("/tasks/{task_id}/notes", get(streams::read_notes))
         .route("/tasks/{task_id}/intent", post(tasks::evaluate_intent))
+        .route("/tasks/{task_id}/input", post(streams::post_task_input))
+        .route("/tasks/{task_id}/input", get(streams::get_task_input))
         // --- Runners ---
         .route("/runners", get(runners::list_runners))
         .route("/runners/register", post(runners::register_runner))

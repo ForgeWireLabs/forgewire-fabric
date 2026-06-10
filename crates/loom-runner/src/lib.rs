@@ -351,6 +351,7 @@ async fn run_one_task(client: Arc<HubClient>, identity: Arc<IdentityFile>, confi
 
     let mut cmd = Command::new(&program);
     cmd.args(&args)
+        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
@@ -384,6 +385,7 @@ async fn run_one_task(client: Arc<HubClient>, identity: Arc<IdentityFile>, confi
 
     let result = match cmd.spawn() {
         Ok(mut child) => {
+            let stdin = child.stdin.take();
             let stdout = child.stdout.take();
             let stderr = child.stderr.take();
 
@@ -399,6 +401,14 @@ async fn run_one_task(client: Arc<HubClient>, identity: Arc<IdentityFile>, confi
                 let rid = runner_id.clone();
                 tokio::spawn(async move {
                     pump_pipe(c, task_id, &rid, "stderr", stderr).await
+                })
+            };
+
+            // M2.9.4 (F4): poll the signed-stdin route and write to the process pipe.
+            let stdin_handle = {
+                let c = client.clone();
+                tokio::spawn(async move {
+                    drain_signed_stdin(c, task_id, stdin).await;
                 })
             };
 
@@ -418,6 +428,7 @@ async fn run_one_task(client: Arc<HubClient>, identity: Arc<IdentityFile>, confi
                 child.wait().await.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1)
             };
 
+            stdin_handle.abort();
             let mut log_lines = Vec::new();
             if let Ok(lines) = stdout_handle.await {
                 log_lines.extend(lines);
@@ -464,6 +475,47 @@ async fn run_one_task(client: Arc<HubClient>, identity: Arc<IdentityFile>, confi
     info!(task_id, status = %result.status, "loom task completed");
     if let Err(e) = client.submit_result(task_id, &result).await {
         error!(task_id, error = %e, "failed to submit loom task result");
+    }
+}
+
+/// M2.9.4 (F4): poll GET /tasks/{id}/input and write lines to the process stdin.
+/// Runs until the process exits (caller aborts this task via JoinHandle::abort).
+async fn drain_signed_stdin(
+    client: Arc<HubClient>,
+    task_id: i64,
+    stdin: Option<tokio::process::ChildStdin>,
+) {
+    use tokio::io::AsyncWriteExt;
+    let Some(mut stdin) = stdin else { return };
+    let mut after_seq: i64 = 0;
+    loop {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        match client.get_task_input(task_id, after_seq).await {
+            Ok(resp) => {
+                if let Some(entries) = resp["entries"].as_array() {
+                    for entry in entries {
+                        let seq = entry["seq"].as_i64().unwrap_or(0);
+                        if seq > after_seq {
+                            after_seq = seq;
+                        }
+                        if let Some(lines) = entry["lines"].as_array() {
+                            for line in lines {
+                                if let Some(s) = line.as_str() {
+                                    let bytes = format!("{s}\n");
+                                    if stdin.write_all(bytes.as_bytes()).await.is_err() {
+                                        return; // process stdin closed
+                                    }
+                                }
+                            }
+                            let _ = stdin.flush().await;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                debug!(task_id, error = %e, "stdin drain poll failed");
+            }
+        }
     }
 }
 

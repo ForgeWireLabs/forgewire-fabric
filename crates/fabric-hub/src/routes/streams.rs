@@ -12,7 +12,7 @@ use fabric_store::SubmitResultParams;
 use fabric_streams::{DurabilityProfile, PendingEntry};
 
 use crate::state::HubState;
-use crate::utils::{audit_append, utc_now};
+use crate::utils::{audit_append, check_skew, utc_now, verify_sig};
 
 #[derive(Deserialize)]
 pub struct ProgressPayload {
@@ -387,4 +387,98 @@ pub async fn read_notes(
 pub struct NoteQuery {
     #[serde(default)]
     pub after_id: i64,
+}
+
+// ---- POST /tasks/{task_id}/input (M2.9.4 — signed stdin) -------------------
+
+#[derive(Deserialize)]
+pub struct TaskInputPayload {
+    pub dispatcher_id: String,
+    pub lines: Vec<String>,
+    pub seq: i64,
+    pub timestamp: i64,
+    pub nonce: String,
+    pub signature: String,
+}
+
+#[derive(Deserialize)]
+pub struct InputQuery {
+    #[serde(default)]
+    pub after_seq: i64,
+}
+
+/// Accept a signed stdin batch from a dispatcher and push it into the
+/// per-task in-memory input queue. Unsigned posts are rejected (403).
+pub async fn post_task_input(
+    State(state): State<Arc<HubState>>,
+    Path(task_id): Path<i64>,
+    Json(payload): Json<TaskInputPayload>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    check_skew(payload.timestamp).map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
+
+    let public_key = state
+        .store
+        .dispatcher_public_key(&payload.dispatcher_id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| (StatusCode::FORBIDDEN, "dispatcher not registered — stdin post rejected".into()))?;
+
+    let envelope = json!({
+        "op": "task-input",
+        "task_id": task_id,
+        "dispatcher_id": payload.dispatcher_id,
+        "lines": payload.lines,
+        "seq": payload.seq,
+        "timestamp": payload.timestamp,
+        "nonce": payload.nonce,
+    });
+    verify_sig(&public_key, &envelope, &payload.signature)
+        .map_err(|e| (StatusCode::FORBIDDEN, format!("stdin signature invalid: {e}")))?;
+
+    let assigned_seq = {
+        let mut queues = state.input_queues.lock().await;
+        let bucket = queues.entry(task_id).or_default();
+        let seq = bucket.last().map(|(s, _)| s + 1).unwrap_or(1);
+        bucket.push((seq, payload.lines.clone()));
+        seq
+    };
+
+    let _ = audit_append(
+        &*state.store,
+        "stdin_input",
+        Some(task_id),
+        &json!({
+            "dispatcher_id": payload.dispatcher_id,
+            "line_count": payload.lines.len(),
+            "seq": assigned_seq,
+        }),
+    )
+    .await;
+
+    Ok(Json(json!({
+        "task_id": task_id,
+        "seq": assigned_seq,
+        "accepted": payload.lines.len(),
+    })))
+}
+
+/// Return all signed stdin batches for a task with seq > after_seq.
+/// Called by runners to drain queued input into the running process stdin.
+pub async fn get_task_input(
+    State(state): State<Arc<HubState>>,
+    Path(task_id): Path<i64>,
+    Query(q): Query<InputQuery>,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    let queues = state.input_queues.lock().await;
+    let entries: Vec<Value> = queues
+        .get(&task_id)
+        .map(|bucket| {
+            bucket
+                .iter()
+                .filter(|(seq, _)| *seq > q.after_seq)
+                .map(|(seq, lines)| json!({"seq": seq, "lines": lines}))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(Json(json!({"task_id": task_id, "entries": entries})))
 }
