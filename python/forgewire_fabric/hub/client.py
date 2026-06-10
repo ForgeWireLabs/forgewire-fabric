@@ -284,6 +284,12 @@ class BlackboardClient:
         assert result is not None
         return result
 
+    async def claim_task_fabric(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Fabric (agent kind) claim via /tasks/claim-fabric."""
+        result = await self._request("POST", "/tasks/claim-fabric", json=payload)
+        assert result is not None
+        return result
+
     # ---- M2.4: dispatcher signing -----------------------------------------
 
     async def register_dispatcher(self, payload: dict[str, Any]) -> dict[str, Any]:
