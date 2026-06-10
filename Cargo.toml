@@ -18,6 +18,7 @@ members = [
     "crates/fabric-cli",
     "crates/fabric-client",
     "crates/fabric-runner",
+    "crates/loom-runner",
     "crates/fabric-claim-router",
     "crates/fabric-streams",
     "crates/fabric-beacon",
@@ -53,6 +54,7 @@ fabric-hub = { path = "crates/fabric-hub" }
 fabric-cli = { path = "crates/fabric-cli" }
 fabric-client = { path = "crates/fabric-client" }
 fabric-runner = { path = "crates/fabric-runner" }
+loom-runner = { path = "crates/loom-runner" }
 fabric-claim-router = { path = "crates/fabric-claim-router" }
 fabric-streams = { path = "crates/fabric-streams" }
 fabric-beacon = { path = "crates/fabric-beacon" }

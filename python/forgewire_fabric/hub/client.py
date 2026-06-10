@@ -290,6 +290,12 @@ class BlackboardClient:
         assert result is not None
         return result
 
+    async def claim_task_loom(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Loom (command kind) claim via /tasks/claim-loom."""
+        result = await self._request("POST", "/tasks/claim-loom", json=payload)
+        assert result is not None
+        return result
+
     # ---- M2.4: dispatcher signing -----------------------------------------
 
     async def register_dispatcher(self, payload: dict[str, Any]) -> dict[str, Any]:

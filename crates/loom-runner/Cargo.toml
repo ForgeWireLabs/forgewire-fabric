@@ -1,0 +1,27 @@
+[package]
+name = "loom-runner"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ForgeWire Loom runner — dumb shell executor for command-kind tasks."
+
+[[bin]]
+name = "forgewire-loom-runner"
+path = "src/main.rs"
+
+[dependencies]
+fabric-types = { path = "../fabric-types" }
+fabric-protocol = { path = "../fabric-protocol" }
+fabric-identity = { path = "../fabric-identity" }
+fabric-client = { path = "../fabric-client" }
+fabric-beacon = { path = "../fabric-beacon" }
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[lints]
+workspace = true
