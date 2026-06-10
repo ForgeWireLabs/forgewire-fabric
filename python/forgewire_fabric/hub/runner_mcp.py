@@ -56,7 +56,6 @@ from forgewire_fabric.hub.client import (
 from forgewire_fabric.hub.mcp_common import ToolRegistry
 from forgewire_fabric.runner.identity import RunnerIdentity, load_or_create
 from forgewire_fabric.runner.runner_capabilities import (
-    apply_kind_tag,
     describe_host,
     detect_tools,
     fresh_nonce,
@@ -64,6 +63,7 @@ from forgewire_fabric.runner.runner_capabilities import (
     sample_resources,
     sign_payload,
 )
+from forgewire_fabric.runner.mcp_introspection import build_mcp_manifest, manifest_hash
 
 
 LOGGER = logging.getLogger("forgewire_fabric.runner_mcp")
@@ -186,6 +186,8 @@ class RunnerSession:
         self.last_resources: dict[str, Any] = {}
         self.last_heartbeat_ok: bool = False
         self.last_register_response: dict[str, Any] | None = None
+        self._mcp_manifest: dict[str, Any] | None = build_mcp_manifest()
+        self._mcp_manifest_hash: str = manifest_hash(self._mcp_manifest)
         self.autoupdate_enabled: bool = _truthy(
             os.environ.get("FORGEWIRE_RUNNER_AUTOUPDATE")
             or os.environ.get("PHRENFORGE_RUNNER_AUTOUPDATE")
@@ -277,6 +279,9 @@ class RunnerSession:
             "workspace_root": self.workspace_root,
             "max_concurrent": self.max_concurrent,
             "metadata": {},
+            "kinds": ["agent"],
+            "agent_type": os.environ.get("FORGEWIRE_RUNNER_AGENT_TYPE") or "claude-code",
+            "mcp_manifest": self._mcp_manifest,
             "timestamp": ts,
             "nonce": nonce,
             "signature": signature,
@@ -296,7 +301,6 @@ def _build_session(client: BlackboardClient) -> RunnerSession:
         os.environ.get("FORGEWIRE_RUNNER_TAGS")
         or os.environ.get("PHRENFORGE_RUNNER_TAGS")
     )
-    tags = apply_kind_tag(tags, default_kind="agent")
     scope_prefixes = _parse_csv(
         os.environ.get("FORGEWIRE_RUNNER_SCOPE_PREFIXES")
         or os.environ.get("PHRENFORGE_RUNNER_SCOPE_PREFIXES")
@@ -350,6 +354,14 @@ async def _heartbeat_loop(session: RunnerSession) -> None:
         await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
         if session.last_register_response is None:
             continue
+        # Re-introspect MCP manifest; refresh registration if topology changed.
+        new_manifest = build_mcp_manifest()
+        new_hash = manifest_hash(new_manifest)
+        if new_hash != session._mcp_manifest_hash:
+            LOGGER.info("MCP manifest changed; refreshing registration")
+            session._mcp_manifest = new_manifest
+            session._mcp_manifest_hash = new_hash
+            await _register_with_retries(session)
         try:
             await session.client.heartbeat(
                 session.runner_id, session.heartbeat_payload()

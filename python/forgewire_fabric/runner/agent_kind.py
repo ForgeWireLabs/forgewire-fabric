@@ -60,8 +60,6 @@ from forgewire_fabric.runner.agent import (
     run_runner,
 )
 from forgewire_fabric.runner.identity import load_or_create
-from forgewire_fabric.runner.runner_capabilities import apply_kind_tag
-
 LOGGER = logging.getLogger("forgewire_fabric.runner.agent_kind")
 
 _MARKER_PATTERNS = (
@@ -107,14 +105,13 @@ def _extract_marker(prompt: str) -> str | None:
 def _build_config() -> RunnerConfig:
     workspace = _default_workspace_root()
     workspace.mkdir(parents=True, exist_ok=True)
-    extra = _parse_csv(os.environ.get("FORGEWIRE_AGENT_RUNNER_TAGS"))
-    # apply_kind_tag strips any operator-supplied ``kind:*`` and appends the
-    # canonical one. The agent runner's kind is the binary, not config.
-    tags = apply_kind_tag(extra, default_kind="agent")
+    tags = _parse_csv(os.environ.get("FORGEWIRE_AGENT_RUNNER_TAGS"))
     return RunnerConfig(
         workspace_root=str(workspace),
         tenant=os.environ.get("FORGEWIRE_AGENT_RUNNER_TENANT") or None,
         tags=tags,
+        kinds=["agent"],
+        agent_type="forgewire-agent-harness",
         scope_prefixes=_parse_csv(
             os.environ.get("FORGEWIRE_AGENT_RUNNER_SCOPE_PREFIXES")
         ),

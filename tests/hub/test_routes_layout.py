@@ -56,6 +56,11 @@ EXPECTED_ROUTES = {
     ("/runners/{runner_id}/drain-by-dispatcher", ("POST",)),
     ("/runners/{runner_id}/undrain-by-dispatcher", ("POST",)),
     ("/tasks/claim-v2", ("POST",)),
+    # M2.8.2: Loom/Fabric split claim routes + agent registry + capability index.
+    ("/tasks/claim-loom", ("POST",)),
+    ("/tasks/claim-fabric", ("POST",)),
+    ("/agents", ("GET",)),
+    ("/capabilities/{capability_kind}/{name}", ("GET",)),
     ("/tasks/{task_id}/intent", ("POST",)),
     ("/tasks/{task_id}/start", ("POST",)),
     ("/tasks/{task_id}/cancel", ("POST",)),

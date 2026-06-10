@@ -603,7 +603,9 @@ def test_runner_config_from_env_uses_sidecar_when_env_unset(
         monkeypatch.delenv(var, raising=False)
     cfg = agent_mod.RunnerConfig.from_env()
     assert cfg.workspace_root == str(tmp_path)
-    assert cfg.tags == ["gpu", "west", "kind:command"]
+    # M2.8.3: apply_kind_tag removed; kind is in cfg.kinds, not tags.
+    assert cfg.tags == ["gpu", "west"]
+    assert "command" in cfg.kinds
     assert cfg.scope_prefixes == ["docs/", "tests/"]
     assert cfg.tenant == "team-alpha"
     assert cfg.max_concurrent == 3
@@ -622,7 +624,9 @@ def test_runner_config_env_wins_over_sidecar(
     monkeypatch.setenv("FORGEWIRE_RUNNER_WORKSPACE_ROOT", str(tmp_path))
     monkeypatch.setenv("FORGEWIRE_RUNNER_TAGS", "from-env")
     cfg = agent_mod.RunnerConfig.from_env()
-    assert cfg.tags == ["from-env", "kind:command"]
+    # M2.8.3: kind is in cfg.kinds, not tags.
+    assert cfg.tags == ["from-env"]
+    assert "command" in cfg.kinds
 
 
 # ---------------------------------------------------------------------------

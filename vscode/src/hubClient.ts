@@ -240,6 +240,7 @@ export interface DispatchPayload {
   required_tools?: string[];
   tenant?: string;
   kind?: "agent" | "command";
+  metadata?: Record<string, unknown>;
 }
 
 export class HubClient {
@@ -497,8 +498,58 @@ export class HubClient {
     return this.request<TaskInfo>("GET", `/tasks/${id}`);
   }
 
+  /**
+   * Unsigned dispatch — accepted by Python hub (when require_signed_dispatch=false)
+   * but rejected 426 by the Rust hub. Kept for backward-compat; callers should
+   * prefer `dispatchSigned` when a dispatcher session is available.
+   */
   async dispatch(payload: DispatchPayload): Promise<TaskInfo> {
     return this.request<TaskInfo>("POST", "/tasks", payload);
+  }
+
+  /**
+   * Signed dispatch via POST /tasks/v2. Requires a pre-registered dispatcher
+   * identity. Works on both the Python and Rust hubs (protocol v3+).
+   */
+  async dispatchSigned(
+    payload: DispatchPayload,
+    session: DispatcherSession
+  ): Promise<TaskInfo> {
+    const ts = Math.floor(Date.now() / 1000);
+    const nonce = randomHex(16);
+    const signed: Record<string, unknown> = {
+      op: "dispatch",
+      dispatcher_id: session.dispatcherId,
+      title: payload.title,
+      prompt: payload.prompt,
+      scope_globs: payload.scope_globs,
+      base_commit: payload.base_commit,
+      branch: payload.branch,
+      todo_id: payload.todo_id ?? null,
+      timeout_minutes: payload.timeout_minutes ?? 60,
+      priority: payload.priority ?? 100,
+      metadata: payload.metadata ?? {},
+      required_tools: payload.required_tools ?? null,
+      required_tags: payload.required_tags ?? null,
+      required_capabilities: null,
+      secrets_needed: null,
+      network_egress: null,
+      tenant: null,
+      workspace_root: null,
+      require_base_commit: false,
+      kind: payload.kind ?? "agent",
+      max_cost_usd: null,
+      timestamp: ts,
+      nonce,
+    };
+    const signature = await session.sign(signed);
+    return this.request<TaskInfo>("POST", "/tasks/v2", {
+      ...payload,
+      dispatcher_id: session.dispatcherId,
+      timestamp: ts,
+      nonce,
+      signature,
+    });
   }
 
   async cancel(id: number): Promise<void> {
@@ -506,30 +557,59 @@ export class HubClient {
   }
 
   /**
-   * Stream Server-Sent Events from /tasks/{id}/events. Yields {event, data}
-   * tuples until the underlying response ends.
+   * Stream task output, yielding `{event, data}` events until the task reaches
+   * a terminal state or the signal fires.
+   *
+   * Strategy: try the Python-hub SSE endpoint (`/tasks/{id}/events`) first.
+   * If the hub returns 404 / 405 (Rust hub only has the polling endpoint),
+   * fall back to polling `GET /tasks/{id}/stream` every ~1.5 s and emitting
+   * `stream_line` events instead of the raw SSE `progress` events.
+   *
+   * Callers that render output should handle both `progress` and `stream_line`
+   * event types.
    */
   async *streamEvents(
     id: number,
     signal: AbortSignal
   ): AsyncGenerator<{ event: string; data: string }> {
-    const res = await fetch(`${this.baseUrl}/tasks/${id}/events`, {
-      headers: { Authorization: `Bearer ${this.token}`, Accept: "text/event-stream" },
-      signal,
-    });
-    if (!res.ok || !res.body) {
+    // Attempt SSE (Python hub, or future Rust hub with the endpoint added).
+    let res: Response | undefined;
+    try {
+      res = await fetch(`${this.baseUrl}/tasks/${id}/events`, {
+        headers: { Authorization: `Bearer ${this.token}`, Accept: "text/event-stream" },
+        signal,
+      });
+    } catch {
+      // Network error before even getting a response — fall through to polling.
+    }
+
+    if (res && res.ok && res.body) {
+      // SSE path (Python hub).
+      yield* this._streamSse(res);
+      return;
+    }
+
+    if (res && res.status !== 404 && res.status !== 405) {
+      // Unexpected error (not "endpoint doesn't exist") — surface it.
       throw new Error(`stream HTTP ${res.status}`);
     }
-    const reader = res.body.getReader();
+
+    // Polling fallback (Rust hub).
+    yield* this._pollStream(id, signal);
+  }
+
+  /** Parse a live SSE response body, yielding `{event, data}` tuples. */
+  private async *_streamSse(
+    res: Response
+  ): AsyncGenerator<{ event: string; data: string }> {
+    const reader = res.body!.getReader();
     const decoder = new TextDecoder("utf-8");
     let buffer = "";
     let event = "message";
     let data: string[] = [];
     while (true) {
       const { value, done } = await reader.read();
-      if (done) {
-        return;
-      }
+      if (done) { return; }
       buffer += decoder.decode(value, { stream: true });
       let idx: number;
       while ((idx = buffer.indexOf("\n")) >= 0) {
@@ -549,6 +629,218 @@ export class HubClient {
       }
     }
   }
+
+  /**
+   * Polling fallback for hubs that expose `GET /tasks/{id}/stream` (JSON) but
+   * not an SSE endpoint. Polls every ~1.5 s, emitting `stream_line` events for
+   * each buffered output line and a `task` event on every status poll so the
+   * caller can detect terminal state.
+   */
+  private async *_pollStream(
+    id: number,
+    signal: AbortSignal
+  ): AsyncGenerator<{ event: string; data: string }> {
+    const TERMINAL = new Set(["done", "failed", "cancelled", "timed_out"]);
+    let seq = 0;
+    let lastStatus = "";
+
+    while (!signal.aborted) {
+      // Fetch new stream lines since last seen seq.
+      try {
+        const r = await this.request<{
+          lines: Array<{ seq: number; channel?: string; line: string; worker_id?: string }>
+        }>("GET", `/tasks/${id}/stream?after_seq=${seq}&limit=100`);
+        for (const ln of r.lines ?? []) {
+          if (ln.seq > seq) { seq = ln.seq; }
+          yield { event: "stream_line", data: JSON.stringify(ln) };
+        }
+      } catch {
+        // Network blip — keep trying until signal fires.
+      }
+
+      // Poll task row for status changes.
+      try {
+        const task = await this.request<TaskInfo>("GET", `/tasks/${id}`);
+        if (task.status !== lastStatus) {
+          lastStatus = task.status;
+          yield { event: "task", data: JSON.stringify(task) };
+          if (TERMINAL.has(task.status)) { return; }
+        }
+      } catch {
+        return;
+      }
+
+      if (signal.aborted) { return; }
+      // 1.5 s poll interval — fast enough to feel live without hammering the hub.
+      await sleep(1500);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Dispatcher identity + signed dispatch
+// ---------------------------------------------------------------------------
+
+/**
+ * Lightweight dispatcher identity for the VS Code extension.
+ *
+ * Uses the Web Crypto API (available in VS Code's Node 18+ host) to generate
+ * an ed25519 key pair. The key pair is persisted to SecretStorage so it
+ * survives VS Code restarts without re-registration.
+ *
+ * The dispatcher registers with the hub on first use and re-registers when
+ * the hub is unreachable on activation (hub restart / reconnect).
+ */
+export class DispatcherSession {
+  private constructor(
+    public readonly dispatcherId: string,
+    private readonly privateKey: CryptoKey,
+    public readonly publicKeyHex: string
+  ) {}
+
+  /** Sign the canonical JSON of `envelope` and return the hex signature. */
+  async sign(envelope: Record<string, unknown>): Promise<string> {
+    const canonical = canonicalJson(envelope);
+    const buf = await globalThis.crypto.subtle.sign(
+      "Ed25519",
+      this.privateKey,
+      new TextEncoder().encode(canonical)
+    );
+    return hexEncode(new Uint8Array(buf));
+  }
+
+  /**
+   * Load an existing session from SecretStorage or generate a new one.
+   * Returns `undefined` if Web Crypto Ed25519 is not available (old Node).
+   */
+  static async loadOrCreate(
+    secrets: vscode.SecretStorage
+  ): Promise<DispatcherSession | undefined> {
+    const KEY = "forgewire.dispatcherIdentity";
+    try {
+      const stored = await secrets.get(KEY);
+      if (stored) {
+        const parsed = JSON.parse(stored) as {
+          id: string;
+          publicKeyHex: string;
+          privateKeyJwk: JsonWebKey;
+        };
+        const privateKey = await globalThis.crypto.subtle.importKey(
+          "jwk",
+          parsed.privateKeyJwk,
+          "Ed25519",
+          false,
+          ["sign"]
+        );
+        return new DispatcherSession(parsed.id, privateKey, parsed.publicKeyHex);
+      }
+    } catch {
+      // Corrupted storage — generate fresh.
+    }
+
+    // Generate a new key pair.
+    let keyPair: CryptoKeyPair;
+    try {
+      keyPair = await globalThis.crypto.subtle.generateKey("Ed25519", true, ["sign"]);
+    } catch {
+      return undefined; // Ed25519 not supported (Node < 17).
+    }
+
+    const pubRaw = new Uint8Array(
+      await globalThis.crypto.subtle.exportKey("raw", keyPair.publicKey)
+    );
+    const publicKeyHex = hexEncode(pubRaw);
+    const privateKeyJwk = await globalThis.crypto.subtle.exportKey("jwk", keyPair.privateKey);
+    const id = `vscode-dispatcher-${randomHex(8)}`;
+
+    try {
+      await secrets.store(
+        KEY,
+        JSON.stringify({ id, publicKeyHex, privateKeyJwk })
+      );
+    } catch {
+      // SecretStorage failure is non-fatal; session still works for this run.
+    }
+
+    return new DispatcherSession(id, keyPair.privateKey, publicKeyHex);
+  }
+
+  /**
+   * Register this dispatcher with the hub. Safe to call on every connect; the
+   * hub upserts by `dispatcher_id` so re-registration is idempotent.
+   * Returns `true` if registration succeeded, `false` otherwise.
+   */
+  async register(client: HubClient, hostname: string): Promise<boolean> {
+    const ts = Math.floor(Date.now() / 1000);
+    const nonce = randomHex(16);
+    const envelope: Record<string, unknown> = {
+      op: "register-dispatcher",
+      dispatcher_id: this.dispatcherId,
+      public_key: this.publicKeyHex,
+      timestamp: ts,
+      nonce,
+    };
+    const signature = await this.sign(envelope);
+    try {
+      await client["request"](
+        "POST",
+        "/dispatchers/register",
+        {
+          dispatcher_id: this.dispatcherId,
+          public_key: this.publicKeyHex,
+          label: `vscode@${hostname}`,
+          hostname,
+          metadata: { source: "vscode-extension" },
+          timestamp: ts,
+          nonce,
+          signature,
+        }
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function randomHex(bytes: number): string {
+  const buf = new Uint8Array(bytes);
+  globalThis.crypto.getRandomValues(buf);
+  return hexEncode(buf);
+}
+
+function hexEncode(buf: Uint8Array): string {
+  return Array.from(buf, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Produce a canonical JSON string: object keys sorted, compact separators.
+ * Matches Python `json.dumps(obj, sort_keys=True, separators=(",",":"))`.
+ */
+function canonicalJson(value: unknown): string {
+  if (value === null || value === undefined) { return "null"; }
+  if (typeof value === "boolean") { return value ? "true" : "false"; }
+  if (typeof value === "number") { return JSON.stringify(value); }
+  if (typeof value === "string") { return JSON.stringify(value); }
+  if (Array.isArray(value)) {
+    return "[" + value.map(canonicalJson).join(",") + "]";
+  }
+  if (typeof value === "object") {
+    const sorted = Object.keys(value as Record<string, unknown>).sort();
+    const parts = sorted.map(
+      (k) => `${JSON.stringify(k)}:${canonicalJson((value as Record<string, unknown>)[k])}`
+    );
+    return "{" + parts.join(",") + "}";
+  }
+  return JSON.stringify(value);
 }
 
 function readToken(cfg: vscode.WorkspaceConfiguration): string {

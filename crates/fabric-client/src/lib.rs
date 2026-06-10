@@ -319,6 +319,9 @@ impl HubClient {
             "arch": payload.arch,
             "tools": payload.tools,
             "tags": payload.tags,
+            "kinds": payload.kinds,
+            "agent_type": payload.agent_type,
+            "mcp_manifest": payload.mcp_manifest,
             "scope_prefixes": payload.scope_prefixes,
             "max_concurrent": payload.max_concurrent,
             "capabilities": payload.capabilities,
@@ -584,6 +587,13 @@ pub struct RegisterPayload {
     pub max_concurrent: i64,
     pub capabilities: HashMap<String, Value>,
     pub metadata: HashMap<String, Value>,
+    /// Hard runner-kind property. ``["agent"]`` for Fabric runners,
+    /// ``["command"]`` for Loom runners, ``["agent","command"]`` for combined.
+    pub kinds: Vec<String>,
+    /// Free-form agent type string. ``None`` for Loom-only runners.
+    pub agent_type: Option<String>,
+    /// MCP manifest blob. ``None`` for Loom-only runners.
+    pub mcp_manifest: Option<Value>,
 }
 
 #[derive(Debug, Clone, Default)]

@@ -1,7 +1,8 @@
-"""Dispatcher, runner registry, label, and claim-v2 routes."""
+"""Dispatcher, runner registry, label, and claim routes."""
 
 from __future__ import annotations
 
+import json
 import socket
 from typing import Any
 
@@ -261,6 +262,9 @@ def register_runner(request: Request, payload: RegisterRequest) -> dict[str, Any
                 "max_concurrent": payload.max_concurrent,
                 "metadata": payload.metadata or {},
                 "capabilities": payload.capabilities or {},
+                "kinds": payload.kinds,
+                "agent_type": payload.agent_type,
+                "mcp_manifest": payload.mcp_manifest,
             }
         )
     except PermissionError as exc:
@@ -459,3 +463,194 @@ def claim_task_v2(request: Request, payload: ClaimV2Request) -> JSONResponse:
                 secrets_dispatched = list(resolved.keys())
     audit_claim(ctx, task, worker_id=payload.runner_id, secrets_dispatched=secrets_dispatched)
     return JSONResponse(content={"task": task, "info": info})
+
+
+# ── POST /tasks/claim-loom (M2.8.2) ──────────────────────────────────────────
+# Loom queue: command-kind tasks only. Verifies runner has "command" in kinds.
+
+@router.post("/tasks/claim-loom", dependencies=[Depends(require_auth)])
+def claim_task_loom(request: Request, payload: ClaimV2Request) -> JSONResponse:
+    ctx = get_context(request)
+    verify_runner_signature(
+        ctx,
+        op="claim",
+        runner_id=payload.runner_id,
+        timestamp=payload.timestamp,
+        nonce=payload.nonce,
+        signature=payload.signature,
+    )
+    try:
+        runner = ctx.blackboard.get_runner(payload.runner_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="runner not registered") from exc
+
+    runner_kinds = _runner_kinds(runner)
+    if "command" not in runner_kinds:
+        raise HTTPException(
+            status_code=403,
+            detail="runner is not registered as a Loom (command) runner",
+        )
+
+    task, info = ctx.blackboard.claim_next_task_v2(
+        runner_id=payload.runner_id,
+        scope_prefixes=payload.scope_prefixes,
+        tools=payload.tools,
+        tags=payload.tags,
+        tenant=payload.tenant,
+        workspace_root=payload.workspace_root,
+        last_known_commit=payload.last_known_commit,
+        cpu_load_pct=payload.cpu_load_pct,
+        ram_free_mb=payload.ram_free_mb,
+        battery_pct=payload.battery_pct,
+        on_battery=payload.on_battery,
+    )
+    secrets_dispatched: list[str] = []
+    if task is not None:
+        requested = list(task.get("secrets_needed") or [])
+        if requested:
+            resolved = ctx.blackboard.resolve_secrets(requested)
+            if resolved:
+                task = dict(task)
+                task["secrets"] = resolved
+                secrets_dispatched = list(resolved.keys())
+    audit_claim(ctx, task, worker_id=payload.runner_id, secrets_dispatched=secrets_dispatched)
+    return JSONResponse(content={"task": task, "info": info})
+
+
+# ── POST /tasks/claim-fabric (M2.8.2) ─────────────────────────────────────────
+# Fabric queue: agent-kind tasks only. For skill/tool dispatch, requires
+# matching runner_capabilities rows. Prompt dispatch skips capability filter.
+
+@router.post("/tasks/claim-fabric", dependencies=[Depends(require_auth)])
+def claim_task_fabric(request: Request, payload: ClaimV2Request) -> JSONResponse:
+    ctx = get_context(request)
+    verify_runner_signature(
+        ctx,
+        op="claim",
+        runner_id=payload.runner_id,
+        timestamp=payload.timestamp,
+        nonce=payload.nonce,
+        signature=payload.signature,
+    )
+    try:
+        runner = ctx.blackboard.get_runner(payload.runner_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="runner not registered") from exc
+
+    runner_kinds = _runner_kinds(runner)
+    if "agent" not in runner_kinds:
+        raise HTTPException(
+            status_code=403,
+            detail="runner is not registered as a Fabric (agent) runner",
+        )
+
+    task, info = ctx.blackboard.claim_next_task_v2(
+        runner_id=payload.runner_id,
+        scope_prefixes=payload.scope_prefixes,
+        tools=payload.tools,
+        tags=payload.tags,
+        tenant=payload.tenant,
+        workspace_root=payload.workspace_root,
+        last_known_commit=payload.last_known_commit,
+        cpu_load_pct=payload.cpu_load_pct,
+        ram_free_mb=payload.ram_free_mb,
+        battery_pct=payload.battery_pct,
+        on_battery=payload.on_battery,
+    )
+    secrets_dispatched: list[str] = []
+    if task is not None:
+        requested = list(task.get("secrets_needed") or [])
+        if requested:
+            resolved = ctx.blackboard.resolve_secrets(requested)
+            if resolved:
+                task = dict(task)
+                task["secrets"] = resolved
+                secrets_dispatched = list(resolved.keys())
+    audit_claim(ctx, task, worker_id=payload.runner_id, secrets_dispatched=secrets_dispatched)
+    return JSONResponse(content={"task": task, "info": info})
+
+
+# ── GET /agents (M2.8.2) ──────────────────────────────────────────────────────
+# Fabric runner registry: runners whose kinds array contains "agent".
+
+@router.get("/agents", dependencies=[Depends(require_auth)])
+def list_agents(request: Request) -> dict[str, Any]:
+    blackboard = get_context(request).blackboard
+    labels = blackboard.get_labels()
+    runner_aliases = labels.get("runner_aliases") or {}
+    host_aliases = labels.get("host_aliases") or {}
+    runners = blackboard.list_runners()
+    agents = []
+    for r in runners:
+        if "agent" not in _runner_kinds(r):
+            continue
+        hostname = _normalize_hostname(r.get("hostname") or "")
+        host_alias = host_aliases.get(hostname, "")
+        alias = runner_aliases.get(r.get("runner_id", ""), "") or host_alias
+        # Parse mcp_manifest from stored JSON string if needed.
+        mcp_manifest = r.get("mcp_manifest")
+        if isinstance(mcp_manifest, str):
+            try:
+                mcp_manifest = json.loads(mcp_manifest)
+            except (ValueError, TypeError):
+                mcp_manifest = None
+        agents.append({
+            "runner_id": r.get("runner_id"),
+            "agent_type": r.get("agent_type"),
+            "hostname": r.get("hostname"),
+            "alias": alias,
+            "state": r.get("state"),
+            "drain_requested": r.get("drain_requested"),
+            "last_heartbeat": r.get("last_heartbeat"),
+            "mcp_manifest": mcp_manifest,
+            "mcp_manifest_version": r.get("mcp_manifest_version", 0),
+            "kinds": _runner_kinds(r),
+            "max_concurrent": r.get("max_concurrent"),
+            "tenant": r.get("tenant"),
+            "workspace_root": r.get("workspace_root"),
+        })
+    return {"agents": agents}
+
+
+# ── GET /capabilities/{kind}/{name} (M2.8.2) ─────────────────────────────────
+
+@router.get("/capabilities/{capability_kind}/{name}", dependencies=[Depends(require_auth)])
+def get_capability(request: Request, capability_kind: str, name: str) -> dict[str, Any]:
+    if capability_kind not in ("tool", "resource", "prompt"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"capability kind must be 'tool', 'resource', or 'prompt'; got '{capability_kind}'",
+        )
+    blackboard = get_context(request).blackboard
+    runner_ids = blackboard.query_runners_by_capability(capability_kind, name)
+    runners_out = []
+    for rid in runner_ids:
+        try:
+            r = blackboard.get_runner(rid)
+            runners_out.append({
+                "runner_id": r.get("runner_id"),
+                "agent_type": r.get("agent_type"),
+                "hostname": r.get("hostname"),
+                "state": r.get("state"),
+                "drain_requested": r.get("drain_requested"),
+            })
+        except KeyError:
+            pass
+    return {"capability_kind": capability_kind, "name": name, "runners": runners_out}
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _runner_kinds(runner: dict[str, Any]) -> list[str]:
+    """Return the runner's kinds list, parsing JSON if needed."""
+    kinds = runner.get("kinds")
+    if isinstance(kinds, list):
+        return kinds
+    if isinstance(kinds, str):
+        try:
+            parsed = json.loads(kinds)
+            if isinstance(parsed, list):
+                return parsed
+        except (ValueError, TypeError):
+            pass
+    return ["agent"]  # backward-compat default

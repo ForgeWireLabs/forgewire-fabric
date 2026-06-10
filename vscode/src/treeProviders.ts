@@ -270,10 +270,23 @@ function hubIconColor(key: string, description: string | undefined, icon: string
 // ---------------------------------------------------------------------------
 
 function bucketRunner(r: RunnerInfo): "agent" | "command" {
+  // M2.8.3+: runners send `kinds: ["agent"|"command"]` as a first-class field
+  // instead of `kind:*` tags. The hub may serialize it as a JSON string or array.
+  const kindsRaw = (r as Record<string, unknown>).kinds;
+  let kinds: string[] | undefined;
+  if (Array.isArray(kindsRaw)) {
+    kinds = kindsRaw as string[];
+  } else if (typeof kindsRaw === "string") {
+    try { kinds = JSON.parse(kindsRaw) as string[]; } catch { /* ignore */ }
+  }
+  if (Array.isArray(kinds)) {
+    if (kinds.includes("agent")) { return "agent"; }
+    if (kinds.includes("command")) { return "command"; }
+  }
+  // Legacy fallback: runners predating M2.8.3 still use kind:* tags.
   const tags = r.tags ?? [];
-  if (tags.includes("kind:agent")) return "agent";
-  // Default bucket: missing/unknown kind is treated as 'command' because
-  // every pre-taxonomy NSSM runner is a shell-exec command runner.
+  if (tags.includes("kind:agent")) { return "agent"; }
+  // Default: treat unknown as command (always-on shell runner).
   return "command";
 }
 

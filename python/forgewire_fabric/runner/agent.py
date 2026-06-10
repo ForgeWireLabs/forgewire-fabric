@@ -45,7 +45,6 @@ from forgewire_fabric.runner.identity import (
     load_runner_config_overrides,
 )
 from forgewire_fabric.runner.runner_capabilities import (
-    apply_kind_tag,
     describe_capabilities,
     describe_host,
     detect_tools,
@@ -79,6 +78,8 @@ class RunnerConfig:
     max_concurrent: int = 1
     runner_version: str = DEFAULT_RUNNER_VERSION
     poll_interval_seconds: float = DEFAULT_POLL_INTERVAL_SECONDS
+    kinds: list[str] = field(default_factory=lambda: ["command"])
+    agent_type: str | None = None
 
     @classmethod
     def from_env(cls) -> "RunnerConfig":
@@ -147,12 +148,7 @@ class RunnerConfig:
         return cls(
             workspace_root=workspace_root,
             tenant=_env_or_sidecar("FORGEWIRE_RUNNER_TENANT", "tenant") or None,
-            tags=apply_kind_tag(
-                _parse_csv(
-                    _env_or_sidecar("FORGEWIRE_RUNNER_TAGS", "tags")
-                ),
-                default_kind="command",
-            ),
+            tags=_parse_csv(_env_or_sidecar("FORGEWIRE_RUNNER_TAGS", "tags")),
             scope_prefixes=_parse_csv(
                 _env_or_sidecar(
                     "FORGEWIRE_RUNNER_SCOPE_PREFIXES", "scope_prefixes"
@@ -226,6 +222,9 @@ class RunnerSession:
             "max_concurrent": self.config.max_concurrent,
             "metadata": {"flavor": "forgewire-runner"},
             "capabilities": describe_capabilities(host=self.host, tools=self.tools),
+            "kinds": self.config.kinds,
+            "agent_type": self.config.agent_type,
+            "mcp_manifest": None,
             "timestamp": ts,
             "nonce": nonce,
             "signature": signature,

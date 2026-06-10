@@ -10,7 +10,7 @@ import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
 import * as vscode from "vscode";
-import { ApprovalInfo, HubClient } from "./hubClient";
+import { ApprovalInfo, DispatcherSession, HubClient } from "./hubClient";
 import {
   ApprovalNode,
   ApprovalsProvider,
@@ -45,6 +45,10 @@ let activeClient: HubClient | undefined;
 let lastProbe: Awaited<ReturnType<typeof HubClient.probe>> | undefined;
 const snoozedApprovals = new Map<string, SnoozedApproval>();
 
+// Dispatcher identity for signed dispatch (protocol v3+ Rust hub).
+// Loaded/generated on activation; may be undefined if Web Crypto is unavailable.
+let dispatcherSession: DispatcherSession | undefined;
+
 // ---------------------------------------------------------------------------
 // activation
 // ---------------------------------------------------------------------------
@@ -66,6 +70,9 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   // Hydrate token from SecretStorage into the live HubClient lookup.
   await hydrateTokenFromSecret();
   loadSnoozedApprovals();
+
+  // Load or generate a dispatcher identity for signed dispatch (protocol v3+).
+  dispatcherSession = await DispatcherSession.loadOrCreate(ctx.secrets);
 
   hubProvider = new HubProvider(getClient, getProbe);
   hostsProvider = new HostsProvider(getClient);
@@ -228,8 +235,13 @@ function refreshAll(): void {
 async function probeAndRefresh(): Promise<void> {
   try {
     const probe = await HubClient.probe();
+    const prevUrl = activeClient?.url;
     activeClient = probe.active;
     lastProbe = probe;
+    // Register dispatcher identity whenever we connect to a new hub URL.
+    if (activeClient && dispatcherSession && activeClient.url !== prevUrl) {
+      void dispatcherSession.register(activeClient, os.hostname());
+    }
   } catch (err) {
     outputChannel.appendLine(`probe failed: ${err}`);
   }
@@ -580,14 +592,17 @@ async function dispatchTask(): Promise<void> {
     return;
   }
   const title = prompt.length > 60 ? `${prompt.slice(0, 57)}\u2026` : prompt;
+  const payload = {
+    title,
+    prompt,
+    scope_globs: scope.split(",").map((s) => s.trim()).filter(Boolean),
+    branch: branch.trim(),
+    base_commit: baseCommit.trim(),
+  };
   try {
-    const t = await c.dispatch({
-      title,
-      prompt,
-      scope_globs: scope.split(",").map((s) => s.trim()).filter(Boolean),
-      branch: branch.trim(),
-      base_commit: baseCommit.trim(),
-    });
+    const t = dispatcherSession
+      ? await c.dispatchSigned(payload, dispatcherSession)
+      : await c.dispatch(payload);
     vscode.window
       .showInformationMessage(`Dispatched task #${t.id}.`, "Tail Stream")
       .then((sel) => {
@@ -658,8 +673,24 @@ async function streamTaskCmd(arg: TaskCommandArg): Promise<void> {
   const sub = vscode.workspace.onDidChangeConfiguration(() => {});
   try {
     for await (const ev of c.streamEvents(id, ctrl.signal)) {
-      outputChannel.appendLine(`[${ev.event}] ${ev.data}`);
-      if (ev.event === "task") {
+      if (ev.event === "stream_line") {
+        // Polling fallback format (Rust hub): {seq, channel, line, worker_id?}
+        try {
+          const obj = JSON.parse(ev.data) as { channel?: string; line?: string };
+          const prefix = obj.channel === "stderr" ? "[ERR]" : "[OUT]";
+          outputChannel.appendLine(`${prefix} ${obj.line ?? ev.data}`);
+        } catch {
+          outputChannel.appendLine(ev.data);
+        }
+      } else if (ev.event === "progress") {
+        // SSE progress event (Python hub): {message, seq, files_touched?}
+        try {
+          const obj = JSON.parse(ev.data) as { message?: string };
+          outputChannel.appendLine(`[progress] ${obj.message ?? ev.data}`);
+        } catch {
+          outputChannel.appendLine(`[progress] ${ev.data}`);
+        }
+      } else if (ev.event === "task") {
         try {
           const obj = JSON.parse(ev.data);
           if (obj?.status && ["done", "failed", "cancelled", "timed_out"].includes(obj.status)) {
@@ -669,6 +700,8 @@ async function streamTaskCmd(arg: TaskCommandArg): Promise<void> {
         } catch {
           // ignore parse errors; just keep streaming
         }
+      } else {
+        outputChannel.appendLine(`[${ev.event}] ${ev.data}`);
       }
     }
   } catch (err) {
@@ -723,7 +756,7 @@ async function redispatchTaskCmd(arg: TaskCommandArg): Promise<void> {
   }
   try {
     const t = await c.getTask(id);
-    const newTask = await c.dispatch({
+    const payload = {
       title: t.title,
       prompt: t.prompt,
       scope_globs: t.scope_globs ?? [],
@@ -732,7 +765,10 @@ async function redispatchTaskCmd(arg: TaskCommandArg): Promise<void> {
       kind: t.kind,
       priority: t["priority"] as number | undefined,
       timeout_minutes: t["timeout_minutes"] as number | undefined,
-    });
+    };
+    const newTask = dispatcherSession
+      ? await c.dispatchSigned(payload, dispatcherSession)
+      : await c.dispatch(payload);
     vscode.window.showInformationMessage(
       `Redispatched as task #${newTask.id}.`
     );
@@ -1214,7 +1250,7 @@ async function renameHost(arg?: unknown): Promise<void> {
   }
 }
 
-async function renameRunner(arg?: { runner_id?: string } | string): Promise<void> {
+async function renameRunner(arg?: unknown): Promise<void> {
   const c = getClient();
   if (!c) {
     vscode.window.showWarningMessage("Connect to a hub first \u2014 runner aliases are stored on the hub and propagate to all connected nodes.");
@@ -1224,9 +1260,20 @@ async function renameRunner(arg?: { runner_id?: string } | string): Promise<void
   let runnerHost: string | undefined;
   if (typeof arg === "string") {
     runnerId = arg;
-  } else if (arg && typeof arg === "object" && typeof (arg as { runner_id?: string }).runner_id === "string") {
-    runnerId = (arg as { runner_id: string }).runner_id;
-    runnerHost = (arg as { hostname?: string }).hostname;
+  } else if (arg && typeof arg === "object") {
+    const a = arg as Record<string, unknown>;
+    // Direct runner_id at top level (command-palette or old call shapes).
+    if (typeof a.runner_id === "string") {
+      runnerId = a.runner_id;
+      runnerHost = typeof a.hostname === "string" ? a.hostname : undefined;
+    }
+    // Hosts-panel role node: { kind: "role", runner: RunnerInfo, ... }
+    // or runner node: { kind: "runner", runner: RunnerInfo }
+    const nested = a.runner as Record<string, unknown> | undefined;
+    if (!runnerId && nested && typeof nested === "object" && typeof nested.runner_id === "string") {
+      runnerId = nested.runner_id;
+      runnerHost = typeof nested.hostname === "string" ? nested.hostname : undefined;
+    }
   }
 
   let runners: { runner_id: string; hostname: string }[] = [];

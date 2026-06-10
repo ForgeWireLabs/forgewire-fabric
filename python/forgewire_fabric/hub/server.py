@@ -281,11 +281,33 @@ class Blackboard:
             "ALTER TABLE runners ADD COLUMN last_claim_error_at TEXT",
             "ALTER TABLE runners ADD COLUMN heartbeat_failures_total INTEGER NOT NULL DEFAULT 0",
             "ALTER TABLE runners ADD COLUMN capabilities TEXT NOT NULL DEFAULT '{}'",
+            # M2.8.1: first-class kinds column (replaces kind:* tag injection).
+            "ALTER TABLE runners ADD COLUMN kinds TEXT NOT NULL DEFAULT '[\"agent\"]'",
+            "ALTER TABLE runners ADD COLUMN agent_type TEXT",
+            "ALTER TABLE runners ADD COLUMN mcp_manifest TEXT",
+            "ALTER TABLE runners ADD COLUMN mcp_manifest_version INTEGER NOT NULL DEFAULT 0",
         ]
+        # M2.8.1: runner_capabilities normalized index (separate CREATE so it's
+        # idempotent on existing DBs).
+        _CAP_TABLE = """
+        CREATE TABLE IF NOT EXISTS runner_capabilities (
+            runner_id        TEXT NOT NULL,
+            capability_kind  TEXT NOT NULL,
+            name             TEXT NOT NULL,
+            source_server    TEXT NOT NULL,
+            description      TEXT,
+            extra            TEXT,
+            PRIMARY KEY (runner_id, capability_kind, name)
+        );
+        CREATE INDEX IF NOT EXISTS runner_capabilities_by_name
+            ON runner_capabilities (capability_kind, name);
+        """
         with self._connect() as conn:
             for stmt in _ADDITIVE:
                 with contextlib.suppress(Exception):  # duplicate column → silently skip
                     conn.execute(stmt)
+            with contextlib.suppress(Exception):
+                conn.executescript(_CAP_TABLE)
 
     # ----------------------------------------------------------------- labels
 
@@ -1638,8 +1660,9 @@ class Blackboard:
                     cpu_count, ram_mb, gpu, tools, tags, scope_prefixes,
                     tenant, workspace_root, runner_version, protocol_version,
                     max_concurrent, state, drain_requested, metadata,
-                    first_seen, last_heartbeat, capabilities
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    first_seen, last_heartbeat, capabilities,
+                    kinds, agent_type, mcp_manifest
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(runner_id) DO UPDATE SET
                     hostname         = excluded.hostname,
                     os               = excluded.os,
@@ -1660,6 +1683,9 @@ class Blackboard:
                     drain_requested  = 0,
                     metadata         = excluded.metadata,
                     capabilities     = excluded.capabilities,
+                    kinds            = excluded.kinds,
+                    agent_type       = excluded.agent_type,
+                    mcp_manifest     = excluded.mcp_manifest,
                     last_heartbeat   = excluded.last_heartbeat,
                     -- v0.4: a fresh registration means the runner believes
                     -- it just (re)attached to the hub. Reset reliability
@@ -1694,6 +1720,9 @@ class Blackboard:
                     now,  # first_seen (only used on INSERT path)
                     now,  # last_heartbeat
                     json.dumps(record.get("capabilities", {})),
+                    json.dumps(record.get("kinds", ["agent"])),
+                    record.get("agent_type"),
+                    json.dumps(record.get("mcp_manifest")) if record.get("mcp_manifest") else None,
                 ),
             )
             if cur.fetchone() is None:
@@ -1703,7 +1732,58 @@ class Blackboard:
                 raise PermissionError(
                     "runner_id is already bound to a different public_key"
                 )
-        return self.get_runner(record["runner_id"])
+        runner = self.get_runner(record["runner_id"])
+        # Rebuild capability index if an mcp_manifest was provided.
+        manifest = record.get("mcp_manifest")
+        if manifest:
+            self.replace_runner_capabilities(record["runner_id"], manifest)
+        return runner
+
+    def replace_runner_capabilities(
+        self, runner_id: str, manifest: dict[str, Any]
+    ) -> None:
+        """Atomically replace the capability index for ``runner_id``.
+
+        Extracts tools/resources/prompts from an ``mcp_manifest`` blob and
+        rebuilds the ``runner_capabilities`` rows for this runner.
+        """
+        rows: list[tuple[str, str, str, str, str | None, str | None]] = []
+        for server in (manifest.get("servers") or []):
+            sid = server.get("server_id") or ""
+            for t in (server.get("tools") or []):
+                rows.append((runner_id, "tool", t.get("name", ""), sid,
+                              t.get("description"), json.dumps(t.get("input_schema")) if t.get("input_schema") else None))
+            for r in (server.get("resources") or []):
+                rows.append((runner_id, "resource", r.get("uri", ""), sid,
+                              r.get("name"), json.dumps({"mime_type": r.get("mime_type")})))
+            for p in (server.get("prompts") or []):
+                rows.append((runner_id, "prompt", p.get("name", ""), sid,
+                              p.get("description"), json.dumps({"arguments": p.get("arguments", [])})))
+        with self._connect() as conn:
+            conn.execute("DELETE FROM runner_capabilities WHERE runner_id = ?", (runner_id,))
+            if rows:
+                conn.executemany(
+                    """
+                    INSERT OR REPLACE INTO runner_capabilities
+                        (runner_id, capability_kind, name, source_server, description, extra)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    rows,
+                )
+
+    def query_runners_by_capability(
+        self, capability_kind: str, name: str
+    ) -> list[str]:
+        """Return runner_ids that advertise the given capability."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT runner_id FROM runner_capabilities
+                WHERE capability_kind = ? AND name = ?
+                """,
+                (capability_kind, name),
+            ).fetchall()
+        return [r["runner_id"] for r in rows]
 
     def get_runner(self, runner_id: str) -> dict[str, Any]:
         with self._connect() as conn:
@@ -2113,7 +2193,7 @@ class Blackboard:
                 ORDER BY priority DESC, id ASC
                 LIMIT 50
                 """,
-                (_runner_kind_from_tags(tags),),
+                (_runner_kind_from_row(runner_row, tags),),
             ).fetchall()
             if not rows:
                 return None, info
@@ -2305,10 +2385,10 @@ def _normalize_hostname(hostname: str | None) -> str:
 def _runner_kind_from_tags(tags: list[str] | None) -> str:
     """Derive a runner's task-kind affinity from its advertised tags.
 
-    A runner that advertises ``kind:command`` (or ``kind=command``) is a
-    shell-exec runner and claims only ``kind='command'`` tasks. All
-    other runners default to ``'agent'`` so existing Copilot-Chat agent
-    runners keep their pre-taxonomy behaviour.
+    Legacy path — used when no ``kinds`` column is available. A runner that
+    advertises ``kind:command`` (or ``kind=command``) is a shell-exec runner
+    and claims only ``kind='command'`` tasks. All other runners default to
+    ``'agent'``.
     """
     for raw in tags or []:
         if not isinstance(raw, str):
@@ -2317,6 +2397,29 @@ def _runner_kind_from_tags(tags: list[str] | None) -> str:
         if norm == "kind:command":
             return "command"
     return "agent"
+
+
+def _runner_kind_from_row(runner_row: Any, claim_tags: list[str] | None) -> str:
+    """Derive a runner's primary task-kind affinity for queue selection.
+
+    Prefers the first-class ``kinds`` column (M2.8.1+) over the legacy
+    ``kind:*`` tag system so that runners that no longer emit kind tags
+    (M2.8.3+) are routed correctly.
+
+    The first entry in ``kinds`` is the primary kind. A combined-mode runner
+    (``["agent","command"]``) defaults to ``"agent"`` for backwards compat;
+    callers that want Loom-specific routing should use the new claim-loom /
+    claim-fabric routes.
+    """
+    try:
+        kinds_json = runner_row["kinds"] if runner_row is not None else None
+        if kinds_json:
+            kinds = json.loads(kinds_json)
+            if isinstance(kinds, list) and kinds:
+                return kinds[0]
+    except (TypeError, ValueError, KeyError):
+        pass
+    return _runner_kind_from_tags(claim_tags)
 
 
 HOST_ROLE_NAMES = (
@@ -2619,6 +2722,10 @@ class RegisterRequest(BaseModel):
     # M2.5.4: structured capability blob the hub matches against
     # ``required_capabilities`` predicates on each queued task.
     capabilities: dict[str, Any] | None = None
+    # M2.8.1: first-class kinds + agent manifest fields.
+    kinds: list[str] = Field(default_factory=lambda: ["agent"])
+    agent_type: str | None = None
+    mcp_manifest: dict[str, Any] | None = None
     timestamp: int
     nonce: str = Field(..., min_length=8, max_length=80)
     signature: str

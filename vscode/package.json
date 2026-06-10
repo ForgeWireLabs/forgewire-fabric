@@ -294,26 +294,6 @@
         "icon": "$(copy)"
       },
       {
-        "command": "forgewire.redispatchTask",
-        "when": "view == forgewire.tasks && viewItem =~ /^taskHistory\\.(failed|cancelled|timed_out)$/",
-        "group": "inline@1"
-      },
-      {
-        "command": "forgewire.dismissTask",
-        "when": "view == forgewire.tasks && viewItem =~ /^taskHistory\\./",
-        "group": "inline@2"
-      },
-      {
-        "command": "forgewire.cancelStaleTask",
-        "when": "view == forgewire.tasks && viewItem =~ /^task\\.[a-z]+\\.stale$/",
-        "group": "inline@1"
-      },
-      {
-        "command": "forgewire.redispatchTask",
-        "when": "view == forgewire.tasks && viewItem =~ /^task\\.[a-z]+\\.failed$/",
-        "group": "inline@1"
-      },
-      {
         "command": "forgewire.copyToken",
         "title": "Copy Hub Token to Clipboard",
         "category": "ForgeWire"
@@ -656,13 +636,13 @@
         },
         {
           "command": "forgewire.streamTask",
-          "when": "view == forgewire.tasks && viewItem =~ /^task\\./",
+          "when": "view == forgewire.tasks && viewItem =~ /^task\\.[a-z]+\\.(running|claimed|reporting)$/",
           "group": "inline@1"
         },
         {
           "command": "forgewire.cancelTask",
           "when": "view == forgewire.tasks && viewItem =~ /^task\\./",
-          "group": "inline@2"
+          "group": "inline@1"
         },
         {
           "command": "forgewire.showTask",
@@ -746,23 +726,15 @@
         },
         {
           "command": "forgewire.redispatchTask",
-          "when": "view == forgewire.tasks && viewItem =~ /^taskHistory\\.(failed|cancelled|timed_out)$/",
-          "group": "inline@1"
+          "when": "view == forgewire.tasks"
         },
         {
           "command": "forgewire.dismissTask",
-          "when": "view == forgewire.tasks && viewItem =~ /^taskHistory\\./",
-          "group": "inline@2"
+          "when": "view == forgewire.tasks"
         },
         {
           "command": "forgewire.cancelStaleTask",
-          "when": "view == forgewire.tasks && viewItem =~ /^task\\.[a-z]+\\.stale$/",
-          "group": "inline@1"
-        },
-        {
-          "command": "forgewire.redispatchTask",
-          "when": "view == forgewire.tasks && viewItem =~ /^task\\.[a-z]+\\.failed$/",
-          "group": "inline@1"
+          "when": "view == forgewire.tasks"
         },
         {
           "command": "forgewire.pauseRunner"
@@ -816,22 +788,13 @@
           "command": "forgewire.dr.openSettings"
         },
         {
-          "command": "forgewire.redispatchTask",
-          "title": "Redispatch Task",
-          "category": "ForgeWire",
-          "icon": "$(redo)"
+          "command": "forgewire.redispatchTask"
         },
         {
-          "command": "forgewire.dismissTask",
-          "title": "Dismiss from History",
-          "category": "ForgeWire",
-          "icon": "$(close)"
+          "command": "forgewire.dismissTask"
         },
         {
-          "command": "forgewire.cancelStaleTask",
-          "title": "Cancel Stale Task",
-          "category": "ForgeWire",
-          "icon": "$(trash)"
+          "command": "forgewire.cancelStaleTask"
         }
       ]
     }

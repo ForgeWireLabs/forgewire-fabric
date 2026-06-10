@@ -633,13 +633,7 @@ fn build_register_payload(config: &RunnerConfig) -> RegisterPayload {
         ram_mb: None,
         gpu: None,
         tools: config.tools.clone(),
-        tags: {
-            let mut tags = config.tags.clone();
-            if !tags.iter().any(|t| t.starts_with("kind:")) {
-                tags.push("kind:command".into());
-            }
-            tags
-        },
+        tags: config.tags.clone(),
         scope_prefixes: config.scope_prefixes.clone(),
         tenant: config.tenant.clone(),
         workspace_root: Some(config.workspace_root.display().to_string()),
@@ -653,20 +647,17 @@ fn build_register_payload(config: &RunnerConfig) -> RegisterPayload {
             );
             m
         },
+        kinds: vec!["command".to_owned()],
+        agent_type: None,
+        mcp_manifest: None,
     }
 }
 
 fn build_claim_payload(config: &RunnerConfig) -> ClaimPayload {
-    // Mirror the same kind: tag injection as build_register_payload so that
-    // runner_kind_from_tags() on the hub resolves "command" not "agent".
-    let mut tags = config.tags.clone();
-    if !tags.iter().any(|t| t.starts_with("kind:")) {
-        tags.push("kind:command".into());
-    }
     ClaimPayload {
         scope_prefixes: config.scope_prefixes.clone(),
         tools: config.tools.clone(),
-        tags,
+        tags: config.tags.clone(),
         tenant: config.tenant.clone(),
         workspace_root: Some(config.workspace_root.display().to_string()),
         last_known_commit: None,

@@ -24,41 +24,6 @@ from typing import Any
 from forgewire_fabric.runner.identity import RunnerIdentity
 
 
-# Allowed values for the runner's task-kind affinity. Mirrors the hub's
-# ``DispatchTaskRequest.kind`` enum. A runner's kind is a hard property
-# of the binary that was launched (the shell-exec runner is always
-# ``command``; the Copilot-Chat MCP runner is always ``agent``), not an
-# operator knob -- there is no env override. The hub uses the task's
-# explicit ``kind`` field as the only routing decision.
-_VALID_KINDS = ("agent", "command")
-
-
-def apply_kind_tag(tags: list[str], *, default_kind: str) -> list[str]:
-    """Return ``tags`` with exactly one canonical ``kind:<default_kind>`` entry.
-
-    Any pre-existing ``kind:*`` (or ``kind=*``) tag is dropped -- the runner's
-    kind is fixed by which binary is running, not by sidecar config. All
-    other tags are preserved in their original order. Raises
-    :class:`ValueError` if ``default_kind`` is not one of
-    :data:`_VALID_KINDS`.
-    """
-    if default_kind not in _VALID_KINDS:
-        raise ValueError(f"invalid default_kind: {default_kind!r}")
-
-    rebuilt: list[str] = []
-    for raw in tags or []:
-        if not isinstance(raw, str):
-            continue
-        norm = raw.strip().lower().replace("=", ":")
-        if norm.startswith("kind:"):
-            # Operator-supplied kind tags are ignored: the runner's kind
-            # is the binary, not the config.
-            continue
-        rebuilt.append(raw)
-    rebuilt.append(f"kind:{default_kind}")
-    return rebuilt
-
-
 # ---------------------------------------------------------------------- info
 
 
