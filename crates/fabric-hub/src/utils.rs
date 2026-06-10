@@ -70,6 +70,26 @@ pub fn runner_kind_from_tags(tags: &[String]) -> &'static str {
     "agent"
 }
 
+/// Derive primary task-kind from the stored runner row's `kinds` JSON field.
+///
+/// M2.8.3+: runners send `kinds: ["agent"|"command"]` instead of `kind:*`
+/// tags. Prefers the first-class column; falls back to the legacy tag scan
+/// so runners that pre-date M2.8.3 still route correctly.
+pub fn runner_kind_from_row(kinds: &Value, tags: &[String]) -> &'static str {
+    if let Some(arr) = kinds.as_array() {
+        for v in arr {
+            if let Some(s) = v.as_str() {
+                match s {
+                    "command" => return "command",
+                    "agent" => return "agent",
+                    _ => {}
+                }
+            }
+        }
+    }
+    runner_kind_from_tags(tags)
+}
+
 /// Append one event to the audit chain with retry-on-tail-conflict (up to 3 tries).
 pub async fn audit_append(
     store: &(dyn AuditStore + Send + Sync),

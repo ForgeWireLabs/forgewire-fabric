@@ -19,7 +19,7 @@ use fabric_store::{ClaimResult, CreateTaskParams, TaskRow};
 
 use crate::state::HubState;
 use crate::utils::{
-    audit_append, budget_denial, check_skew, runner_kind_from_tags, utc_now, verify_sig,
+    audit_append, budget_denial, check_skew, runner_kind_from_row, runner_kind_from_tags, utc_now, verify_sig,
 };
 
 // ---- Shared request types --------------------------------------------------
@@ -331,8 +331,11 @@ pub async fn claim_task_v2(
         }
     }
 
-    // Fetch queued tasks matching kind
-    let task_kind = runner_kind_from_tags(&payload.tags);
+    // Derive task-kind from the stored runner row's `kinds` field (M2.8.3+).
+    // `kinds` is a JSON array (e.g. `["command"]`). Fall back to the legacy
+    // tag-based derivation for runners that pre-date M2.8.3 and still send
+    // `kind:command` tags instead of the first-class `kinds` field.
+    let task_kind = runner_kind_from_row(&runner.kinds, &payload.tags);
     let queued = state
         .store
         .list_tasks(Some("queued"), 50)
