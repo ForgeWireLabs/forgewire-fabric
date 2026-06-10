@@ -146,6 +146,7 @@ Write-Host "Runner binary: $RunnerExe" -ForegroundColor Cyan
 # Self-update wiring: stage dir the hub serves from, and the updater script the
 # hub's POST /admin/update launches (defaults in the hub resolve to these paths).
 New-Item -ItemType Directory -Force -Path (Join-Path $BinDir "staged") | Out-Null
+New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
 $updateScriptSrc = Join-Path $PSScriptRoot "update-fabric.ps1"
 if (Test-Path $updateScriptSrc) {
     Copy-Item $updateScriptSrc (Join-Path $DataDir "update-fabric.ps1") -Force
