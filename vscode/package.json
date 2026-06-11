@@ -2,7 +2,7 @@
   "name": "forgewire",
   "displayName": "ForgeWire",
   "description": "Unified control surface for the ForgeWire platform — Fabric, Loom, Hub, runners, and future services: signed envelopes, scope-bound capability tokens, live stream output. Run a hub or runner from inside VS Code on Windows, macOS, or Linux.",
-  "version": "0.5.3",
+  "version": "0.6.0",
   "publisher": "DigitalHallucinations",
   "license": "Apache-2.0",
   "icon": "media/icon.png",
@@ -477,6 +477,12 @@
           "contextualTitle": "ForgeWire Tasks"
         },
         {
+          "id": "forgewire.agents",
+          "name": "Agents",
+          "icon": "$(hubot)",
+          "contextualTitle": "ForgeWire Agents"
+        },
+        {
           "id": "forgewire.approvals",
           "name": "Approvals",
           "icon": "$(verified)",
@@ -525,6 +531,11 @@
         "when": "!forgewire.connected"
       },
       {
+        "view": "forgewire.agents",
+        "contents": "No hub connection.\n\n[Connect to Hub](command:forgewire.connectHub)",
+        "when": "!forgewire.connected"
+      },
+      {
         "view": "forgewire.approvals",
         "contents": "No hub connection.\n\n[Connect to Hub](command:forgewire.connectHub)",
         "when": "!forgewire.connected"
@@ -549,7 +560,7 @@
       "view/title": [
         {
           "command": "forgewire.refresh",
-          "when": "view == forgewire.tasks || view == forgewire.hub || view == forgewire.hosts || view == forgewire.approvals || view == forgewire.audit || view == forgewire.secrets",
+          "when": "view == forgewire.tasks || view == forgewire.hub || view == forgewire.hosts || view == forgewire.agents || view == forgewire.approvals || view == forgewire.audit || view == forgewire.secrets",
           "group": "navigation@1"
         },
         {

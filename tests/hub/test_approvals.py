@@ -25,7 +25,7 @@ from forgewire_fabric.hub.server import BlackboardConfig, create_app
 
 HUB_TOKEN = "x" * 32
 BEARER = {"Authorization": f"Bearer {HUB_TOKEN}"}
-BASE = {"title": "t", "prompt": "p", "base_commit": "a" * 40}
+BASE = {"title": "t", "prompt": "p", "base_commit": "a" * 40, "kind": "agent"}
 
 
 def _build_client(policy: dict) -> TestClient:

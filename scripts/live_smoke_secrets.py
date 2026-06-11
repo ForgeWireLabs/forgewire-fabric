@@ -113,15 +113,15 @@ def main() -> int:  # noqa: D401 - script entry point
         print(f"[4] audit dispatch event records secrets_needed={[SECRET_NAME]} (name-only)")
 
         # ---- 5. submit a result containing the secret VALUE; verify redaction ----
-        # Bypass claim-v2 (no live runner identity here) by impersonating a
-        # worker. The legacy /tasks/claim path lets us mark this task with a
-        # worker id so submit_result accepts our submission.
+        # Bypass the signed kind-specific claim (no live runner identity here)
+        # by impersonating a worker. The legacy /tasks/claim path lets us mark
+        # this task with a worker id so submit_result accepts our submission.
         r = c.post(
             "/tasks/claim",
             json={"worker_id": "smoke-secret-worker", "hostname": "smoke", "capabilities": {}},
         )
         if r.status_code != 200 or not r.json():
-            # Some other runner already claimed it via claim-v2; in that case
+            # Some other runner already claimed it via a signed claim; in that case
             # we can't legitimately submit a result. Skip the redaction
             # half-test but keep the smoke green; record why.
             print(

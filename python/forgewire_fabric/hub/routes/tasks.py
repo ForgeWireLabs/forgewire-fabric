@@ -21,6 +21,20 @@ from ._helpers import (
 router = APIRouter()
 
 
+def _require_kind(kind: str | None) -> None:
+    """M2.8.9: ``kind`` is mandatory on dispatch — no legacy ``agent`` default.
+
+    A missing/blank value is a hard 400. Invalid values are caught earlier by
+    the model's ``Literal`` (422); this guard handles the absent case the model
+    cannot distinguish from a default.
+    """
+    if not kind:
+        raise HTTPException(
+            status_code=400,
+            detail="kind is required (one of: agent, command)",
+        )
+
+
 @router.post("/tasks", dependencies=[Depends(require_auth)])
 def dispatch_task(request: Request, payload: DispatchTaskRequest) -> dict[str, Any]:
     ctx = get_context(request)
@@ -34,6 +48,7 @@ def dispatch_task(request: Request, payload: DispatchTaskRequest) -> dict[str, A
                 "POST /tasks/v2 with a registered dispatcher key"
             ),
         )
+    _require_kind(payload.kind)
     enforce_dispatch_gate(
         ctx,
         task_id=(payload.todo_id or payload.title),

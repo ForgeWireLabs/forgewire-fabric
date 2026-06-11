@@ -1,6 +1,7 @@
 import * as os from "os";
 import * as vscode from "vscode";
 import {
+  AgentInfo,
   ApprovalInfo,
   AuditEvent,
   ClusterHealth,
@@ -9,6 +10,7 @@ import {
   HostRoleName,
   HostRoleSummary,
   HostSummary,
+  McpManifestServer,
   RunnerInfo,
   SecretInfo,
   TaskInfo,
@@ -725,9 +727,10 @@ export class TasksProvider implements vscode.TreeDataProvider<TaskNode> {
     const subtype = n.stale ? "stale" : t.status;
     item.contextValue = `task.${n.parent}.${subtype}`;
     const staleAgeLabel = n.stale ? ` \u00b7 ${staleAge(t.created_at)}` : "";
+    const chip = kindChip(t);
     item.description = n.stale
-      ? `queued (stale${staleAgeLabel}) \u00b7 ${t.branch}`
-      : `${t.status} \u00b7 ${t.branch}`;
+      ? `${chip} queued (stale${staleAgeLabel}) \u00b7 ${t.branch}`
+      : `${chip} ${t.status} \u00b7 ${t.branch}`;
     item.iconPath = statusThemeIcon(n.stale ? "stale" : t.status);
     item.tooltip = new vscode.MarkdownString(
       `**#${t.id} ${t.title}** \`${t.status}\`\n\n` +
@@ -786,7 +789,7 @@ function renderHistoryTaskItem(t: TaskInfo): vscode.TreeItem {
   const statusLabel = isFailed ? t.status.toUpperCase() : t.status;
   item.description = [
     statusLabel,
-    t.kind ?? "agent",
+    kindChip(t),
     t.branch,
     duration ? `ran ${duration}` : undefined,
     ageLabel ? `${ageLabel} ago` : undefined,
@@ -817,6 +820,20 @@ function renderHistoryTaskItem(t: TaskInfo): vscode.TreeItem {
     arguments: [t.id],
   };
   return item;
+}
+
+/**
+ * Compact kind chip for a task row, e.g. `[command]`, `[agent]`, or
+ * `[agent·skill]` when the agent dispatch variant is known. Missing kind
+ * defaults to `agent` (legacy tasks predate the M2.8 kind column).
+ */
+function kindChip(t: TaskInfo): string {
+  const kind = t.kind ?? "agent";
+  const dispatch = typeof t.dispatch === "string" ? t.dispatch : undefined;
+  if (kind === "agent" && dispatch) {
+    return `[agent·${dispatch}]`;
+  }
+  return `[${kind}]`;
 }
 
 function statusThemeIcon(s: string): vscode.ThemeIcon {
@@ -894,6 +911,241 @@ function formatUptime(seconds: number | undefined): string {
   if (h > 0) return `${h}h ${m}m`;
   if (m > 0) return `${m}m ${s}s`;
   return `${s}s`;
+}
+
+// ---------------------------------------------------------------------------
+// Agents (Fabric runner registry: agent_type + MCP manifest)
+//
+// M2.8.8: consumes GET /agents. Each agent is a Fabric runner ('agent' in
+// kinds) that has introspected its local MCP servers and advertised a
+// manifest. The tree exposes, per agent, the connected MCP servers and the
+// tools / resources / prompts (skills) each one advertises — the same
+// capability set the hub's capability router uses to route skill/tool dispatch.
+// ---------------------------------------------------------------------------
+
+type CapKind = "tools" | "resources" | "prompts";
+
+export type AgentNode =
+  | { kind: "agent"; agent: AgentInfo }
+  | { kind: "server"; agent: AgentInfo; server: McpManifestServer }
+  | { kind: "capGroup"; server: McpManifestServer; cap: CapKind }
+  | { kind: "cap"; cap: CapKind; name: string; description?: string; detail?: string }
+  | { kind: "placeholder"; label: string; description?: string; icon: string };
+
+export class AgentsProvider implements vscode.TreeDataProvider<AgentNode> {
+  private readonly _onDidChange = new vscode.EventEmitter<AgentNode | undefined | void>();
+  readonly onDidChangeTreeData = this._onDidChange.event;
+
+  private agents: AgentInfo[] = [];
+
+  constructor(private readonly client: () => HubClient | undefined) {}
+
+  refresh(): void {
+    this._onDidChange.fire();
+  }
+
+  async getChildren(element?: AgentNode): Promise<AgentNode[]> {
+    if (element?.kind === "cap" || element?.kind === "placeholder") {
+      return [];
+    }
+    if (element?.kind === "capGroup") {
+      return capLeaves(element.server, element.cap);
+    }
+    if (element?.kind === "server") {
+      const groups: AgentNode[] = [];
+      for (const cap of ["prompts", "tools", "resources"] as CapKind[]) {
+        if (capCount(element.server, cap) > 0) {
+          groups.push({ kind: "capGroup", server: element.server, cap });
+        }
+      }
+      if (groups.length === 0) {
+        return [
+          { kind: "placeholder", label: "No capabilities advertised", icon: "circle-slash" },
+        ];
+      }
+      return groups;
+    }
+    if (element?.kind === "agent") {
+      const servers = element.agent.mcp_manifest?.servers ?? [];
+      if (servers.length === 0) {
+        return [
+          {
+            kind: "placeholder",
+            label: "No MCP servers advertised",
+            description: "agent reported an empty manifest",
+            icon: "circle-slash",
+          },
+        ];
+      }
+      return servers.map((server) => ({ kind: "server" as const, agent: element.agent, server }));
+    }
+
+    // Top level: load agents.
+    const c = this.client();
+    if (!c) {
+      this.agents = [];
+      return [{ kind: "placeholder", label: "Not connected", icon: "debug-disconnect" }];
+    }
+    try {
+      this.agents = await c.listAgents();
+    } catch (err) {
+      this.agents = [];
+      return [
+        {
+          kind: "placeholder",
+          label: "Hub unreachable",
+          description: err instanceof Error ? err.message : String(err),
+          icon: "warning",
+        },
+      ];
+    }
+    if (this.agents.length === 0) {
+      return [
+        {
+          kind: "placeholder",
+          label: "No agent runners registered",
+          description: "start a Fabric runner with MCP servers wired up",
+          icon: "hubot",
+        },
+      ];
+    }
+    return this.agents.map((agent) => ({ kind: "agent" as const, agent }));
+  }
+
+  getTreeItem(n: AgentNode): vscode.TreeItem {
+    if (n.kind === "agent") {
+      const a = n.agent;
+      const label = a.alias || a.hostname || a.runner_id.slice(0, 8);
+      const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.Collapsed);
+      item.id = `agent:${a.runner_id}`;
+      const isLocal = !!a.hostname && a.hostname.toLowerCase() === os.hostname().toLowerCase();
+      const typeTag = a.agent_type ? `${a.agent_type}` : "agent";
+      item.description = `${typeTag} · ${a.state ?? "?"}${isLocal ? " · this host" : ""}`;
+      item.iconPath = new vscode.ThemeIcon(
+        "hubot",
+        a.state === "online"
+          ? new vscode.ThemeColor("charts.blue")
+          : a.state === "offline"
+            ? new vscode.ThemeColor("charts.red")
+            : new vscode.ThemeColor("charts.yellow")
+      );
+      item.contextValue = "agent";
+      const servers = a.mcp_manifest?.servers ?? [];
+      const counts = servers.reduce(
+        (acc, s) => {
+          acc.tools += s.tools?.length ?? 0;
+          acc.resources += s.resources?.length ?? 0;
+          acc.prompts += s.prompts?.length ?? 0;
+          return acc;
+        },
+        { tools: 0, resources: 0, prompts: 0 }
+      );
+      item.tooltip = new vscode.MarkdownString(
+        `**${label}**\n\n` +
+          `- runner_id: \`${a.runner_id}\`\n` +
+          `- agent_type: \`${a.agent_type ?? "(unset)"}\`\n` +
+          `- hostname: ${a.hostname ?? "?"}${isLocal ? " _(this host)_" : ""}\n` +
+          `- state: ${a.state ?? "?"}${a.drain_requested ? " (draining)" : ""}\n` +
+          `- last heartbeat: ${a.last_heartbeat ?? "?"}\n` +
+          `- manifest v${a.mcp_manifest_version ?? 0}: ${servers.length} server(s), ` +
+          `${counts.prompts} skill(s) / ${counts.tools} tool(s) / ${counts.resources} resource(s)\n` +
+          (a.workspace_root ? `- workspace: \`${a.workspace_root}\`\n` : "") +
+          (a.tenant ? `- tenant: \`${a.tenant}\`\n` : "")
+      );
+      return item;
+    }
+
+    if (n.kind === "server") {
+      const s = n.server;
+      const item = new vscode.TreeItem(s.server_id, vscode.TreeItemCollapsibleState.Collapsed);
+      item.id = `agent:${n.agent.runner_id}:server:${s.server_id}`;
+      const parts: string[] = [];
+      if ((s.prompts?.length ?? 0) > 0) parts.push(`${s.prompts!.length} skills`);
+      if ((s.tools?.length ?? 0) > 0) parts.push(`${s.tools!.length} tools`);
+      if ((s.resources?.length ?? 0) > 0) parts.push(`${s.resources!.length} resources`);
+      item.description = parts.join(" · ") || "no capabilities";
+      item.iconPath = new vscode.ThemeIcon("server-process");
+      item.contextValue = "agent.server";
+      item.tooltip = new vscode.MarkdownString(
+        `MCP server **${s.server_id}** advertised by this agent's manifest.`
+      );
+      return item;
+    }
+
+    if (n.kind === "capGroup") {
+      const label = n.cap === "prompts" ? "Skills" : n.cap === "tools" ? "Tools" : "Resources";
+      const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.Collapsed);
+      item.id = `agent:server:${n.server.server_id}:${n.cap}`;
+      item.description = `${capCount(n.server, n.cap)}`;
+      item.iconPath = new vscode.ThemeIcon(
+        n.cap === "prompts" ? "symbol-event" : n.cap === "tools" ? "tools" : "file-symlink-file"
+      );
+      item.contextValue = `agent.capGroup.${n.cap}`;
+      return item;
+    }
+
+    if (n.kind === "placeholder") {
+      const item = new vscode.TreeItem(n.label, vscode.TreeItemCollapsibleState.None);
+      item.description = n.description;
+      item.iconPath = new vscode.ThemeIcon(n.icon);
+      item.contextValue = "agent.placeholder";
+      return item;
+    }
+
+    // n.kind === "cap"
+    const item = new vscode.TreeItem(n.name, vscode.TreeItemCollapsibleState.None);
+    item.id = `agent:cap:${n.cap}:${n.name}`;
+    if (n.description) item.description = n.description;
+    item.iconPath = new vscode.ThemeIcon(
+      n.cap === "prompts" ? "symbol-event" : n.cap === "tools" ? "symbol-method" : "file"
+    );
+    item.contextValue = `agent.cap.${n.cap}`;
+    if (n.detail) {
+      item.tooltip = new vscode.MarkdownString(n.detail);
+    }
+    return item;
+  }
+}
+
+function capCount(server: McpManifestServer, cap: CapKind): number {
+  return (server[cap]?.length ?? 0) as number;
+}
+
+function capLeaves(server: McpManifestServer, cap: CapKind): AgentNode[] {
+  if (cap === "prompts") {
+    return (server.prompts ?? []).map((p) => {
+      const args = (p.arguments ?? [])
+        .map((a) => (a.required ? `${a.name}*` : a.name))
+        .join(", ");
+      return {
+        kind: "cap" as const,
+        cap,
+        name: p.name,
+        description: p.description,
+        detail:
+          `**${p.name}** _(skill / MCP prompt)_\n\n` +
+          (p.description ? `${p.description}\n\n` : "") +
+          (args ? `arguments: \`${args}\` _(\\* = required)_` : "_no arguments_"),
+      };
+    });
+  }
+  if (cap === "tools") {
+    return (server.tools ?? []).map((t) => ({
+      kind: "cap" as const,
+      cap,
+      name: t.name,
+      description: t.description,
+      detail:
+        `**${t.name}** _(MCP tool)_\n\n` + (t.description ? `${t.description}` : "_no description_"),
+    }));
+  }
+  return (server.resources ?? []).map((r) => ({
+    kind: "cap" as const,
+    cap,
+    name: r.name || r.uri,
+    description: r.mime_type,
+    detail: `**${r.name || r.uri}** _(MCP resource)_\n\n- uri: \`${r.uri}\`\n- type: ${r.mime_type ?? "?"}`,
+  }));
 }
 
 // ---------------------------------------------------------------------------

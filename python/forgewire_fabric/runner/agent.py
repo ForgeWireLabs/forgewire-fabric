@@ -506,9 +506,17 @@ async def _run_one_task(
 async def _claim_loop(
     session: RunnerSession, executor: TaskExecutor, *, stop: asyncio.Event
 ) -> None:
+    # M2.8.9: the unified claim-v2 alias is gone. Claim from the kind-specific
+    # endpoint. A runner is single-kind per binary (hard rule #12): prefer the
+    # agent (Fabric) queue when 'agent' is in kinds, else the command (Loom) queue.
+    claim = (
+        session.client.claim_task_fabric
+        if "agent" in session.config.kinds
+        else session.client.claim_task_loom
+    )
     while not stop.is_set():
         try:
-            response = await session.client.claim_task_v2(session.claim_payload())
+            response = await claim(session.claim_payload())
             session.claim_failures_consecutive = 0
             session.last_claim_error = None
         except BlackboardError as exc:

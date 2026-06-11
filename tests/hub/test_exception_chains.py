@@ -49,6 +49,7 @@ def test_dispatch_task_preserves_storage_http_error_cause(
         scope_globs=["python/forgewire_fabric/**"],
         base_commit="abcdef0",
         branch="agent/test/exception-chain",
+        kind="agent",
     )
 
     with pytest.raises(HTTPException) as caught:

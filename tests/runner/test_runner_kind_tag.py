@@ -112,13 +112,13 @@ def _register(client: TestClient, ident: _MachineIdent, *, kinds: list[str]) -> 
     assert r.status_code == 200, r.text
 
 
-def _claim_v2(client: TestClient, ident: _MachineIdent) -> tuple[int, dict]:
-    """Claim via the deprecated claim-v2 alias.
+def _claim(client: TestClient, ident: _MachineIdent, *, queue: str) -> tuple[int, dict]:
+    """Claim via the kind-specific endpoint.
 
-    The Python hub doesn't expose the new claim-loom/claim-fabric routes yet
-    (those live in the Rust hub, landed in M2.8.2). We test that kind-based
-    routing still works via claim-v2, which now derives the runner's kind from
-    the stored ``kinds`` column rather than ``kind:*`` tags (M2.8.3).
+    M2.8.9 removed the unified ``/tasks/claim-v2`` alias; a runner posts to the
+    endpoint matching its registered kind — ``queue="loom"`` (command) or
+    ``queue="fabric"`` (agent). The hub enforces that the runner's stored
+    ``kinds`` column (M2.8.3) includes the queue's kind.
     """
     ts = int(time.time())
     nonce = secrets.token_hex(16)
@@ -133,7 +133,7 @@ def _claim_v2(client: TestClient, ident: _MachineIdent) -> tuple[int, dict]:
         "tools": [],
         "tags": [],
     }
-    r = client.post("/tasks/claim-v2", json=payload, headers=BEARER)
+    r = client.post(f"/tasks/claim-{queue}", json=payload, headers=BEARER)
     return r.status_code, r.json()
 
 
@@ -155,8 +155,8 @@ def test_command_runner_only_claims_command_tasks() -> None:
     """A runner registered with ``kinds:["command"]`` must not be handed an
     agent task and must successfully claim its own command task.
 
-    Uses ``/tasks/claim-v2`` (claim-loom/claim-fabric are Rust-hub only for
-    now); routing is driven by the stored ``kinds`` column (M2.8.3), not tags.
+    Uses ``/tasks/claim-loom``; routing is driven by the stored ``kinds``
+    column (M2.8.3), not tags.
     """
     client = _build_client()
     ident = _MachineIdent()
@@ -165,13 +165,13 @@ def test_command_runner_only_claims_command_tasks() -> None:
 
     # Only an agent task is queued -> command runner must miss.
     _dispatch(client, title="for-agent", kind="agent")
-    status, body = _claim_v2(client, ident)
+    status, body = _claim(client, ident, queue="loom")
     assert status == 200
     assert body.get("task") is None, body
 
     # Now add a command task -> the command runner picks it up.
     cmd_task = _dispatch(client, title="for-cmd", kind="command")
-    status, body = _claim_v2(client, ident)
+    status, body = _claim(client, ident, queue="loom")
     assert status == 200
     assert body.get("task") is not None, body
     assert int(body["task"]["id"]) == int(cmd_task["id"])
@@ -187,13 +187,13 @@ def test_agent_runner_only_claims_agent_tasks() -> None:
 
     # Only a command task queued -> agent runner must miss.
     cmd_task = _dispatch(client, title="cmd-only", kind="command")
-    status, body = _claim_v2(client, ident)
+    status, body = _claim(client, ident, queue="fabric")
     assert status == 200
     assert body.get("task") is None, body
 
     # Now add an agent task -> the agent runner picks it up.
     ag_task = _dispatch(client, title="ag-only", kind="agent")
-    status, body = _claim_v2(client, ident)
+    status, body = _claim(client, ident, queue="fabric")
     assert status == 200
     assert body.get("task") is not None, body
     assert int(body["task"]["id"]) == int(ag_task["id"])

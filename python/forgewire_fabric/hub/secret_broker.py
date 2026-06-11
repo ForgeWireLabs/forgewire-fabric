@@ -13,7 +13,7 @@ Wire diagram::
                                                        v
                                           tasks.secrets_needed = '["GITHUB_TOKEN"]'
                                                        |
-                                          /tasks/claim-v2
+                                          /tasks/claim-loom | /tasks/claim-fabric
                                                        v
         hub:  broker.resolve(["GITHUB_TOKEN"])  -> {"GITHUB_TOKEN": "<plaintext>"}
               audit("claim", secrets_dispatched=["GITHUB_TOKEN"])     <-- names only

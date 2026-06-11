@@ -4,7 +4,8 @@
 //! - GET  /tasks/{task_id}
 //! - POST /tasks          (rejected; protocol v3 requires signed dispatch)
 //! - POST /tasks/v2       (signed dispatch with registered dispatcher key)
-//! - POST /tasks/claim-v2 (runner claim with Ed25519 signature)
+//! - POST /tasks/claim-loom   (command-kind runner claim, Ed25519 signature)
+//! - POST /tasks/claim-fabric (agent-kind runner claim, Ed25519 signature)
 
 use std::sync::Arc;
 
@@ -57,7 +58,10 @@ pub struct DispatchPayload {
     pub timeout_minutes: i64,
     #[serde(default = "default_priority")]
     pub priority: i64,
-    #[serde(default = "default_kind")]
+    // M2.8.9: `kind` is required. A missing field deserializes to "" (via
+    // serde default) and is hard-rejected with 400 in the dispatch handler —
+    // the legacy "absent kind → agent" backward-compat is gone.
+    #[serde(default)]
     pub kind: String,
     #[serde(default)]
     pub metadata: Value,
@@ -73,8 +77,8 @@ pub struct DispatchPayload {
     pub approval_id: Option<String>,
     pub max_cost_usd: Option<f64>,
     // Phase 2.8 (M2.8.2): typed dispatch discriminator + capability identifiers.
-    // Missing values are backward-compat: absent `dispatch` → "prompt" for
-    // kind="agent" briefs; absent `kind` → "agent".
+    // Absent `dispatch` → "prompt" for kind="agent" briefs (kind itself is
+    // required as of M2.8.9; see the `kind` field above).
     pub dispatch: Option<String>,
     pub skill: Option<String>,
     pub tool: Option<String>,
@@ -131,9 +135,6 @@ fn default_timeout() -> i64 {
 fn default_priority() -> i64 {
     100
 }
-fn default_kind() -> String {
-    "agent".into()
-}
 fn default_limit() -> i64 {
     100
 }
@@ -184,6 +185,25 @@ pub async fn dispatch_task_signed(
     Json(payload): Json<SignedDispatchPayload>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     check_skew(payload.timestamp).map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
+
+    // M2.8.9: `kind` is mandatory — the legacy "absent kind → agent" shim is
+    // gone. A missing/blank or unrecognized kind is a hard 400 before any
+    // signature/queue work.
+    if payload.base.kind.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "kind is required (one of: agent, command)".into(),
+        ));
+    }
+    if payload.base.kind != "agent" && payload.base.kind != "command" {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "kind must be 'agent' or 'command'; got '{}'",
+                payload.base.kind
+            ),
+        ));
+    }
 
     let public_key = state
         .store
@@ -477,194 +497,6 @@ pub async fn dispatch_task_signed(
     let _ = audit_append(&*state.store, "dispatch", Some(task.id), &audit_payload).await;
 
     Ok(Json(serde_json::to_value(task).unwrap_or(Value::Null)))
-}
-
-// ---- POST /tasks/claim-v2 --------------------------------------------------
-
-pub async fn claim_task_v2(
-    State(state): State<Arc<HubState>>,
-    Json(payload): Json<ClaimV2Payload>,
-) -> Result<Json<Value>, (StatusCode, String)> {
-    check_skew(payload.timestamp).map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
-
-    let public_key = state
-        .store
-        .runner_public_key(&payload.runner_id)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "runner not registered".into()))?;
-
-    let envelope = json!({
-        "op": "claim",
-        "runner_id": payload.runner_id,
-        "timestamp": payload.timestamp,
-        "nonce": payload.nonce,
-    });
-    verify_sig(&public_key, &envelope, &payload.signature)
-        .map_err(|e| (StatusCode::FORBIDDEN, e))?;
-
-    let runner = state
-        .store
-        .get_runner(&payload.runner_id)
-        .await
-        .map_err(|e| match e {
-            fabric_store::StoreError::NotFound(_) => {
-                (StatusCode::NOT_FOUND, "runner not registered".into())
-            }
-            other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
-        })?;
-
-    if runner.drain_requested {
-        return Ok(Json(json!({"task": null, "info": {"reason": "drain"}})));
-    }
-
-    // Concurrency cap
-    let active_tasks = state
-        .store
-        .list_tasks(Some("claimed"), 200)
-        .await
-        .unwrap_or_default();
-    let active_tasks_running = state
-        .store
-        .list_tasks(Some("running"), 200)
-        .await
-        .unwrap_or_default();
-    let current_load = active_tasks
-        .iter()
-        .chain(active_tasks_running.iter())
-        .filter(|t| t.worker_id.as_deref() == Some(&payload.runner_id))
-        .count() as i64;
-    if current_load >= runner.max_concurrent {
-        return Ok(Json(
-            json!({"task": null, "info": {"reason": "concurrency_cap", "current_load": current_load, "max_concurrent": runner.max_concurrent}}),
-        ));
-    }
-
-    // Resource gates
-    if let Some(ram) = payload.ram_free_mb {
-        if ram < 512 {
-            return Ok(Json(
-                json!({"task": null, "info": {"reason": "resource_gate", "detail": format!("ram_free_mb {ram} < 512")}}),
-            ));
-        }
-    }
-    if payload.on_battery {
-        if let Some(batt) = payload.battery_pct {
-            if batt < 20 {
-                return Ok(Json(
-                    json!({"task": null, "info": {"reason": "resource_gate", "detail": format!("on battery {batt}% < 20")}}),
-                ));
-            }
-        }
-    }
-
-    // Derive task-kind from the stored runner row's `kinds` field (M2.8.3+).
-    // `kinds` is a JSON array (e.g. `["command"]`). Fall back to the legacy
-    // tag-based derivation for runners that pre-date M2.8.3 and still send
-    // `kind:command` tags instead of the first-class `kinds` field.
-    let task_kind = runner_kind_from_row(&runner.kinds, &payload.tags);
-    let queued = state
-        .store
-        .list_tasks(Some("queued"), 50)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let queued: Vec<_> = queued
-        .into_iter()
-        .filter(|t| !t.cancel_requested && t.kind == task_kind)
-        .collect();
-
-    if queued.is_empty() {
-        return Ok(Json(
-            json!({"task": null, "info": {"reason": "queue_empty"}}),
-        ));
-    }
-
-    let candidates: Vec<CandidateTask> = queued.iter().map(|t| build_candidate(t)).collect();
-
-    // Use from_raw so scope_prefixes get the same normalization the task globs
-    // get (backslashes -> '/', trailing '/'). Building RunnerView directly left
-    // Windows backslash prefixes unnormalized, so no path-scoped task ever
-    // matched a Windows runner.
-    let runner_view = RunnerView::from_raw(
-        &payload.scope_prefixes,
-        &payload.tools,
-        &payload.tags,
-        payload.tenant.clone(),
-        payload.workspace_root.clone(),
-        payload.last_known_commit.clone(),
-    );
-
-    let (picked_idx, candidates_seen) = pick_task(&candidates, &runner_view);
-    let chosen_idx = match picked_idx {
-        None => {
-            tracing::debug!(
-                runner_id = %payload.runner_id,
-                candidates_seen,
-                scope_prefixes = ?runner_view.scope_prefixes,
-                workspace_root = ?runner_view.workspace_root,
-                tags = ?runner_view.tags,
-                "no eligible task for runner"
-            );
-            return Ok(Json(
-                json!({"task": null, "info": {"reason": "no_eligible_runner", "candidates_seen": candidates_seen}}),
-            ));
-        }
-        Some(i) => i,
-    };
-
-    let chosen_task = &queued[chosen_idx];
-    let now = utc_now();
-    let claim_result = state
-        .store
-        .claim_task(chosen_task.id, &payload.runner_id, &now)
-        .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-
-    let task = match claim_result {
-        ClaimResult::Claimed(t) => t,
-        ClaimResult::AlreadyClaimed => {
-            return Ok(Json(
-                json!({"task": null, "info": {"reason": "no_eligible_runner", "detail": "lost_claim_race"}}),
-            ));
-        }
-    };
-
-    // Resolve secrets
-    let mut task_val = serde_json::to_value(&task).unwrap_or(Value::Null);
-    let mut secrets_dispatched: Vec<String> = vec![];
-    let requested: Vec<String> = task
-        .secrets_needed
-        .as_ref()
-        .and_then(|v| v.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_owned()))
-                .collect()
-        })
-        .unwrap_or_default();
-    if !requested.is_empty() {
-        if let Ok(resolved) = state.store.resolve_secrets(&requested).await {
-            if !resolved.is_empty() {
-                secrets_dispatched = resolved.keys().cloned().collect();
-                if let Some(obj) = task_val.as_object_mut() {
-                    obj.insert("secrets".into(), json!(resolved));
-                }
-            }
-        }
-    }
-
-    // Audit claim
-    let audit_payload = json!({
-        "task_id": task.id,
-        "worker_id": payload.runner_id,
-        "hostname": runner.hostname,
-        "secrets_dispatched": secrets_dispatched,
-    });
-    let _ = audit_append(&*state.store, "claim", Some(task.id), &audit_payload).await;
-
-    Ok(Json(
-        json!({"task": task_val, "info": {"reason": "claimed"}}),
-    ))
 }
 
 // ---- POST /tasks/claim-loom ------------------------------------------------

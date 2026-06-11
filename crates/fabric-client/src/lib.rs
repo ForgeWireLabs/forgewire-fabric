@@ -393,56 +393,6 @@ impl HubClient {
             .await
     }
 
-    // -- Claim v2 (signed) ---------------------------------------------------
-
-    pub async fn claim_v2(
-        &self,
-        identity: &IdentityFile,
-        claim: &ClaimPayload,
-    ) -> Result<ClaimResponse, ClientError> {
-        let ts = unix_timestamp();
-        let nonce = random_nonce();
-
-        let signed_fields = json!({
-            "op": "claim",
-            "runner_id": identity.id,
-            "timestamp": ts,
-            "nonce": nonce,
-        });
-        let canonical =
-            canonicalize(&signed_fields).map_err(|e| ClientError::Protocol(e.to_string()))?;
-        let signature = sign_payload_hex(&identity.secret_key_hex, &canonical)
-            .map_err(|e| ClientError::Protocol(e.to_string()))?;
-
-        let body = json!({
-            "runner_id": identity.id,
-            "timestamp": ts,
-            "nonce": nonce,
-            "signature": signature,
-            "scope_prefixes": claim.scope_prefixes,
-            "tools": claim.tools,
-            "tags": claim.tags,
-            "tenant": claim.tenant,
-            "workspace_root": claim.workspace_root,
-            "last_known_commit": claim.last_known_commit,
-            "cpu_load_pct": claim.cpu_load_pct,
-            "ram_free_mb": claim.ram_free_mb,
-            "battery_pct": claim.battery_pct,
-            "on_battery": claim.on_battery,
-        });
-
-        let val = self.post("/tasks/claim-v2", &body).await?;
-        let task = if val["task"].is_null() {
-            None
-        } else {
-            Some(val["task"].clone())
-        };
-        Ok(ClaimResponse {
-            task,
-            info: val.get("info").cloned().unwrap_or(Value::Null),
-        })
-    }
-
     /// Claim from the Loom (command-kind) queue via `/tasks/claim-loom`.
     pub async fn claim_loom(
         &self,

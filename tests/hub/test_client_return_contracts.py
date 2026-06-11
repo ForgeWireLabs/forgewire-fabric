@@ -50,6 +50,7 @@ async def _dispatch_and_claim(client: BlackboardClient, worker_id: str) -> int:
             "scope_globs": ["docs/x.md"],
             "base_commit": "a" * 40,
             "branch": "feature/m261-contract",
+            "kind": "agent",
         }
     )
     task_id = int(dispatched["id"])

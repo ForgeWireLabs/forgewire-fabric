@@ -77,6 +77,10 @@ def dispatch(
         "required_tags": list(required_tags) or None,
         "required_tools": list(required_tools) or None,
         "tenant": tenant,
+        # M2.8.9: kind is mandatory on dispatch (missing -> 400). This CLI
+        # dispatches agent briefs; Loom command briefs are built by loom_mcp
+        # (they require signed command/cwd/env fields).
+        "kind": "agent",
     }
     payload = {k: v for k, v in payload.items() if v is not None}
 

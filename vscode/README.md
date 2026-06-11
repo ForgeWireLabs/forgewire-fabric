@@ -6,9 +6,10 @@ ForgeWire turns any cluster of machines into a signed, scope-bounded task fabric
 
 ## Features
 
-- **Activity-bar sidebar** with two tree views:
-  - **Runners**: every registered runner with hostname, OS/arch, capability tags, scope prefixes, current load, and online/draining/offline state.
-  - **Tasks**: recent dispatches with status icons, branch, and per-task actions (tail stream, cancel, show JSON).
+- **Activity-bar sidebar** with live tree views:
+  - **Hosts**: every machine on the fabric with its roles (hub head, control, dispatch, command/agent runner), online/draining/offline state, and cluster health.
+  - **Tasks**: recent dispatches with status icons, a `kind` chip (`[command]` / `[agent]` / `[agent·skill]`), branch, and per-task actions (tail stream, cancel, show JSON).
+  - **Agents**: the Fabric runner registry from `GET /agents` — each agent runner with its `agent_type`, state, and the MCP servers it advertises, drilled down to the **Skills** (prompts), **Tools**, and **Resources** each server exposes. This is the capability set the hub routes `dispatch_skill` / `dispatch_tool` against.
 - **Status bar item** showing the active hub host. Click to (re)connect.
 - **Dispatch quick-pick**: prompt → scope globs → branch → base-commit → sent. The hub's terminal status is reported back; the extension can immediately start tailing the SSE stream into an output channel.
 - **Local hub control**: *ForgeWire: Start Hub Here* runs `forgewire-fabric hub start` in a managed terminal with a freshly generated token (saved to VS Code SecretStorage).
@@ -46,6 +47,28 @@ That's it — the runner is online and the hub will route matching tasks to it.
 2. Run **ForgeWire: Install / Update CLI**.
 3. Run **ForgeWire: Start Hub Here**. Pick a port (default 8765); the extension generates a random token, copies it to your clipboard, and saves it.
 4. Share the URL `http://<this-host>:<port>` and the token with anyone joining the cluster.
+
+## MCP control plane (Loom + Fabric)
+
+The extension's panes are the read-side GUI. To *drive* the fabric from an
+LLM session (Copilot Chat, Claude Code) you load two MCP servers, split by
+surface (Phase 2.8):
+
+- **`forgewire-fabric`** (`forgewire_fabric.hub.fabric_mcp`) — send typed intent
+  to a remote *agent*: `dispatch_skill`, `dispatch_tool`, `dispatch_prompt`,
+  `list_agents`, plus result/stream tools.
+- **`forgewire-loom`** (`forgewire_fabric.hub.loom_mcp`) — control a remote
+  *host*: `run_command`, `start_process`, `send_input`, `list_hosts`, …
+
+> Rule of thumb: **`forgewire-fabric` for agent intent, `forgewire-loom` for
+> shell access.** A dispatcher session loads both.
+
+Ready-to-edit config templates for both VS Code and Claude Code (dispatcher and
+agent-runner roles) live in
+[`../install/mcp-configs/`](../install/mcp-configs/README.md). `forgewire-fabric
+mcp install` wires the VS Code user-scope `mcp.json` automatically. Skills are
+MCP prompts advertised by an agent's manifest, not tags — see
+[`SKILLS-AS-PROMPTS.md`](../install/mcp-configs/SKILLS-AS-PROMPTS.md).
 
 ## Settings
 

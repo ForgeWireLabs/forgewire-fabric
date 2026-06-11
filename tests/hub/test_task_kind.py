@@ -2,9 +2,10 @@
 
 Two task kinds live on the same hub queue but must stay routable-disjoint:
 
-  * ``agent``   -- sealed brief for a Copilot-Chat agent runner. Default for
-                   every legacy dispatch and the only kind a legacy
-                   ``/tasks/claim`` (worker-id-only) request will hand out.
+  * ``agent``   -- sealed brief for a Copilot-Chat agent runner. The only
+                   kind a legacy ``/tasks/claim`` (worker-id-only) request will
+                   hand out. (M2.8.9: ``kind`` is required on dispatch — there
+                   is no longer an implicit ``agent`` default.)
   * ``command`` -- shell/script payload for a non-agent (cmd) runner.
                    Routable only via the v2 claim path to a runner whose
                    tags include ``kind:command``.
@@ -21,7 +22,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from forgewire_fabric.hub.client import BlackboardClient
+from forgewire_fabric.hub.client import BlackboardClient, BlackboardError
 from forgewire_fabric.hub.server import BlackboardConfig, create_app
 
 
@@ -62,13 +63,14 @@ def _payload(title: str, **extra: object) -> dict[str, object]:
 
 
 @pytest.mark.asyncio
-async def test_dispatch_defaults_to_agent_kind() -> None:
+async def test_dispatch_without_kind_is_rejected() -> None:
+    # M2.8.9: the legacy "absent kind -> agent" default is gone; a dispatch
+    # with no kind is a hard 400.
     client, raw = _make_client()
     try:
-        task = await client.dispatch_task(_payload("kind-default"))
-        assert task["kind"] == "agent"
-        fetched = await client.get_task(int(task["id"]))
-        assert fetched["kind"] == "agent"
+        with pytest.raises(BlackboardError) as excinfo:
+            await client.dispatch_task(_payload("kind-missing"))
+        assert excinfo.value.status_code == 400
     finally:
         await raw.aclose()
 
@@ -100,7 +102,7 @@ async def test_legacy_claim_only_returns_agent_tasks() -> None:
 
         # Add an agent task; legacy claim should now pick *that* one,
         # leaving the command task untouched.
-        agent = await client.dispatch_task(_payload("then-agent"))
+        agent = await client.dispatch_task(_payload("then-agent", kind="agent"))
         second = await client.claim_task({"worker_id": "legacy-worker"})
         assert second is not None
         assert int(second["id"]) == int(agent["id"])

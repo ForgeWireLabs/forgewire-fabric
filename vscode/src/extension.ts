@@ -12,6 +12,7 @@ import * as fs from "fs";
 import * as vscode from "vscode";
 import { ApprovalInfo, DispatcherSession, HubClient } from "./hubClient";
 import {
+  AgentsProvider,
   ApprovalNode,
   ApprovalsProvider,
   AuditProvider,
@@ -37,6 +38,7 @@ let auditProvider: AuditProvider;
 let secretsProvider: SecretsProvider;
 let settingsProvider: SettingsProvider;
 let tasksProvider: TasksProvider;
+let agentsProvider: AgentsProvider;
 let refreshTimer: NodeJS.Timeout | undefined;
 let context: vscode.ExtensionContext;
 
@@ -86,9 +88,11 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   secretsProvider = new SecretsProvider(getClient);
   settingsProvider = new SettingsProvider();
   tasksProvider = new TasksProvider(getClient, 100, ctx);
+  agentsProvider = new AgentsProvider(getClient);
   ctx.subscriptions.push(
     vscode.window.registerTreeDataProvider("forgewire.hub", hubProvider),
     vscode.window.registerTreeDataProvider("forgewire.hosts", hostsProvider),
+    vscode.window.registerTreeDataProvider("forgewire.agents", agentsProvider),
     vscode.window.registerTreeDataProvider("forgewire.approvals", approvalsProvider),
     vscode.window.registerTreeDataProvider("forgewire.cost", costProvider),
     vscode.window.registerTreeDataProvider("forgewire.audit", auditProvider),
@@ -248,6 +252,7 @@ async function probeAndRefresh(): Promise<void> {
   updateStatus();
   hubProvider?.refresh();
   tasksProvider?.refresh();
+  agentsProvider?.refresh();
   hostsProvider?.refresh();
   approvalsProvider?.refresh();
   costProvider?.refresh();
@@ -598,6 +603,9 @@ async function dispatchTask(): Promise<void> {
     scope_globs: scope.split(",").map((s) => s.trim()).filter(Boolean),
     branch: branch.trim(),
     base_commit: baseCommit.trim(),
+    // M2.8.9: kind is mandatory on dispatch. This quick-pick dispatches agent
+    // briefs; Loom command briefs go through the forgewire-loom MCP server.
+    kind: "agent" as const,
   };
   try {
     const t = dispatcherSession

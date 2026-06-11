@@ -36,7 +36,7 @@ from forgewire_fabric.hub.server import Blackboard, BlackboardConfig, create_app
 
 HUB_TOKEN = "x" * 32
 BEARER = {"Authorization": f"Bearer {HUB_TOKEN}"}
-BASE = {"title": "audit-t", "prompt": "noop body", "base_commit": "a" * 40}
+BASE = {"title": "audit-t", "prompt": "noop body", "base_commit": "a" * 40, "kind": "agent"}
 
 RQLITE_HOST = os.environ.get("RQLITE_HOST", "127.0.0.1")
 RQLITE_PORT = int(os.environ.get("RQLITE_PORT", "4001"))

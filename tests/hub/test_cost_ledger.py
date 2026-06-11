@@ -27,6 +27,7 @@ BASE_TASK = {
     "base_commit": "a" * 40,
     "scope_globs": ["src/**"],
     "branch": "feature/cost",
+    "kind": "agent",
 }
 
 

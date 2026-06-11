@@ -68,7 +68,7 @@ All fields are immutable once signed. The signature covers the canonical JSON of
 
 ### Runner path
 
-1. Runner claim-v2 is unchanged (runner signs `op=claim` with its own key).
+1. Runner claim is unchanged in shape (runner signs `op=claim` with its own key). M2.8.9 replaced the unified `/tasks/claim-v2` alias with the kind-split `/tasks/claim-loom` (command) and `/tasks/claim-fabric` (agent) routes; the signed envelope is identical.
 2. Runner registration payload gains a `supported_protocol_versions: [2, 3]` field.
 3. Hub-to-runner claim response includes the `v` field so the runner knows which envelope shape it received.
 

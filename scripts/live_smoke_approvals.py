@@ -324,7 +324,7 @@ async def _complete_agent_task(
     artifact_dir: Path,
 ) -> dict[str, Any]:
     claim = await client.post(
-        "/tasks/claim-v2",
+        "/tasks/claim-fabric",
         json=_runner_claim_payload(runner_ident, tags=tags, tools=tools),
     )
     claim.raise_for_status()

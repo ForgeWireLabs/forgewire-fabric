@@ -359,7 +359,6 @@ async fn main() {
         .route("/tasks", get(tasks::list_tasks))
         .route("/tasks", post(tasks::dispatch_task))
         .route("/tasks/v2", post(tasks::dispatch_task_signed))
-        .route("/tasks/claim-v2", post(tasks::claim_task_v2))
         .route("/tasks/claim-loom", post(tasks::claim_task_loom))
         .route("/tasks/claim-fabric", post(tasks::claim_task_fabric))
         .route("/tasks/{task_id}", get(tasks::get_task))

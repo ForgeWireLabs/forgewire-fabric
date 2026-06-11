@@ -2655,12 +2655,15 @@ class DispatchTaskRequest(BaseModel):
     tenant: str | None = None
     workspace_root: str | None = None
     require_base_commit: bool = False
-    # Task routing class. ``'agent'`` (default) targets agent runners
-    # (Copilot-Chat window + chatmode + MCP). ``'command'`` targets
-    # shell-exec runners (NSSM ``ForgeWireRunner`` service). The hub
-    # keeps the two queues disjoint so a shell runner cannot
-    # accidentally execute an agent brief (and vice versa).
-    kind: Literal["agent", "command"] = "agent"
+    # Task routing class. ``'agent'`` targets agent runners (Copilot-Chat
+    # window + chatmode + MCP). ``'command'`` targets shell-exec runners
+    # (NSSM ``ForgeWireRunner`` service). The hub keeps the two queues
+    # disjoint so a shell runner cannot accidentally execute an agent brief
+    # (and vice versa). M2.8.9: ``kind`` is required — a missing value is a
+    # hard 400 in the dispatch routes (the legacy "absent → agent" default is
+    # gone). Modeled as Optional so the route can distinguish absent from a
+    # valid value; ``None`` is rejected before any task is created.
+    kind: Literal["agent", "command"] | None = None
     # M2.5.1: when a previous attempt at the same envelope returned 428
     # REQUIRE_APPROVAL, the dispatcher re-POSTs with the approval_id from
     # the issued queue row. The hub validates + consumes it on a match

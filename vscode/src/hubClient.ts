@@ -119,6 +119,65 @@ export interface RunnerInfo {
   [key: string]: unknown;
 }
 
+// ---- M2.8: Fabric agent manifest (mirrors the hub /agents shape) -----------
+
+export interface McpManifestPrompt {
+  name: string;
+  description?: string;
+  arguments?: Array<{ name: string; required?: boolean; description?: string }>;
+}
+
+export interface McpManifestTool {
+  name: string;
+  description?: string;
+  input_schema?: unknown;
+}
+
+export interface McpManifestResource {
+  uri: string;
+  name?: string;
+  mime_type?: string;
+}
+
+export interface McpManifestServer {
+  server_id: string;
+  tools?: McpManifestTool[];
+  resources?: McpManifestResource[];
+  prompts?: McpManifestPrompt[];
+}
+
+export interface McpManifest {
+  schema_version?: number;
+  servers: McpManifestServer[];
+}
+
+/** A Fabric runner ('agent' ∈ kinds) as returned by GET /agents. */
+export interface AgentInfo {
+  runner_id: string;
+  agent_type?: string | null;
+  hostname?: string;
+  alias?: string;
+  state?: string;
+  drain_requested?: boolean;
+  last_heartbeat?: string | null;
+  mcp_manifest?: McpManifest | null;
+  mcp_manifest_version?: number;
+  kinds?: string[];
+  max_concurrent?: number;
+  tenant?: string | null;
+  workspace_root?: string | null;
+  [key: string]: unknown;
+}
+
+/** A runner reference echoed by GET /capabilities/{kind}/{name}. */
+export interface CapabilityRunnerRef {
+  runner_id: string;
+  agent_type?: string | null;
+  hostname?: string;
+  state?: string;
+  drain_requested?: boolean;
+}
+
 export interface DispatcherInfo {
   dispatcher_id: string;
   label: string;
@@ -223,6 +282,7 @@ export interface TaskInfo {
   required_tags?: string[];
   required_tools?: string[];
   kind?: "agent" | "command";
+  dispatch?: "skill" | "tool" | "prompt";
   result?: { status?: string; log_tail?: string; error?: string | null };
   [key: string]: unknown;
 }
@@ -414,6 +474,29 @@ export class HubClient {
     return j.dispatchers ?? [];
   }
 
+  // ---- M2.8: Fabric agents + capability index --------------------------------
+
+  /** GET /agents — every runner with 'agent' in kinds, plus its mcp_manifest. */
+  async listAgents(): Promise<AgentInfo[]> {
+    const j = await this.request<{ agents: AgentInfo[] }>("GET", "/agents");
+    return j.agents ?? [];
+  }
+
+  /**
+   * GET /capabilities/{kind}/{name} — runners advertising the given
+   * tool/resource/prompt. Used to preview where a skill/tool would route.
+   */
+  async queryCapability(
+    kind: "tool" | "resource" | "prompt",
+    name: string
+  ): Promise<CapabilityRunnerRef[]> {
+    const j = await this.request<{ runners: CapabilityRunnerRef[] }>(
+      "GET",
+      `/capabilities/${encodeURIComponent(kind)}/${encodeURIComponent(name)}`
+    );
+    return j.runners ?? [];
+  }
+
   // ---- M2.5.2: cost ledger --------------------------------------------------
 
   async getCostSummary(sinceDays = 7): Promise<Record<string, unknown>> {
@@ -543,8 +626,11 @@ export class HubClient {
       nonce,
     };
     const signature = await session.sign(signed);
+    // M2.8.9: kind is mandatory on dispatch (missing -> 400). The signed
+    // envelope above already pins it; the POST body must carry the same value.
     return this.request<TaskInfo>("POST", "/tasks/v2", {
       ...payload,
+      kind: payload.kind ?? "agent",
       dispatcher_id: session.dispatcherId,
       timestamp: ts,
       nonce,

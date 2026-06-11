@@ -1,0 +1,27 @@
+{
+    "$schema": "https://aka.ms/vscode-mcp-schema",
+    "servers": {
+        "forgewire-loom": {
+            "command": "python",
+            "args": [
+                "-m",
+                "forgewire_fabric.hub.loom_mcp"
+            ],
+            "env": {
+                "FORGEWIRE_HUB_URL": "http://127.0.0.1:8765",
+                "FORGEWIRE_HUB_TOKEN_FILE": "${userHome}/.forgewire/hub.token"
+            }
+        },
+        "forgewire-fabric": {
+            "command": "python",
+            "args": [
+                "-m",
+                "forgewire_fabric.hub.fabric_mcp"
+            ],
+            "env": {
+                "FORGEWIRE_HUB_URL": "http://127.0.0.1:8765",
+                "FORGEWIRE_HUB_TOKEN_FILE": "${userHome}/.forgewire/hub.token"
+            }
+        }
+    }
+}

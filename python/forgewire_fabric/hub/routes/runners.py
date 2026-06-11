@@ -134,6 +134,13 @@ def dispatch_task_signed(request: Request, payload: DispatchTaskSignedRequest) -
     ctx = get_context(request)
     blackboard = ctx.blackboard
     check_skew(payload.timestamp)
+    # M2.8.9: kind is mandatory — reject a missing value with 400 before any
+    # signature/queue work (the legacy "absent → agent" default is gone).
+    if not payload.kind:
+        raise HTTPException(
+            status_code=400,
+            detail="kind is required (one of: agent, command)",
+        )
     public_key = blackboard.dispatcher_public_key(payload.dispatcher_id)
     if public_key is None:
         raise HTTPException(status_code=404, detail="dispatcher not registered")
@@ -439,46 +446,6 @@ def deregister_dispatcher(request: Request, dispatcher_id: str) -> dict[str, Any
         return get_context(request).blackboard.delete_dispatcher(dispatcher_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="dispatcher not registered") from exc
-
-
-@router.post("/tasks/claim-v2", dependencies=[Depends(require_auth)])
-def claim_task_v2(request: Request, payload: ClaimV2Request) -> JSONResponse:
-    ctx = get_context(request)
-    verify_runner_signature(
-        ctx,
-        op="claim",
-        runner_id=payload.runner_id,
-        timestamp=payload.timestamp,
-        nonce=payload.nonce,
-        signature=payload.signature,
-    )
-    try:
-        task, info = ctx.blackboard.claim_next_task_v2(
-            runner_id=payload.runner_id,
-            scope_prefixes=payload.scope_prefixes,
-            tools=payload.tools,
-            tags=payload.tags,
-            tenant=payload.tenant,
-            workspace_root=payload.workspace_root,
-            last_known_commit=payload.last_known_commit,
-            cpu_load_pct=payload.cpu_load_pct,
-            ram_free_mb=payload.ram_free_mb,
-            battery_pct=payload.battery_pct,
-            on_battery=payload.on_battery,
-        )
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail="runner not registered") from exc
-    secrets_dispatched: list[str] = []
-    if task is not None:
-        requested = list(task.get("secrets_needed") or [])
-        if requested:
-            resolved = ctx.blackboard.resolve_secrets(requested)
-            if resolved:
-                task = dict(task)
-                task["secrets"] = resolved
-                secrets_dispatched = list(resolved.keys())
-    audit_claim(ctx, task, worker_id=payload.runner_id, secrets_dispatched=secrets_dispatched)
-    return JSONResponse(content={"task": task, "info": info})
 
 
 # ── POST /tasks/claim-loom (M2.8.2) ──────────────────────────────────────────

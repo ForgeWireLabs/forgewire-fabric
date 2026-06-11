@@ -187,6 +187,7 @@ def test_secrets_names_not_values_in_dispatch_audit() -> None:
         "base_commit": "a" * 40,
         "branch": "feature/sec-audit",
         "secrets_needed": [name],
+        "kind": "agent",
     }, headers=BEARER).json()
 
     audit = client.get(f"/audit/tasks/{task['id']}", headers=BEARER).json()

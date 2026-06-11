@@ -65,16 +65,16 @@ def mcp() -> None:
 
 
 @mcp.command("install", help=(
-    "Register forgewire-dispatcher (and optionally forgewire-runner) in the "
-    "VS Code user-scope mcp.json. Re-runs idempotently and prunes legacy "
-    "scripts.remote.hub entries."
+    "Register forgewire-loom + forgewire-fabric (and optionally "
+    "forgewire-fabric-runner) in the VS Code user-scope mcp.json. Re-runs "
+    "idempotently and prunes legacy single-server / scripts.remote.hub entries."
 ))
 @click.option("--hub-url", default=None,
-              help="Hub URL the dispatcher MCP server connects to. "
+              help="Hub URL the dispatcher MCP servers connect to. "
               "Defaults to forgewireFabric.hubUrl from VS Code settings, "
               "else http://127.0.0.1:8765.")
 @click.option("--with-runner", is_flag=True, default=False,
-              help="Also register forgewire-runner (only for hosts that run a runner).")
+              help="Also register forgewire-fabric-runner (only for hosts that are an agent runner).")
 @click.option("--workspace-root", default=None,
               help="Runner workspace root for the runner MCP entry (when --with-runner).")
 def mcp_install(hub_url: str | None, with_runner: bool, workspace_root: str | None) -> None:
@@ -109,7 +109,14 @@ def mcp_uninstall() -> None:
         raise SystemExit(f"{mcp_path} is not valid JSON; refusing to edit.") from None
     servers = cur.get("servers") or {}
     removed = []
-    for k in ("forgewire-dispatcher", "forgewire-runner"):
+    for k in (
+        "forgewire-loom",
+        "forgewire-fabric",
+        "forgewire-fabric-runner",
+        # legacy single-server names (pre-2.8)
+        "forgewire-dispatcher",
+        "forgewire-runner",
+    ):
         if k in servers:
             servers.pop(k)
             removed.append(k)
@@ -177,13 +184,16 @@ def _write_vscode_user_mcp(
     """Best-effort: register the ForgeWire MCP servers in VS Code's user-scope
     ``mcp.json`` so any window picks them up without per-workspace config.
 
-    * ``forgewire-dispatcher`` always wired -- every box might drive.
-        * ``forgewire-runner`` only wired when this host installs a runner; it
-            uses the same hub URL passed to setup/install so non-hub workstations
-            do not hang trying to register against localhost.
+    Phase 2.8 split the single dispatcher server into two surfaces:
 
-    Stale entries from the legacy ``forgewire`` repo (``BLACKBOARD_*`` env,
-    ``scripts.remote.hub.*`` modules) are pruned so the OptiPlex stops
+    * ``forgewire-loom`` + ``forgewire-fabric`` always wired -- every box might
+      drive (Loom = host control, Fabric = agent dispatch).
+    * ``forgewire-fabric-runner`` only wired when this host is an agent runner;
+      it uses the same hub URL passed to setup/install so non-hub workstations
+      do not hang trying to register against localhost.
+
+    Stale single-server entries (``forgewire-dispatcher``/``forgewire-runner``)
+    and pre-rename ``scripts.remote.hub.*`` modules are pruned so the box stops
     spawning the old version.
     """
     import json
@@ -193,14 +203,9 @@ def _write_vscode_user_mcp(
     user_token = home / ".forgewire" / "hub.token"
 
     py = _python_for_mcp()
-
-    dispatcher_entry = {
-        "command": py,
-        "args": ["-m", "forgewire_fabric.hub.dispatcher_mcp"],
-        "env": {
-            "FORGEWIRE_HUB_URL": hub_url,
-            "FORGEWIRE_HUB_TOKEN_FILE": str(user_token),
-        },
+    base_env = {
+        "FORGEWIRE_HUB_URL": hub_url,
+        "FORGEWIRE_HUB_TOKEN_FILE": str(user_token),
     }
 
     mcp_path = _vscode_user_dir() / "mcp.json"
@@ -216,32 +221,38 @@ def _write_vscode_user_mcp(
 
     servers = current.setdefault("servers", {})
 
-    # Drop legacy entries so we never run two versions side-by-side.
+    # Phase 2.8 (M2.8.9): the single ``forgewire-dispatcher`` server is gone.
+    # The dispatcher surface is now two servers split by surface —
+    # ``forgewire-loom`` (host control) and ``forgewire-fabric`` (agent
+    # dispatch). Drop the legacy single-server keys (and any pre-rename
+    # scripts.remote.hub modules) so we never run two versions side-by-side.
     for stale_key in ("forgewire-dispatcher", "forgewire-runner"):
-        existing = servers.get(stale_key)
-        if isinstance(existing, dict):
-            args = existing.get("args") or []
-            if any("scripts.remote.hub" in str(a) for a in args):
-                servers.pop(stale_key, None)
+        servers.pop(stale_key, None)
 
-    servers["forgewire-dispatcher"] = dispatcher_entry
+    servers["forgewire-loom"] = {
+        "command": py,
+        "args": ["-m", "forgewire_fabric.hub.loom_mcp"],
+        "env": dict(base_env),
+    }
+    servers["forgewire-fabric"] = {
+        "command": py,
+        "args": ["-m", "forgewire_fabric.hub.fabric_mcp"],
+        "env": dict(base_env),
+    }
 
     if install_runner:
-        runner_env = {
-            "FORGEWIRE_HUB_URL": hub_url,
-            "FORGEWIRE_HUB_TOKEN_FILE": str(user_token),
-        }
+        runner_env = dict(base_env)
         if workspace_root:
             runner_env["FORGEWIRE_RUNNER_WORKSPACE_ROOT"] = workspace_root
-        servers["forgewire-runner"] = {
+        servers["forgewire-fabric-runner"] = {
             "command": py,
-            "args": ["-m", "forgewire_fabric.hub.runner_mcp"],
+            "args": ["-m", "forgewire_fabric.hub.fabric_runner_mcp"],
             "env": runner_env,
         }
     else:
-        # If we are not running a runner here, drop any stale runner entry so
+        # If we are not an agent runner here, drop any stale runner entry so
         # the dispatcher doesn't try to start one on a box that has no hub.
-        servers.pop("forgewire-runner", None)
+        servers.pop("forgewire-fabric-runner", None)
 
     mcp_path.write_text(json.dumps(current, indent=4), encoding="utf-8")
 

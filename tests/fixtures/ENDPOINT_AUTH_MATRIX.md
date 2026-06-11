@@ -45,8 +45,9 @@
 
 | Method + Path | Shape | Bearer | Disp-sig | Runner-sig | Nonce | Skew | Compat status | Remediation |
 |---|---|---|---|---|---|---|---|---|
-| POST /tasks/claim | write | ✅ | – | – | – | – | **COMPAT_QUARANTINE** | Legacy v1 claim — no runner identity, no replay protection. Preserved for old runners during parity window. Rust hub must surface as degraded when active. Claim-v2 is the target path. |
-| POST /tasks/claim-v2 | write | ✅ | – | ✅ | ✅ | ✅ | SIGNED | Target posture. Runner signs claim with nonce + timestamp. |
+| POST /tasks/claim | write | ✅ | – | – | – | – | **COMPAT_QUARANTINE** | Legacy v1 claim — no runner identity, no replay protection. Preserved for old runners during parity window. Rust hub must surface as degraded when active. The kind-specific signed claim routes are the target path. |
+| POST /tasks/claim-loom | write | ✅ | – | ✅ | ✅ | ✅ | SIGNED | Target posture (command-kind queue). Runner signs claim with nonce + timestamp. M2.8.9 replaced the unified /tasks/claim-v2 alias with the kind-split routes. |
+| POST /tasks/claim-fabric | write | ✅ | – | ✅ | ✅ | ✅ | SIGNED | Target posture (agent-kind queue). Runner signs claim with nonce + timestamp. |
 | POST /tasks/{task_id}/start | write | ✅ | – | – | – | – | **COMPAT_QUARANTINE** | No runner identity on start signal. Acceptable short-term because runner must hold a claimed task, but sign this in v3. |
 | POST /tasks/{task_id}/cancel | write | ✅ | – | – | – | – | **COMPAT_QUARANTINE** | Bearer-only cancel. Anyone with the bearer token can cancel any task. Surface as degraded; v3 should restrict to dispatcher or operator role. |
 | POST /tasks/{task_id}/progress | write | ✅ | – | – | – | – | **COMPAT_QUARANTINE** | No runner identity on progress beat. Parity window: preserve. V3: runner-signed. |

@@ -1,0 +1,17 @@
+{
+    "$schema": "https://aka.ms/vscode-mcp-schema",
+    "servers": {
+        "forgewire-fabric-runner": {
+            "command": "python",
+            "args": [
+                "-m",
+                "forgewire_fabric.hub.fabric_runner_mcp"
+            ],
+            "env": {
+                "FORGEWIRE_HUB_URL": "http://127.0.0.1:8765",
+                "FORGEWIRE_HUB_TOKEN_FILE": "${userHome}/.forgewire/hub.token",
+                "FORGEWIRE_RUNNER_WORKSPACE_ROOT": "${workspaceFolder}"
+            }
+        }
+    }
+}

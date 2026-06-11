@@ -186,7 +186,7 @@ def test_legacy_claim_skips_capability_gated_tasks() -> None:
     client.post("/tasks", json={
         "title": "cap-task", "prompt": "noop", "scope_globs": ["docs/x.md"],
         "base_commit": "a" * 40, "branch": "feature/cap",
-        "required_capabilities": ["toolchains.rust"],
+        "required_capabilities": ["toolchains.rust"], "kind": "agent",
     }, headers=BEARER)
 
     # Dispatch a plain task with higher priority so legacy claim picks it first
@@ -194,6 +194,7 @@ def test_legacy_claim_skips_capability_gated_tasks() -> None:
     plain = client.post("/tasks", json={
         "title": "plain", "prompt": "noop", "scope_globs": ["docs/y.md"],
         "base_commit": "b" * 40, "branch": "feature/plain", "priority": 9999,
+        "kind": "agent",
     }, headers=BEARER).json()
 
     r = client.post("/tasks/claim",

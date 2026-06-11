@@ -1,0 +1,15 @@
+{
+    "mcpServers": {
+        "forgewire-loom": {
+            "command": "python",
+            "args": [
+                "-m",
+                "forgewire_fabric.hub.loom_mcp"
+            ],
+            "env": {
+                "FORGEWIRE_HUB_URL": "http://127.0.0.1:8765",
+                "FORGEWIRE_HUB_TOKEN_FILE": "~/.forgewire/hub.token"
+            }
+        }
+    }
+}

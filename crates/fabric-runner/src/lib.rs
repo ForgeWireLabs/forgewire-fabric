@@ -3,7 +3,7 @@
 //! The runner is a long-lived process that:
 //! 1. Registers with the hub (signed, with exponential backoff)
 //! 2. Heartbeats every 20s (signed, re-registers on 404)
-//! 3. Polls for tasks via claim-v2 (signed, re-registers on 404)
+//! 3. Polls for tasks via claim-loom (signed, command-kind; re-registers on 404)
 //! 4. Executes claimed tasks as subprocesses
 //! 5. Streams stdout/stderr to the hub line-by-line
 //! 6. Submits terminal results
@@ -249,7 +249,7 @@ pub async fn claim_loop(
         // Report the workspace HEAD so the hub can match tasks that set
         // require_base_commit (e.g. replays, which run at an exact commit).
         claim.last_known_commit = git_head_commit(&config.workspace_root).await;
-        match client.claim_v2(&identity, &claim).await {
+        match client.claim_loom(&identity, &claim).await {
             Ok(ClaimResponse {
                 task: Some(task), ..
             }) => {

@@ -23,21 +23,35 @@ def test_mcp_runner_uses_configured_hub_url(tmp_path, monkeypatch) -> None:
     mcp_path = appdata / "Code" / "User" / "mcp.json"
     payload = json.loads(mcp_path.read_text(encoding="utf-8"))
     servers = payload["servers"]
-    assert servers["forgewire-dispatcher"]["env"]["FORGEWIRE_HUB_URL"] == "http://192.0.2.10:8765"
-    assert servers["forgewire-runner"]["env"]["FORGEWIRE_HUB_URL"] == "http://192.0.2.10:8765"
+    # M2.8.9: the dispatcher surface is two servers (loom + fabric); the agent
+    # runner is forgewire-fabric-runner. The legacy single-server names are gone.
+    assert servers["forgewire-loom"]["args"] == ["-m", "forgewire_fabric.hub.loom_mcp"]
+    assert servers["forgewire-loom"]["env"]["FORGEWIRE_HUB_URL"] == "http://192.0.2.10:8765"
+    assert servers["forgewire-fabric"]["args"] == ["-m", "forgewire_fabric.hub.fabric_mcp"]
+    assert servers["forgewire-fabric"]["env"]["FORGEWIRE_HUB_URL"] == "http://192.0.2.10:8765"
+    assert servers["forgewire-fabric-runner"]["args"] == ["-m", "forgewire_fabric.hub.fabric_runner_mcp"]
+    assert servers["forgewire-fabric-runner"]["env"]["FORGEWIRE_HUB_URL"] == "http://192.0.2.10:8765"
+    assert "forgewire-dispatcher" not in servers
+    assert "forgewire-runner" not in servers
 
 
 def test_runner_mcp_registration_is_backgrounded() -> None:
-    # M2.8.4: runner_mcp.py is now a deprecated shim; the canonical
-    # implementation lives in fabric_runner_mcp.py.  Check the canonical file.
+    # M2.8.4: the canonical runner-MCP implementation lives in
+    # fabric_runner_mcp.py.  Check registration is backgrounded.
     body = (REPO_ROOT / "python" / "forgewire_fabric" / "hub" / "fabric_runner_mcp.py").read_text(encoding="utf-8")
     assert "registration_task = asyncio.create_task(_register_with_retries(session))" in body
     assert "await _register_with_retries(session)\n    heartbeat_task" not in body
 
-    # Also verify runner_mcp.py is now a shim that re-exports from fabric_runner_mcp.
-    shim = (REPO_ROOT / "python" / "forgewire_fabric" / "hub" / "runner_mcp.py").read_text(encoding="utf-8")
-    assert "from forgewire_fabric.hub.fabric_runner_mcp import" in shim
-    assert "DeprecationWarning" in shim
+
+def test_legacy_mcp_shims_removed() -> None:
+    # M2.8.9: the dispatcher_mcp.py / runner_mcp.py deprecation shims are gone;
+    # the repackaged modules (fabric_mcp / loom_mcp / fabric_runner_mcp /
+    # loom_runner_mcp) are the only path.
+    hub = REPO_ROOT / "python" / "forgewire_fabric" / "hub"
+    assert not (hub / "dispatcher_mcp.py").exists()
+    assert not (hub / "runner_mcp.py").exists()
+    for canonical in ("fabric_mcp.py", "loom_mcp.py", "fabric_runner_mcp.py", "loom_runner_mcp.py"):
+        assert (hub / canonical).exists(), f"missing canonical module {canonical}"
 
 
 def test_dispatchers_view_collapsed_into_hosts() -> None:

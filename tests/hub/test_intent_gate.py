@@ -43,6 +43,7 @@ def _make_client(policy: dict) -> tuple[TestClient, int]:
             "base_commit": "a" * 40,
             "scope_globs": ["src/**"],
             "branch": "feature/x",
+            "kind": "agent",
         },
         headers=BEARER,
     )
