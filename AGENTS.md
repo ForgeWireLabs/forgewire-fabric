@@ -281,7 +281,7 @@ The thesis is binding. Stop and ask before:
 - Changing the v2 canonical payload shape.
 - Dropping the cross-host hub watchdog from the OOTB chain in §6.
 - Skipping the installer asset mirror in §4.
-- Hand-syncing `C:/Projects/forgewire-fabric` — use `scripts/dr/check_mirror_sync.ps1` first and sync via subtree push only.
+- Hand-syncing `C:/Projects/forgewire-fabric` — sync the GitHub mirror via `scripts/dr/sync_mirror.ps1` only (it pushes to GitHub, never to local cluster clones).
 
 ---
 
@@ -294,15 +294,22 @@ directly in the mirror and committing.
 
 **Sync discipline:**
 1. Every sync commit must record the monorepo base commit in the message:
-   `sync: monorepo <40-hex> — <description>`.
-2. Before syncing, run `scripts/dr/check_mirror_sync.ps1` to verify the
-   mirror is currently in sync with its recorded base commit.
-3. After a subtree push, run the script again to confirm.
+   `sync: forgewire-fabric from monorepo <40-hex>`.
+2. Sync via `scripts/dr/sync_mirror.ps1` (direct tree-commit push — NOT
+   `git subtree split`/`push`, which walks 4,500+ commits and times out).
+3. The script verifies the result against the GitHub remote, no local clone.
 
-**CI guard (M2.9.6):** `scripts/dr/check_mirror_sync.ps1` is the divergence
-guard. Wiring it into `.github/workflows/**` requires a human-reviewed PR
-(frozen surface — Hard rule §3). The script can be invoked manually or via any
-non-frozen CI mechanism.
+**Agent scope when pushing to `main` — GitHub repos only:** the sync job updates
+**only the two GitHub repos** — the monorepo `origin` and the `forgewire-fabric`
+GitHub mirror. It must **NOT** touch any local working copy on the cluster
+machines: do not fast-forward `C:/Projects/forgewire-fabric` on the Precision,
+and do not push to the OptiPlex `mini` remote. The operator pulls those manually.
+`sync_mirror.ps1` is already scoped this way; do not re-add local-clone updates.
+
+**Divergence guard (M2.9.6):** `scripts/dr/check_mirror_sync.ps1` is the
+local-clone divergence guard for manual/operator use. Wiring it into
+`.github/workflows/**` requires a human-reviewed PR (frozen surface — Hard rule
+§3). The script can be invoked manually or via any non-frozen CI mechanism.
 
 ---
 
