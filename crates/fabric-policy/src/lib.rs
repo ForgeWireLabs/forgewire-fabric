@@ -747,4 +747,99 @@ mod tests {
         let p: FabricPolicy = serde_yaml::from_str(yaml).expect("annotated default must parse");
         assert!(!p.protected_branches.is_empty());
     }
+
+    // M2.9.0: cross-language policy-decision fixture. Runs ALL cases (both
+    // 'cross' and 'rust_only'); the Python suite runs only 'cross' cases.
+    const POLICY_FIXTURE: &str =
+        include_str!("../../../tests/fixtures/phase_2_9/policy_decisions.json");
+
+    fn policy_from_fixture(v: &serde_json::Value) -> FabricPolicy {
+        let obj = v.as_object().expect("policy must be an object");
+        FabricPolicy {
+            protected_branches: obj.get("protected_branches")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default(),
+            blocked_branches: obj.get("blocked_branches")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default(),
+            allowed_branches: obj.get("allowed_branches")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default(),
+            forbidden_paths: obj.get("forbidden_paths")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default(),
+            blocked_scope_globs: obj.get("blocked_scope_globs")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default(),
+            require_approval_for_scopes: obj.get("require_approval_for_scopes")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default(),
+            ..Default::default()
+        }
+    }
+
+    fn request_from_fixture(v: &serde_json::Value) -> DispatchRequest {
+        DispatchRequest {
+            task_id: "fixture".into(),
+            scope_globs: v["scope_globs"].as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default(),
+            target_branch: v["target_branch"].as_str().map(String::from),
+            dispatcher_id: None,
+            kind: v["kind"].as_str().unwrap_or("agent").to_owned(),
+            cwd: v["cwd"].as_str().map(String::from),
+        }
+    }
+
+    #[test]
+    fn policy_decisions_fixture() {
+        let doc: serde_json::Value =
+            serde_json::from_str(POLICY_FIXTURE).expect("parse policy_decisions.json");
+        let cases = doc["cases"].as_array().expect("cases array");
+        assert!(cases.len() >= 15, "fixture must have at least 15 cases");
+
+        for case in cases {
+            let name = case["name"].as_str().unwrap_or("?");
+            let policy = policy_from_fixture(&case["policy"]);
+            let engine = PolicyEngine::new(policy);
+            let req = request_from_fixture(&case["request"]);
+            let decision = engine.evaluate_dispatch(&req);
+
+            let expected = case["expected_decision"].as_str().unwrap_or("?");
+            let reason_substr = case["expected_reason_contains"].as_str().unwrap_or("");
+
+            match expected {
+                "allow" => assert!(
+                    decision.allowed,
+                    "case {name}: expected allow, got denied={} needs_approval={} reasons={:?}",
+                    decision.denied, decision.needs_approval, decision.reasons
+                ),
+                "deny" => assert!(
+                    decision.denied,
+                    "case {name}: expected deny, got allowed={} needs_approval={} reasons={:?}",
+                    decision.allowed, decision.needs_approval, decision.reasons
+                ),
+                "needs_approval" => assert!(
+                    decision.needs_approval,
+                    "case {name}: expected needs_approval, got allowed={} denied={} reasons={:?}",
+                    decision.allowed, decision.denied, decision.reasons
+                ),
+                other => panic!("case {name}: unknown expected_decision {other:?}"),
+            }
+
+            if !reason_substr.is_empty() {
+                let all_reasons = decision.reasons.join(" ").to_lowercase();
+                assert!(
+                    all_reasons.contains(&reason_substr.to_lowercase()),
+                    "case {name}: expected reason to contain {reason_substr:?}, got {all_reasons:?}"
+                );
+            }
+        }
+    }
 }

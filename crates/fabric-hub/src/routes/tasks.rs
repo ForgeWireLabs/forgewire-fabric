@@ -382,12 +382,38 @@ pub async fn dispatch_task_signed(
     }
     if gate_decision.needs_approval {
         let reason = gate_decision.reasons.join("; ");
+        // M2.9.2: create an approval record and a held task instead of 403.
+        // The dispatcher can poll GET /approvals/{id} or the approval inbox.
+        let envelope_hash = {
+            use sha2::{Digest, Sha256};
+            let canonical = fabric_protocol::canonicalize(&envelope).unwrap_or_default();
+            hex::encode(Sha256::digest(&canonical))
+        };
+        let (approval_id, _created) = state.store
+            .create_or_get_pending_approval(
+                &envelope_hash,
+                json!({ "reason": reason, "kind": payload.base.kind }),
+                &payload.base.title,
+                if payload.base.branch.is_empty() { None } else { Some(payload.base.branch.as_str()) },
+                payload.base.scope_globs.clone(),
+                Some(payload.dispatcher_id.as_str()),
+                &now,
+            )
+            .await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+        let mut p = dispatch_params(&payload.base, Some(&payload.dispatcher_id));
+        p.initial_status = Some("held".into());
+        let task = state.store.create_task(p, &now).await
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
         let _ = audit_append(
             &*state.store,
             "dispatch_held",
-            None,
+            Some(task.id),
             &json!({
                 "reason": reason,
+                "approval_id": approval_id,
                 "signed": true,
                 "dispatcher_id": payload.dispatcher_id,
                 "kind": payload.base.kind,
@@ -395,7 +421,13 @@ pub async fn dispatch_task_signed(
             }),
         )
         .await;
-        return Err((StatusCode::FORBIDDEN, format!("dispatch requires approval: {reason}")));
+        return Ok(Json(json!({
+            "status": "held",
+            "task_id": task.id,
+            "approval_id": approval_id,
+            "reason": reason,
+            "message": "dispatch requires approval; task is held pending review",
+        })));
     }
 
     let p = dispatch_params(&payload.base, Some(&payload.dispatcher_id));
@@ -1095,5 +1127,6 @@ fn dispatch_params(p: &DispatchPayload, dispatcher_id: Option<&str>) -> CreateTa
         dispatch,
         skill: p.skill.clone(),
         tool: p.tool.clone(),
+        initial_status: None,
     }
 }

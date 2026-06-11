@@ -798,9 +798,10 @@ impl TaskStore for RqliteStore {
         let egress_json = p.network_egress.as_ref().map(|v| serde_json::to_string(v).unwrap_or_else(|_| "null".into()));
         let require_bc: i64 = if p.require_base_commit { 1 } else { 0 };
 
+        let status = p.initial_status.as_deref().unwrap_or("queued");
         let id = self.execute_insert(
-            "INSERT INTO tasks (todo_id,title,prompt,scope_globs,base_commit,branch,timeout_minutes,priority,metadata,required_tools,required_tags,tenant,workspace_root,require_base_commit,dispatcher_id,required_capabilities,secrets_needed,network_egress,kind,dispatch,skill,tool,created_at,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'queued')",
-            &[json!(p.todo_id), json!(p.title), json!(p.prompt), json!(scope_json), json!(p.base_commit), json!(p.branch), json!(p.timeout_minutes), json!(p.priority), json!(meta_json), json!(tools_json), json!(tags_json), json!(p.tenant), json!(p.workspace_root), json!(require_bc), json!(p.dispatcher_id), json!(caps_json), json!(secrets_json), json!(egress_json), json!(p.kind), json!(p.dispatch), json!(p.skill), json!(p.tool), json!(now)],
+            "INSERT INTO tasks (todo_id,title,prompt,scope_globs,base_commit,branch,timeout_minutes,priority,metadata,required_tools,required_tags,tenant,workspace_root,require_base_commit,dispatcher_id,required_capabilities,secrets_needed,network_egress,kind,dispatch,skill,tool,created_at,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            &[json!(p.todo_id), json!(p.title), json!(p.prompt), json!(scope_json), json!(p.base_commit), json!(p.branch), json!(p.timeout_minutes), json!(p.priority), json!(meta_json), json!(tools_json), json!(tags_json), json!(p.tenant), json!(p.workspace_root), json!(require_bc), json!(p.dispatcher_id), json!(caps_json), json!(secrets_json), json!(egress_json), json!(p.kind), json!(p.dispatch), json!(p.skill), json!(p.tool), json!(now), json!(status)],
         ).await.map_err(|e| StoreError::Backend(e.to_string()))?;
         self.get_task(id).await
     }

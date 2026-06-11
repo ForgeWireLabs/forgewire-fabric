@@ -75,6 +75,11 @@ pub struct CreateTaskParams {
     /// Phase 2.8 (M2.8.2): tool name for dispatch="tool" briefs.
     #[serde(default)]
     pub tool: Option<String>,
+    /// M2.9.2: override the initial task status. `None` → "queued" (default).
+    /// Only "held" is a valid non-default value; used when the dispatch gate
+    /// returns `needs_approval`.
+    #[serde(default)]
+    pub initial_status: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -297,4 +297,36 @@ mod tests {
         let result = verify_signature_hex(&pk_hex, payload, "ab");
         assert!(matches!(result, Err(ProtocolError::SignatureLength(_))));
     }
+
+    // M2.9.0: cross-language signed-command-canonical fixture.
+    // Verifies that `canonicalize` produces byte-identical output to Python's
+    // `canonical_payload` for each envelope case in the fixture file. The
+    // agent-kind case is the additive-only proof (loom fields absent → unchanged
+    // canonical).
+    const CANONICAL_FIXTURE: &str =
+        include_str!("../../../tests/fixtures/phase_2_9/signed_command_canonical.json");
+
+    #[test]
+    fn canonical_matches_signed_command_fixture() {
+        let doc: serde_json::Value =
+            serde_json::from_str(CANONICAL_FIXTURE).expect("parse signed_command_canonical.json");
+        let cases = doc["cases"].as_array().expect("cases array");
+        assert!(!cases.is_empty(), "fixture must have at least one case");
+
+        for case in cases {
+            let name = case["name"].as_str().unwrap_or("?");
+            let envelope = &case["envelope"];
+            let expected = case["expected_canonical"]
+                .as_str()
+                .unwrap_or_else(|| panic!("case {name}: expected_canonical must be a string"));
+
+            let got = canonicalize(envelope)
+                .unwrap_or_else(|e| panic!("case {name}: canonicalize error: {e}"));
+            assert_eq!(
+                std::str::from_utf8(&got).unwrap(),
+                expected,
+                "case {name}: canonical mismatch"
+            );
+        }
+    }
 }

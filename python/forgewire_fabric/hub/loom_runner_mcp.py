@@ -339,6 +339,21 @@ def _register_tools(registry: ToolRegistry, session: LoomSession) -> None:
         if len(session._processes) >= session.max_concurrent:
             return {"error": "max_concurrent reached", "running": len(session._processes)}
 
+        # M2.9.2 (F2) parity: call the intent gate before spawning — fail closed on
+        # deny or hub unreachability, matching agent.py _post_intent_fail_closed.
+        try:
+            await client.post_intent(
+                task_id,
+                worker_id=session.runner_id,
+                kind="shell_exec",
+                command=" ".join(command) if command else None,
+            )
+        except BlackboardError as exc:
+            LOGGER.warning(
+                "loom intent gate denied task_id=%d: %s", task_id, exc
+            )
+            return {"error": "intent_denied", "detail": str(exc)}
+
         proc = await asyncio.create_subprocess_exec(
             *command,
             cwd=cwd,

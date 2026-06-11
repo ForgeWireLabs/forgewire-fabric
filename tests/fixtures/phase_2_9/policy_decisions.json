@@ -1,0 +1,243 @@
+{
+  "description": "M2.9.0 cross-language fixture for dispatch policy gate decisions (F2). Each case has a 'scope' field: 'cross' means both the Python FabricPolicyEngine and the Rust PolicyEngine are expected to agree; 'rust_only' means the case exercises a predicate only implemented in the Rust engine (blocked_branches, allowed_branches, cwd scope-escape, blocked_scope_globs, require_approval_for_scopes). The Python test runs only 'cross' cases; the Rust test runs all. 'expected_decision' is one of 'allow', 'deny', 'needs_approval'. 'expected_reason_contains' is a substring that must appear in the decision reasons (empty string = no constraint).",
+  "cases": [
+    {
+      "name": "allow_default_permissive",
+      "scope": "cross",
+      "description": "Empty policy allows everything.",
+      "policy": {},
+      "request": {
+        "kind": "agent",
+        "scope_globs": ["src/**"],
+        "target_branch": "feature/foo",
+        "cwd": null
+      },
+      "expected_decision": "allow",
+      "expected_reason_contains": ""
+    },
+    {
+      "name": "deny_scope_forbidden_path",
+      "scope": "cross",
+      "description": "A scope_glob that overlaps a forbidden path is denied.",
+      "policy": { "forbidden_paths": [".github/workflows/**"] },
+      "request": {
+        "kind": "agent",
+        "scope_globs": [".github/**"],
+        "target_branch": "feature/ci",
+        "cwd": null
+      },
+      "expected_decision": "deny",
+      "expected_reason_contains": "forbidden"
+    },
+    {
+      "name": "deny_scope_overlaps_github_workflows",
+      "scope": "cross",
+      "description": "Real-world guard: scope exactly matching .github/workflows/** is denied.",
+      "policy": { "forbidden_paths": [".github/workflows/**", "secrets/**"] },
+      "request": {
+        "kind": "agent",
+        "scope_globs": [".github/workflows/**"],
+        "target_branch": "feature/ci-fix",
+        "cwd": null
+      },
+      "expected_decision": "deny",
+      "expected_reason_contains": "forbidden"
+    },
+    {
+      "name": "needs_approval_protected_branch",
+      "scope": "cross",
+      "description": "A branch matching protected_branches requires approval.",
+      "policy": { "protected_branches": ["main", "release/*"] },
+      "request": {
+        "kind": "agent",
+        "scope_globs": ["src/**"],
+        "target_branch": "main",
+        "cwd": null
+      },
+      "expected_decision": "needs_approval",
+      "expected_reason_contains": "protected"
+    },
+    {
+      "name": "needs_approval_protected_branch_glob",
+      "scope": "cross",
+      "description": "A branch matching a glob in protected_branches requires approval.",
+      "policy": { "protected_branches": ["release/*"] },
+      "request": {
+        "kind": "agent",
+        "scope_globs": ["src/**"],
+        "target_branch": "release/1.0",
+        "cwd": null
+      },
+      "expected_decision": "needs_approval",
+      "expected_reason_contains": "protected"
+    },
+    {
+      "name": "allow_agent_no_branch",
+      "scope": "cross",
+      "description": "Agent brief with null branch skips all branch checks.",
+      "policy": { "protected_branches": ["main"] },
+      "request": {
+        "kind": "agent",
+        "scope_globs": ["src/**"],
+        "target_branch": null,
+        "cwd": null
+      },
+      "expected_decision": "allow",
+      "expected_reason_contains": ""
+    },
+    {
+      "name": "allow_scope_not_overlapping_forbidden",
+      "scope": "cross",
+      "description": "A scope that does not overlap any forbidden path is allowed.",
+      "policy": { "forbidden_paths": ["secrets/**"] },
+      "request": {
+        "kind": "agent",
+        "scope_globs": ["src/**"],
+        "target_branch": "feature/foo",
+        "cwd": null
+      },
+      "expected_decision": "allow",
+      "expected_reason_contains": ""
+    },
+    {
+      "name": "deny_blocked_branch",
+      "scope": "rust_only",
+      "description": "A branch in blocked_branches is hard-denied (no approval path). Rust only: Python engine has no blocked_branches field.",
+      "policy": { "blocked_branches": ["hotfix/*"] },
+      "request": {
+        "kind": "agent",
+        "scope_globs": ["src/**"],
+        "target_branch": "hotfix/critical",
+        "cwd": null
+      },
+      "expected_decision": "deny",
+      "expected_reason_contains": "blocked"
+    },
+    {
+      "name": "deny_branch_not_in_allowlist",
+      "scope": "rust_only",
+      "description": "allowed_branches is set; a branch not in the list is denied. Rust only.",
+      "policy": { "allowed_branches": ["main", "release/*"] },
+      "request": {
+        "kind": "agent",
+        "scope_globs": ["src/**"],
+        "target_branch": "feature/foo",
+        "cwd": null
+      },
+      "expected_decision": "deny",
+      "expected_reason_contains": "allowed"
+    },
+    {
+      "name": "allow_branch_in_allowlist",
+      "scope": "rust_only",
+      "description": "Branch exactly in allowed_branches → allow. Rust only.",
+      "policy": { "allowed_branches": ["main", "release/*"] },
+      "request": {
+        "kind": "agent",
+        "scope_globs": ["src/**"],
+        "target_branch": "main",
+        "cwd": null
+      },
+      "expected_decision": "allow",
+      "expected_reason_contains": ""
+    },
+    {
+      "name": "deny_scope_blocked_glob",
+      "scope": "rust_only",
+      "description": "A scope_glob blocked by blocked_scope_globs is denied. Rust only.",
+      "policy": { "blocked_scope_globs": ["secrets/**"] },
+      "request": {
+        "kind": "agent",
+        "scope_globs": ["secrets/vault/**"],
+        "target_branch": "feature/sec",
+        "cwd": null
+      },
+      "expected_decision": "deny",
+      "expected_reason_contains": "blocked"
+    },
+    {
+      "name": "needs_approval_scope_approval_required",
+      "scope": "rust_only",
+      "description": "A scope matching require_approval_for_scopes needs approval. Rust only.",
+      "policy": { "require_approval_for_scopes": ["infra/**"] },
+      "request": {
+        "kind": "agent",
+        "scope_globs": ["infra/k8s/**"],
+        "target_branch": "feature/k8s",
+        "cwd": null
+      },
+      "expected_decision": "needs_approval",
+      "expected_reason_contains": "approval"
+    },
+    {
+      "name": "deny_command_cwd_forbidden_path",
+      "scope": "rust_only",
+      "description": "command-kind: cwd matching a forbidden path prefix is denied. Rust only.",
+      "policy": { "forbidden_paths": ["secrets/**"] },
+      "request": {
+        "kind": "command",
+        "scope_globs": ["projects/**"],
+        "target_branch": null,
+        "cwd": "secrets/config"
+      },
+      "expected_decision": "deny",
+      "expected_reason_contains": "forbidden"
+    },
+    {
+      "name": "deny_command_cwd_scope_escape",
+      "scope": "rust_only",
+      "description": "command-kind: cwd outside the scope prefixes is denied (scope-escape). Rust only.",
+      "policy": {},
+      "request": {
+        "kind": "command",
+        "scope_globs": ["C:/Projects/forgewire/**"],
+        "target_branch": null,
+        "cwd": "C:/Windows/System32"
+      },
+      "expected_decision": "deny",
+      "expected_reason_contains": "scope"
+    },
+    {
+      "name": "allow_command_cwd_within_scope",
+      "scope": "rust_only",
+      "description": "command-kind: cwd within the scope prefix is allowed. Rust only.",
+      "policy": {},
+      "request": {
+        "kind": "command",
+        "scope_globs": ["C:/Projects/forgewire/**"],
+        "target_branch": null,
+        "cwd": "C:/Projects/forgewire/tests"
+      },
+      "expected_decision": "allow",
+      "expected_reason_contains": ""
+    },
+    {
+      "name": "allow_command_empty_cwd",
+      "scope": "rust_only",
+      "description": "command-kind: empty cwd skips containment check. Rust only.",
+      "policy": { "forbidden_paths": ["secrets/**"] },
+      "request": {
+        "kind": "command",
+        "scope_globs": ["src/**"],
+        "target_branch": null,
+        "cwd": ""
+      },
+      "expected_decision": "allow",
+      "expected_reason_contains": ""
+    },
+    {
+      "name": "allow_command_null_cwd",
+      "scope": "rust_only",
+      "description": "command-kind: null cwd skips containment check. Rust only.",
+      "policy": {},
+      "request": {
+        "kind": "command",
+        "scope_globs": ["src/**"],
+        "target_branch": null,
+        "cwd": null
+      },
+      "expected_decision": "allow",
+      "expected_reason_contains": ""
+    }
+  ]
+}
