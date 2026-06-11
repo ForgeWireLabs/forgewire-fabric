@@ -1,66 +1,80 @@
 # ForgeWire Quickstart
 
-A 5-minute path from zero to a working hub + runner controlled from your laptop.
+A 10-minute path from zero to a working hub + runner, driven from your laptop
+or your AI agent.
 
-ForgeWire is a *signed task fabric*. One machine runs the **hub** (a native Rust
-daemon that owns the task graph, backed by rqlite for HA). Any number of other
-machines run **runners** that claim tasks scoped to a path glob and stream output
-back. You **dispatch** tasks from a CLI (or VS Code) on any machine that can
-reach the hub.
+ForgeWire Fabric is a *signed task fabric*. One machine runs the **hub** (a
+native Rust daemon that owns the task graph, backed by rqlite for HA). Other
+machines run **runners** that claim work and stream output back. There are two
+kinds of work, with separate queues:
 
-> **Threat model**: every register / claim / heartbeat is ed25519-signed by
-> the runner; the hub validates a shared bearer token on every request.
-> Anyone with the token can dispatch tasks, so treat it like an SSH key.
+- **Loom (command kind)** — direct host control: shell commands and processes,
+  executed by a command runner. No LLM in the loop.
+- **Fabric (agent kind)** — sealed briefs for a remote *agent* (e.g. a Claude
+  Code session acting as a runner). The agent advertises its MCP tools and
+  skills to the hub, which routes by capability.
+
+A runner's kind is a property of the binary it runs — a command runner never
+sees agent briefs, and vice versa. You dispatch from the CLI, VS Code, or an
+MCP-capable agent on any machine that can reach the hub.
+
+> **Threat model**: every dispatch / register / claim / heartbeat is
+> ed25519-signed; the hub additionally validates a shared bearer token on
+> every request. Anyone with the token can reach your cluster, so treat it
+> like an SSH private key.
 
 ---
 
 ## 1. Install
 
-On every machine that will be a hub, runner, or dispatcher:
+The deployed substrate is the native Rust binaries. Either build them:
+
+```bash
+git clone https://github.com/DigitalHallucinations/forgewire-fabric.git
+cd forgewire-fabric
+cargo build --release   # forgewire-hub, forgewire-runner, forgewire-loom-runner, forgewire-fabric-cli
+```
+
+…or use the service installer (provisions rqlite + daemons under supervision —
+see [operations/service-install.md](operations/service-install.md)).
+
+On machines you dispatch *from*, install the Python integration package (the
+dispatch CLI and the MCP servers):
 
 ```bash
 pip install forgewire-fabric
 ```
 
-(Optional) for LAN auto-discovery, install the `mdns` extra:
-
-```bash
-pip install "forgewire[mdns]"
-```
-
-(Optional) for the Rust acceleration of the claim router and stream counters,
-install the runtime extension:
-
-```bash
-pip install forgewire-runtime
-```
-
-The pure-Python implementation is the fallback and is always functional —
-the runtime only matters once you have hundreds of concurrent runners.
-
 ---
 
 ## 2. Pick a hub host
 
-This is the machine the others will connect to. Any always-on box on your
-network works (a NUC, a homelab box, a desktop that's always plugged in).
+Any always-on box on your network works (a NUC, a homelab box, a desktop
+that's always plugged in).
 
 ### 2a. Generate a token (once)
 
 ```bash
-forgewire token gen > hub.token
+forgewire-fabric token gen > hub.token
 ```
 
-Save this somewhere safe and share it (over a secure channel) with anyone
-who needs to dispatch tasks or run runners against this hub. **Anyone with
-this token can issue tasks to your cluster.**
+Share it over a secure channel with anyone who needs to dispatch or run
+runners against this hub. **Anyone with this token can reach your cluster.**
 
-### 2b. Start the hub
+### 2b. Start rqlite, then the hub
 
-The standard path uses the native Rust binary (no Python dependency):
+The hub's state lives in [rqlite](https://rqlite.io); the hub exits if it
+cannot reach one. The service installer provisions rqlite for you — for a
+manual/dev setup, start a single node first:
+
+```bash
+rqlited -node-id 1 ~/rqlite-data   # serves on 127.0.0.1:4001 by default
+```
+
+Then start the hub:
 
 ```powershell
-# Windows — set token file and start
+# Windows
 $env:FORGEWIRE_HUB_TOKEN_FILE = "C:\ProgramData\forgewire\hub.token"
 $env:FORGEWIRE_HUB_HOST       = "0.0.0.0"
 $env:FORGEWIRE_HUB_PORT       = "8765"
@@ -79,38 +93,38 @@ Verify from another shell:
 
 ```bash
 curl -s http://<hub-host>:8765/healthz
-# → {"status":"ok","rust_hub":true,"protocol_version":3,"stream_profile":"strict",...}
+# → {"status":"ok","rust_hub":true,"protocol_version":...,...}
 ```
 
-To run the hub as a long-lived service, see
-[`docs/operations/service-install.md`](operations/service-install.md) for
-NSSM (Windows), systemd (Linux), and the remote deploy recipe.
+For a long-lived hub, use
+[operations/service-install.md](operations/service-install.md) — NSSM
+(Windows), systemd (Linux), and the remote deploy recipe.
 
 ---
 
-## 3. Add runners
+## 3. Add a command runner
 
-On every worker machine, set the same env vars and start the runner:
+On each worker machine, run the native runner (command kind — it executes
+shell work in its workspace):
 
 ```bash
 export FORGEWIRE_HUB_URL=http://<hub-host>:8765
-export FORGEWIRE_HUB_TOKEN=$(cat hub.token)
-
-forgewire-fabric runner start \
-  --workspace-root /path/to/your/repo \
-  --scope-prefixes "src/,tests/" \
-  --tags "linux,gpu:nvidia,python:3.11"
+export FORGEWIRE_HUB_TOKEN_FILE=/path/to/hub.token
+export FORGEWIRE_RUNNER_WORKSPACE_ROOT=/path/to/your/repo
+export FORGEWIRE_RUNNER_SCOPE_PREFIXES="src/,tests/"
+export FORGEWIRE_RUNNER_TAGS="linux,gpu:nvidia,python:3.11"
+./forgewire-runner
 ```
 
-The runner generates an ed25519 identity on first launch
-(`~/.forgewire/runner_identity.json`, or `%USERPROFILE%\.forgewire\` on
-Windows) and registers it with the hub. Subsequent restarts reuse the same
-identity, so its `runner_id` stays stable.
+The runner generates an ed25519 identity on first launch and registers it
+with the hub; restarts reuse the same identity, so its `runner_id` stays
+stable. `SCOPE_PREFIXES` is the safety belt: a runner only claims tasks whose
+`scope_globs` fall entirely within the prefixes you list.
 
-`--scope-prefixes` is the safety belt: a runner will only claim tasks whose
-`scope_globs` are entirely within one of the prefixes you list. Tasks that
-ask for `infra/**` are invisible to a runner that only declared
-`scope-prefixes=src/,tests/`.
+> For a quick local experiment without building Rust, the Python reference
+> runner works too: `forgewire-fabric runner start --workspace-root … --scope-prefixes …`.
+> It is a test/parity implementation — use the native binary for anything
+> long-running.
 
 Confirm registration from anywhere:
 
@@ -120,59 +134,82 @@ forgewire-fabric runners list
 
 ---
 
-## 4. Dispatch your first task
+## 4. Run work on a host (Loom)
 
-From any machine with the token (your laptop is fine):
+Host commands are dispatched through the **`forgewire-loom` MCP server**,
+which signs the command, cwd, and environment into the envelope. Wire it into
+Claude Code or VS Code with the templates in
+[../install/mcp-configs/](../install/mcp-configs/README.md), or:
 
 ```bash
-forgewire-fabric dispatch "pytest tests/smoke -x" \
-  --scope "tests/smoke/**" \
-  --branch "agent/laptop/smoke-1" \
-  --base-commit $(git rev-parse origin/main)
+forgewire-fabric mcp install --hub-url http://<hub-host>:8765
 ```
 
-Watch it run:
+Then ask your agent:
+
+> *"List the hosts on my fabric, then run `pytest tests/smoke -x` on the
+> build box and show me the output."*
+
+The agent calls `list_hosts`, then `run_command`; the runner spawns the
+process with a clean brokered environment and streams stdout/stderr back live,
+ending with the exit code. `start_process` / `send_input` / `kill_process`
+cover long-running interactive work.
+
+Watch any task from the CLI as well:
 
 ```bash
-forgewire-fabric tasks list                # see queued/running/done
+forgewire-fabric tasks list                # queued / running / done
 forgewire-fabric tasks show 1              # full envelope incl. result
-forgewire-fabric tasks stream 1            # tail SSE: stdout/stderr line by line
+forgewire-fabric tasks stream 1            # tail stdout/stderr line by line
 ```
-
-The default executor runs the prompt as a shell command in the runner's
-`--workspace-root`. Custom executors (e.g. driving an orchestrator) plug in
-via `forgewire_fabric.runner.run_runner(executor=...)`.
 
 ---
 
-## 5. (Optional) Use the VS Code extension
+## 5. Dispatch a brief to an agent (Fabric)
 
-A cross-platform GUI lives in [`vscode/`](../vscode). It works on Windows,
-macOS, and Linux — anywhere VS Code runs.
+Agent briefs are sealed instructions claimed by *agent* runners — for
+example, a Claude Code session running the `forgewire-fabric-runner` MCP
+server, which advertises that agent's skills and tools to the hub.
 
-For now, install from the packaged VSIX (marketplace listing pending):
+Queue a brief from any machine with the token:
 
 ```bash
-# from a clone of the repo
+forgewire-fabric keys init-dispatcher --label "$(hostname)"   # one-time, ed25519
+forgewire-fabric dispatch "Investigate the flaky quorum test and propose a fix" \
+  --scope "tests/**" \
+  --branch "agent/laptop/quorum-flake" \
+  --base-commit $(git rev-parse origin/main)
+```
+
+Dispatchers with the `forgewire-fabric` MCP server loaded can do the same
+with capability routing: `dispatch_skill` / `dispatch_tool` go only to agents
+that advertise the named skill or tool; `dispatch_prompt` is the freeform
+fallback. Every brief carries an explicit `kind` — the hub rejects briefs
+without one.
+
+---
+
+## 6. (Optional) Use the VS Code extension
+
+A cross-platform GUI lives in [`vscode/`](../vscode). Install from the
+packaged VSIX (marketplace listing pending):
+
+```bash
 cd vscode
 npm install
 npm run package
-code --install-extension forgewire-0.1.0.vsix
+code --install-extension forgewire-*.vsix
 ```
 
 Then in VS Code:
 
 1. Open the **ForgeWire** activity bar item.
-2. Run **ForgeWire: Connect to Hub** (Ctrl+Shift+P) and paste your URL + token.
-   The token is stored in VS Code SecretStorage.
-3. Browse runners + tasks live in the sidebar. Use **ForgeWire: Dispatch
-   Task** to send work; right-click a task to **Tail Task Stream**.
-
-If a machine doesn't have the CLI installed yet, run **ForgeWire: Install /
-Update CLI** to `pip install --upgrade forgewire` against the Python
-interpreter VS Code already knows about. From there, **Start Hub Here** or
-**Start Runner Here** will turn that machine into a hub or runner without
-ever leaving the editor.
+2. Run **ForgeWire: Connect to Hub** (Ctrl+Shift+P) and paste your URL +
+   token (stored in VS Code SecretStorage).
+3. Browse **Hosts**, **Tasks** (with kind chips), and **Agents** (each agent
+   runner's advertised skills/tools/resources) live in the sidebar. Use
+   **ForgeWire: Dispatch Task** to send an agent brief; right-click a task to
+   **Tail Task Stream**.
 
 See [`vscode/README.md`](../vscode/README.md) for the full command and
 settings reference.
@@ -181,14 +218,17 @@ settings reference.
 
 ## Next steps
 
-* [Architecture overview](architecture.md) — how dispatch, claim, scope, and
-  signed envelopes fit together.
+* [Protocol v3 spec](protocol-v3-spec.md) — signed envelopes, claim flow,
+  replay protection.
+* [Threat model](spec/phase-2.9/THREATMODEL.md) — what is and isn't trusted.
+* [MCP config templates](../install/mcp-configs/README.md) — wiring Claude
+  Code and VS Code as dispatchers or agent runners.
 * [Operations: production hub install](operations/service-install.md) —
-  NSSM, systemd, TLS termination, backup.
-* [Federation](architecture/federation.md) — connecting hubs across NAT
-  boundaries (Phase 3 overlay transport).
-* [Security model](architecture/security.md) — signed envelopes, replay
-  protection, scope enforcement.
+  NSSM, systemd, watchdogs.
+* [Operations: TLS](operations/tls.md) — terminate TLS in front of any hub
+  exposed beyond a trusted LAN.
+* [Operations: backups](operations/dr-rqlite-backups.md) — rqlite backup and
+  restore drills.
 
 ---
 
@@ -219,47 +259,35 @@ settings reference.
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `FORGEWIRE_RUNNER_WORKSPACE_ROOT` | — | Working tree for the runner |
-| `FORGEWIRE_RUNNER_TAGS` | — | Comma-separated capability tags |
+| `FORGEWIRE_RUNNER_TAGS` | — | Comma-separated routing tags |
 | `FORGEWIRE_RUNNER_SCOPE_PREFIXES` | — | Path prefixes the runner accepts |
 | `FORGEWIRE_RUNNER_MAX_CONCURRENT` | `1` | Max concurrent tasks |
 | `FORGEWIRE_RUNNER_POLL_INTERVAL` | `5.0` | Seconds between empty-claim polls |
 
-## Signed dispatch (M2.4)
+---
 
-By default, the hub accepts dispatches authenticated only by the bearer token.
-You can additionally require **per-dispatcher ed25519 envelope signatures** so
-that even a leaked bearer token cannot impersonate an arbitrary developer.
+## Signed dispatch
 
-### One-time dispatcher setup
+The native Rust hub **always** requires signed dispatch: `POST /tasks`
+returns `426 Upgrade Required` and clients must use `POST /tasks/v2` with a
+registered dispatcher key. Even a leaked bearer token cannot impersonate a
+developer.
 
-On each developer workstation:
-
-```bash
-forgewire keys init-dispatcher --label "$(hostname)"
-```
-
-This writes `~/.forgewire/dispatcher_identity.json` (mode 0o600 on POSIX). The
-first `forgewire-fabric dispatch` call after this auto-registers the public key with
-the hub; subsequent dispatches sign the immutable fields of the envelope
-(`op`, `dispatcher_id`, `title`, `prompt`, `scope_globs`, `base_commit`,
-`branch`, `timestamp`, `nonce`) and include the signature.
-
-### Enforcing signed dispatch on the hub
-
-To reject unsigned dispatches entirely, start the hub with:
+One-time setup on each workstation:
 
 ```bash
-forgewire-fabric hub start --require-signed-dispatch
-# or
-FORGEWIRE_HUB_REQUIRE_SIGNED_DISPATCH=1 forgewire-fabric hub start
+forgewire-fabric keys init-dispatcher --label "$(hostname)"
 ```
 
-When this flag is on, `POST /tasks` returns `426 Upgrade Required` and
-clients must use `POST /tasks/v2`.
+This writes `~/.forgewire/dispatcher_identity.json` (mode 0o600 on POSIX).
+The first `forgewire-fabric dispatch` call auto-registers the public key with
+the hub; subsequent dispatches sign the envelope's immutable fields
+(including `kind`, scope, branch, base commit, timestamp, and nonce) and
+include the signature. For Loom command briefs, the signature additionally
+covers the command, cwd, and an environment digest.
 
-### Inspecting registered dispatchers
+Inspect registered dispatchers:
 
 ```bash
-forgewire dispatchers list
+forgewire-fabric dispatchers list
 ```
-
