@@ -299,20 +299,7 @@ async fn run_one_task(client: Arc<HubClient>, identity: Arc<IdentityFile>, confi
                 actual = %actual_digest,
                 "loom env digest mismatch — refusing to spawn; brief may have been tampered"
             );
-            let result = TaskResult {
-                worker_id: runner_id,
-                status: "failed".into(),
-                head_commit: None,
-                commits: vec![],
-                files_touched: vec![],
-                test_summary: None,
-                log_tail: None,
-                error: Some("env digest mismatch: refusing spawn".into()),
-                exit_code: None,
-            };
-            if let Err(e) = client.submit_result(task_id, &result).await {
-                error!(task_id, error = %e, "failed to submit loom task result");
-            }
+            submit_failed(&client, task_id, &runner_id, "env digest mismatch: refusing spawn".into()).await;
             return;
         }
     }
@@ -331,21 +318,66 @@ async fn run_one_task(client: Arc<HubClient>, identity: Arc<IdentityFile>, confi
                 scope_prefixes = ?config.scope_prefixes,
                 "loom cwd outside allowed scope — refusing spawn"
             );
-            let result = TaskResult {
-                worker_id: runner_id,
-                status: "failed".into(),
-                head_commit: None,
-                commits: vec![],
-                files_touched: vec![],
-                test_summary: None,
-                log_tail: None,
-                error: Some(format!("cwd '{cwd}' outside allowed scope prefixes")),
-                exit_code: None,
-            };
-            if let Err(e) = client.submit_result(task_id, &result).await {
-                error!(task_id, error = %e, "failed to submit loom task result");
-            }
+            submit_failed(
+                &client,
+                task_id,
+                &runner_id,
+                format!("cwd '{cwd}' outside allowed scope prefixes"),
+            )
+            .await;
             return;
+        }
+    }
+
+    // M2.9.2 (F2): runtime intent gate. Running a Loom command IS a shell_exec, so
+    // ask the hub whether shell_exec is permitted for this task before spawning.
+    // By default shell_exec is not in policy.require_approval, so this allows;
+    // an operator who adds shell_exec to require_approval gets a fail-closed hold.
+    // Fails closed on deny / needs-approval / unreachable gate.
+    {
+        let command_str = if args.is_empty() {
+            program.clone()
+        } else {
+            format!("{} {}", program, args.join(" "))
+        };
+        let cwd_opt = if cwd.is_empty() { None } else { Some(cwd.as_str()) };
+        match client
+            .post_intent(task_id, &runner_id, "shell_exec", &[], &[], Some(command_str.as_str()), cwd_opt, None, None)
+            .await
+        {
+            Ok(resp) => {
+                if !resp["allowed"].as_bool().unwrap_or(false) {
+                    let reasons = resp["reasons"]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_str())
+                                .collect::<Vec<_>>()
+                                .join("; ")
+                        })
+                        .unwrap_or_default();
+                    error!(task_id, reasons = %reasons, "loom intent gate denied shell_exec — refusing spawn");
+                    submit_failed(
+                        &client,
+                        task_id,
+                        &runner_id,
+                        format!("intent shell_exec not allowed: {reasons}"),
+                    )
+                    .await;
+                    return;
+                }
+            }
+            Err(e) => {
+                error!(task_id, error = %e, "loom intent gate call failed — refusing spawn (fail closed)");
+                submit_failed(
+                    &client,
+                    task_id,
+                    &runner_id,
+                    format!("intent gate unreachable; failing closed: {e}"),
+                )
+                .await;
+                return;
+            }
         }
     }
 
@@ -521,28 +553,43 @@ async fn drain_signed_stdin(
 
 /// Compute the SHA-256 of the canonical JSON of the sorted env map, matching
 /// the Python signer's `_loom_env_digest`. Returns the lowercase hex string.
-fn compute_env_digest(env_obj: &serde_json::Map<String, Value>) -> String {
-    let mut sorted: Vec<(&str, &str)> = env_obj
-        .iter()
-        .filter_map(|(k, v)| v.as_str().map(|s| (k.as_str(), s)))
-        .collect();
-    sorted.sort_by_key(|(k, _)| *k);
-    // Build canonical JSON: {"key":"val",...} with no spaces, sorted keys.
-    let mut canonical = String::from("{");
-    for (i, (k, v)) in sorted.iter().enumerate() {
-        if i > 0 {
-            canonical.push(',');
-        }
-        // JSON-encode key and value (simple: escape backslash and double-quote).
-        canonical.push('"');
-        canonical.push_str(&k.replace('\\', "\\\\").replace('"', "\\\""));
-        canonical.push_str("\":\"");
-        canonical.push_str(&v.replace('\\', "\\\\").replace('"', "\\\""));
-        canonical.push('"');
+/// Submit a terminal "failed" result for a task the runner refused to (or could
+/// not) execute. Used by the pre-spawn gates (env digest, cwd containment, intent)
+/// so a refused task fails closed with a clear error instead of hanging.
+async fn submit_failed(client: &HubClient, task_id: i64, worker_id: &str, error: String) {
+    let result = TaskResult {
+        worker_id: worker_id.to_owned(),
+        status: "failed".into(),
+        head_commit: None,
+        commits: vec![],
+        files_touched: vec![],
+        test_summary: None,
+        log_tail: None,
+        error: Some(error),
+        exit_code: None,
+    };
+    if let Err(e) = client.submit_result(task_id, &result).await {
+        error!(task_id, error = %e, "failed to submit loom task result");
     }
-    canonical.push('}');
+}
+
+fn compute_env_digest(env_obj: &serde_json::Map<String, Value>) -> String {
+    // Use the shared canonical-JSON encoder so the bytes are identical to the
+    // Python signer's `canonical_payload(env)` (sorted keys, compact separators,
+    // ensure_ascii=True, full string escaping). Hand-rolling the JSON here is how
+    // M2.9.1 shipped a control-char escape mismatch (newline/tab) that made the
+    // runner reject legitimately signed briefs — never re-introduce it.
+    //
+    // Env values are strings by contract (the brief schema declares
+    // additionalProperties: {"type": "string"}); we filter to string values so a
+    // stray non-string can't diverge from the Python all-string assumption.
+    let string_only: serde_json::Map<String, Value> = env_obj
+        .iter()
+        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), Value::String(s.to_owned()))))
+        .collect();
+    let canonical = fabric_protocol::canonicalize(&Value::Object(string_only)).unwrap_or_default();
     let mut hasher = Sha256::new();
-    hasher.update(canonical.as_bytes());
+    hasher.update(&canonical);
     hex::encode(hasher.finalize())
 }
 
@@ -677,4 +724,47 @@ fn gethostname() -> String {
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
         })
         .unwrap_or_else(|_| "unknown".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compute_env_digest;
+    use serde_json::Value;
+    use sha2::{Digest, Sha256};
+
+    // M2.9.0 (F1): cross-language env-digest fixture. The same file is consumed
+    // by the Python test in tests/test_loom_env_digest_parity.py. Both sides hash
+    // `expected_canonical` and assert their digest function reproduces it — this
+    // guards the canonicalization byte-parity that the M2.9.1 hand-rolled escaper
+    // broke for control chars / non-ASCII.
+    const FIXTURE: &str = include_str!("../../../tests/fixtures/phase_2_9/env_digest.json");
+
+    #[test]
+    fn env_digest_matches_canonical_fixture() {
+        let doc: Value = serde_json::from_str(FIXTURE).expect("parse env_digest.json");
+        let cases = doc["cases"].as_array().expect("cases array");
+        assert!(!cases.is_empty(), "fixture must have cases");
+
+        for case in cases {
+            let name = case["name"].as_str().unwrap_or("?");
+            let env_obj = case["env"]
+                .as_object()
+                .unwrap_or_else(|| panic!("case {name}: env must be an object"))
+                .clone();
+            let expected_canonical = case["expected_canonical"]
+                .as_str()
+                .unwrap_or_else(|| panic!("case {name}: expected_canonical must be a string"));
+
+            // The digest function must produce sha256(expected_canonical bytes).
+            let mut hasher = Sha256::new();
+            hasher.update(expected_canonical.as_bytes());
+            let expected_digest = hex::encode(hasher.finalize());
+
+            let got = compute_env_digest(&env_obj);
+            assert_eq!(
+                got, expected_digest,
+                "case {name}: digest mismatch (canonical={expected_canonical:?})"
+            );
+        }
+    }
 }

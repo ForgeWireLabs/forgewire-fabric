@@ -20,8 +20,28 @@ use fabric_store::{ClaimResult, CreateTaskParams, TaskRow};
 
 use crate::state::HubState;
 use crate::utils::{
-    audit_append, budget_denial, check_skew, runner_kind_from_row, runner_kind_from_tags, utc_now, verify_sig,
+    audit_append, budget_denial, check_skew, runner_kind_from_row, utc_now, verify_sig,
 };
+
+/// SHA-256 of the canonical JSON of the (string-only) env map. Byte-identical to
+/// the Python signer's `_loom_env_digest` (via `canonical_payload`) and the Rust
+/// loom-runner's `compute_env_digest` (both go through `fabric_protocol::canonicalize`).
+/// Used to verify env-value integrity at dispatch (M2.9.5).
+fn loom_env_digest(env: Option<&Value>) -> String {
+    use sha2::{Digest, Sha256};
+    let string_only: serde_json::Map<String, Value> = env
+        .and_then(|v| v.as_object())
+        .map(|obj| {
+            obj.iter()
+                .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), Value::String(s.to_owned()))))
+                .collect()
+        })
+        .unwrap_or_default();
+    let canonical = fabric_protocol::canonicalize(&Value::Object(string_only)).unwrap_or_default();
+    let mut hasher = Sha256::new();
+    hasher.update(&canonical);
+    hex::encode(hasher.finalize())
+}
 
 // ---- Shared request types --------------------------------------------------
 
@@ -269,6 +289,34 @@ pub async fn dispatch_task_signed(
             StatusCode::FORBIDDEN,
             "unsigned Loom command brief rejected: dispatcher must sign command/cwd/env fields (upgrade to M2.9.1+)".into(),
         ));
+    }
+
+    // M2.9.5 (F5-followup): the signature covers loom_env_digest but not the env
+    // *values* (they may carry secrets). Recompute the digest over the env map
+    // actually present in the payload and reject at dispatch if it doesn't match
+    // the signed digest — this catches env-value tampering before the task is
+    // queued, instead of failing confusingly at the runner post-claim.
+    if has_signed_command {
+        if let Some(signed_digest) = payload.base.loom_env_digest.as_deref() {
+            let actual = loom_env_digest(payload.base.env.as_ref());
+            if actual != signed_digest {
+                let _ = audit_append(
+                    &*state.store,
+                    "dispatch_denied",
+                    None,
+                    &json!({
+                        "reason": "loom_env_digest_mismatch",
+                        "signed": true,
+                        "dispatcher_id": payload.dispatcher_id,
+                    }),
+                )
+                .await;
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    "loom_env_digest does not match the env map in the brief".into(),
+                ));
+            }
+        }
     }
 
     state
@@ -858,26 +906,39 @@ pub async fn claim_task_fabric(
 
 // ---- POST /tasks/{task_id}/intent (M2.9.2 — runtime intent gate) -----------
 
+// The intent body matches the established `HubClient::post_intent` shape and the
+// Python hub's `enforce_intent_gate` (kind + paths/hosts/command/...). The action
+// the policy evaluates is `kind`; `action` is accepted as an alias for any caller
+// using the original M2.9.2 shape. The remaining fields are optional context for
+// the audit record (serde ignores unknown fields, so extra keys are harmless).
 #[derive(serde::Deserialize)]
 pub struct IntentPayload {
-    pub action: String,
+    #[serde(alias = "action")]
+    pub kind: String,
+    #[serde(default)]
+    pub worker_id: Option<String>,
+    #[serde(default)]
+    pub command: Option<String>,
 }
 
 /// Runtime intent gate: evaluate whether a runner action requires approval.
-/// The loom-runner calls this before executing gated actions (shell_exec, etc.).
-/// Returns `{"allowed": true}` or `{"allowed": false, "reason": "..."}`.
+/// Loom and Fabric runners call this before executing gated actions (shell_exec,
+/// fs_write, network_egress, merge, push). Returns
+/// `{"allowed": bool, "needs_approval": bool, "reasons": [...]}`.
 pub async fn evaluate_intent(
     State(state): State<Arc<HubState>>,
     Path(task_id): Path<i64>,
     Json(payload): Json<IntentPayload>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    let decision = state.gate.evaluate_intent(&payload.action);
+    let decision = state.gate.evaluate_intent(&payload.kind);
     let _ = audit_append(
         &*state.store,
         if decision.allowed { "intent_allowed" } else { "intent_denied" },
         Some(task_id),
         &json!({
-            "action": payload.action,
+            "kind": payload.kind,
+            "worker_id": payload.worker_id,
+            "command": payload.command,
             "allowed": decision.allowed,
             "reasons": decision.reasons,
         }),

@@ -11,9 +11,22 @@ use serde_json::{json, Value};
 use crate::state::HubState;
 use crate::utils::{check_skew, utc_now, verify_sig};
 
-// Protocol version bounds (matching Python PROTOCOL_VERSION / MIN_COMPATIBLE)
+// Protocol version bounds (matching Python PROTOCOL_VERSION / MIN_COMPATIBLE).
+//
+// PROTOCOL_VERSION marks the current wire era (v4 = M2.9 signed-Loom-brief era).
+//
+// MIN_COMPATIBLE gates RUNNER REGISTRATION ONLY, so it must track the oldest
+// *registration* wire the hub still understands — NOT the dispatch-brief era.
+// The M2.9 change (signed loom_command/cwd/env) is a *dispatch brief* concern,
+// enforced at POST /tasks/v2 by the unsigned-command 403 regardless of any
+// runner's protocol_version. Runner registration did not change in M2.9 (kinds/
+// agent_type/mcp_manifest were added additively-with-defaults back in M2.8), so
+// raising this floor rejects v2/v3 runners that are otherwise wire-compatible and
+// severs the Python parity-runner fallback (AGENTS.md §10: do not remove a
+// _rust/_py parity pair). If you need to require loom runners new enough to do
+// clean-env spawn (M2.9.3), gate that with min-runner-VERSION, not this constant.
 const PROTOCOL_VERSION: i64 = 4;
-const MIN_COMPATIBLE: i64 = 4;
+const MIN_COMPATIBLE: i64 = 2;
 
 #[derive(Deserialize)]
 pub struct RegisterPayload {

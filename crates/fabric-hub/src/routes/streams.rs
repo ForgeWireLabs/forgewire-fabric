@@ -323,6 +323,13 @@ pub async fn submit_result(
         other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
     })?;
 
+    // M2.9.4 (F4): the task is terminal — drop any queued stdin so secret-bearing
+    // input lines don't linger in hub memory readable via GET /tasks/{id}/input.
+    {
+        let mut queues = state.input_queues.lock().await;
+        queues.remove(&task_id);
+    }
+
     let audit_payload = json!({
         "task_id": task_id,
         "worker_id": worker_id,
@@ -434,6 +441,41 @@ pub async fn post_task_input(
     });
     verify_sig(&public_key, &envelope, &payload.signature)
         .map_err(|e| (StatusCode::FORBIDDEN, format!("stdin signature invalid: {e}")))?;
+
+    // M2.9.4 (F3): consume the signed nonce so a captured batch can't be replayed
+    // within the skew window. Hard rule #6 (nonce replay rejection) applies to this
+    // route exactly like dispatch/claim.
+    state
+        .store
+        .consume_dispatcher_nonce(&payload.dispatcher_id, &payload.nonce, &utc_now())
+        .await
+        .map_err(|e| match e {
+            fabric_store::StoreError::NotFound(_) => {
+                (StatusCode::NOT_FOUND, "dispatcher not registered".into())
+            }
+            fabric_store::StoreError::PermissionDenied(m) => (StatusCode::FORBIDDEN, m),
+            other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+        })?;
+
+    // M2.9.4 (F4): the task must exist, be owned by this dispatcher, and still be
+    // running. Otherwise any registered dispatcher could inject stdin into any
+    // task, or push secret-bearing lines into a queue that is never drained.
+    let task = state.store.get_task(task_id).await.map_err(|e| match e {
+        fabric_store::StoreError::NotFound(_) => (StatusCode::NOT_FOUND, "task not found".into()),
+        other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+    })?;
+    if task.dispatcher_id.as_deref() != Some(payload.dispatcher_id.as_str()) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "stdin rejected: task was dispatched by a different dispatcher".into(),
+        ));
+    }
+    if matches!(task.status.as_str(), "done" | "failed" | "cancelled" | "timed_out") {
+        return Err((
+            StatusCode::CONFLICT,
+            format!("stdin rejected: task is terminal (status={})", task.status),
+        ));
+    }
 
     let assigned_seq = {
         let mut queues = state.input_queues.lock().await;

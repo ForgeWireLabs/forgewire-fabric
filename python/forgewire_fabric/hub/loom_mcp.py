@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json as _json
 import logging
 import os
 import platform
@@ -42,7 +41,12 @@ from forgewire_fabric.hub.client import (
 )
 from forgewire_fabric.hub.mcp_common import ToolRegistry
 from forgewire_fabric.runner.identity import RunnerIdentity, load_or_create
-from forgewire_fabric.runner.runner_capabilities import fresh_nonce, now_ts, sign_payload
+from forgewire_fabric.runner.runner_capabilities import (
+    canonical_payload,
+    fresh_nonce,
+    now_ts,
+    sign_payload,
+)
 
 LOGGER = logging.getLogger("forgewire_fabric.loom_mcp")
 
@@ -50,11 +54,15 @@ TERMINAL_STATES = {"done", "failed", "cancelled", "timed_out"}
 
 
 def _loom_env_digest(env: dict[str, str]) -> str:
-    """SHA-256 of the canonical JSON of the sorted env map (values bound, keys auditable)."""
-    canonical = _json.dumps(
-        {k: env[k] for k in sorted(env)}, separators=(",", ":"), ensure_ascii=False
-    )
-    return hashlib.sha256(canonical.encode()).hexdigest()
+    """SHA-256 of the canonical JSON of the env map (values bound, keys auditable).
+
+    Uses the shared ``canonical_payload`` encoder (sorted keys, compact
+    separators, ``ensure_ascii=True``) so the digest bytes are identical to the
+    Rust runner's ``compute_env_digest`` via ``fabric_protocol::canonicalize``.
+    The previous ``ensure_ascii=False`` + hand-escaped Rust counterpart diverged
+    on any control char (newline/tab), rejecting legitimately signed briefs.
+    """
+    return hashlib.sha256(canonical_payload(dict(env))).hexdigest()
 
 
 class DispatcherSession:

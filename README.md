@@ -10,7 +10,7 @@ Send signed work to machines you trust. Let only eligible runners claim it. Enfo
 
 Fabric is a self-hosted execution fabric for trusted remote runners. It is the layer between your tools — CLI, VS Code, MCP, CI, automation — and the machines that do the work: GPU boxes, lab servers, build hosts, or any machine you operate. No third-party control plane. Your infrastructure, your rules, your audit trail.
 
-**Current release: `forgewire-hub` v0.7.0 · `forgewire-runner` v0.7.0 · Python v0.16.0 · VSIX v0.4.0 · Protocol v3**
+**Current release: `forgewire-hub` v0.8.0 · `forgewire-runner` v0.8.0 · Python v0.17.0 · VSIX v0.4.0 · Protocol v4**
 
 ---
 
@@ -151,11 +151,11 @@ Fabric is not a VPN, queue, scheduler, workflow engine, or hosted agent. It sits
 
 | Component | Version | Notes |
 |---|---|---|
-| `forgewire-hub` | 0.7.0 | axum, rqlite backend, Protocol v3 |
-| `forgewire-runner` | 0.7.0 | FW_INTENT interception, bounded stream buffers |
-| Python package | 0.16.0 | CLI compatibility, MCP adapters, parity bridge |
+| `forgewire-hub` | 0.8.0 | axum, rqlite backend, Protocol v4 |
+| `forgewire-runner` | 0.8.0 | FW_INTENT interception, bounded stream buffers |
+| Python package | 0.17.0 | CLI compatibility, MCP adapters, parity bridge |
 | VS Code extension | 0.4.0 | Hub badge, runner tree, approval inbox |
-| Protocol | v3 | Stable wire format |
+| Protocol | v4 | Signed-Loom-brief wire era (M2.9) |
 
 Stable today:
 

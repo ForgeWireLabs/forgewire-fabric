@@ -57,10 +57,10 @@ import contextlib
 
 LOGGER = logging.getLogger("forgewire_fabric.runner.agent")
 
-PROTOCOL_VERSION = 3
+PROTOCOL_VERSION = 4  # M2.9 wire era; matches Rust hub + loom/fabric runner MCPs
 HEARTBEAT_INTERVAL_SECONDS = 20.0
 DEFAULT_POLL_INTERVAL_SECONDS = 5.0
-DEFAULT_RUNNER_VERSION = "0.4.1"
+DEFAULT_RUNNER_VERSION = "0.17.0"  # Python package line; was stale at 0.4.1
 
 
 def _parse_csv(value: str | None) -> list[str]:

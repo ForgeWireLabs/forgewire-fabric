@@ -1,0 +1,35 @@
+{
+  "description": "M2.9.0 cross-language fixture for the Loom env digest (F1). The digest is sha256(canonical_payload(env)). canonical_payload == json.dumps(env, sort_keys=True, separators=(',', ':')) (ensure_ascii=True) == fabric_protocol::canonicalize. Each case carries the exact canonical UTF-8 bytes as `expected_canonical`; the Python and Rust tests hash those bytes themselves and assert the digest function reproduces them, so no precomputed sha256 constant is needed. The newline/tab/unicode cases are the exact regressions the hand-rolled Rust escaper shipped in M2.9.1.",
+  "cases": [
+    {
+      "name": "empty",
+      "env": {},
+      "expected_canonical": "{}"
+    },
+    {
+      "name": "single",
+      "env": {"RUST_LOG": "debug"},
+      "expected_canonical": "{\"RUST_LOG\":\"debug\"}"
+    },
+    {
+      "name": "sorting",
+      "env": {"B": "2", "A": "1"},
+      "expected_canonical": "{\"A\":\"1\",\"B\":\"2\"}"
+    },
+    {
+      "name": "unicode_ensure_ascii",
+      "env": {"GREETING": "café"},
+      "expected_canonical": "{\"GREETING\":\"caf\\u00e9\"}"
+    },
+    {
+      "name": "newline_control_char",
+      "env": {"MULTI": "a\nb"},
+      "expected_canonical": "{\"MULTI\":\"a\\nb\"}"
+    },
+    {
+      "name": "tab_control_char",
+      "env": {"T": "a\tb"},
+      "expected_canonical": "{\"T\":\"a\\tb\"}"
+    }
+  ]
+}

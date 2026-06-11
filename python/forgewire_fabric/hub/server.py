@@ -62,11 +62,14 @@ PROGRESS_POLL_SECONDS = 1.0
 # Protocol/handshake version. The dispatcher and runner both ship this value
 # in /runners/register; the hub rejects any peer whose major version differs.
 #
-# v0.4 (atomic bump): wire moves to v3 alongside the additive observability
-# fields. ``MIN_COMPATIBLE_PROTOCOL_VERSION`` stays at 2 so a hub restart
-# that lands before its runners doesn't lock the fleet out during a rolling
-# redeploy. Tighten to 3 once every runner is confirmed on v0.4+.
-PROTOCOL_VERSION = 3
+# v4 (M2.9): wire era marker for the signed-Loom-brief change. This must match
+# the Rust hub's PROTOCOL_VERSION so both parity hubs advertise the same era.
+# ``MIN_COMPATIBLE_PROTOCOL_VERSION`` stays at 2: it gates runner *registration*,
+# whose wire shape did not change in M2.9 (the signed loom_command/cwd/env change
+# is enforced at dispatch by the unsigned-command 403, not at registration).
+# Raising it would needlessly reject v2/v3 runners and sever the Rust↔Python
+# parity-runner fallback. Mirrors fabric-hub runners.rs MIN_COMPATIBLE = 2.
+PROTOCOL_VERSION = 4
 MIN_COMPATIBLE_PROTOCOL_VERSION = 2
 
 # Current on-disk schema version. Bumped whenever ``_migrate_v2_columns`` adds
