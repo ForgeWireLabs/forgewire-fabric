@@ -1637,12 +1637,18 @@ class Blackboard:
         row untouched (rows_affected == 0) and we then raise
         ``PermissionError``.
 
-        Also prunes any ghost ``runners`` rows from the same hostname whose
-        ``last_heartbeat`` is older than ``HEARTBEAT_OFFLINE_SECONDS``: this
-        guarantees a host that rotated its identity file (e.g. ran as a
-        different OS user) cannot leave behind a phantom registry entry.
+        Also prunes any ghost ``runners`` rows from the same hostname **and the
+        same role (``kinds``)** whose ``last_heartbeat`` is older than
+        ``HEARTBEAT_OFFLINE_SECONDS``: this guarantees a host that rotated its
+        identity file (e.g. ran as a different OS user) cannot leave behind a
+        phantom registry entry. The ``kinds`` scope is load-bearing: a host may
+        run a Loom runner (``["command"]``) and a Fabric runner (``["agent"]``)
+        side by side (hard rule #12, combined mode), so one role's
+        re-registration must never delete its co-located sibling during a
+        stale-heartbeat window (e.g. a hub restart).
         """
         now = _now_iso()
+        kinds_json = json.dumps(record.get("kinds", ["agent"]))
         with self._connect() as conn:
             hostname = record.get("hostname")
             if hostname:
@@ -1652,9 +1658,10 @@ class Blackboard:
                     DELETE FROM runners
                     WHERE hostname = ?
                       AND runner_id != ?
+                      AND kinds = ?
                       AND last_heartbeat < ?
                     """,
-                    (hostname, record["runner_id"], cutoff),
+                    (hostname, record["runner_id"], kinds_json, cutoff),
                 )
             cur = conn.execute(
                 """
@@ -1723,7 +1730,7 @@ class Blackboard:
                     now,  # first_seen (only used on INSERT path)
                     now,  # last_heartbeat
                     json.dumps(record.get("capabilities", {})),
-                    json.dumps(record.get("kinds", ["agent"])),
+                    kinds_json,
                     record.get("agent_type"),
                     json.dumps(record.get("mcp_manifest")) if record.get("mcp_manifest") else None,
                 ),

@@ -55,12 +55,23 @@ pub struct RegisterPayload {
     pub metadata: Value,
     #[serde(default)]
     pub capabilities: Value,
+    // Phase 2.8 surface-split capability fields. A Loom runner registers
+    // `kinds: ["command"]`; a Fabric runner `["agent"]` + an `mcp_manifest`.
+    // Without parsing these here serde silently drops them and every runner
+    // falls back to the schema default `["agent"]`, breaking Loom claim.
+    #[serde(default = "default_kinds")]
+    pub kinds: Vec<String>,
+    #[serde(default)]
+    pub agent_type: Option<String>,
+    #[serde(default)]
+    pub mcp_manifest: Option<Value>,
     pub timestamp: i64,
     pub nonce: String,
     pub signature: String,
 }
 
 fn default_max_concurrent() -> i64 { 1 }
+fn default_kinds() -> Vec<String> { vec!["agent".to_owned()] }
 
 #[derive(Deserialize)]
 pub struct HeartbeatPayload {
@@ -168,6 +179,9 @@ pub async fn register_runner(
         "max_concurrent": payload.max_concurrent,
         "metadata": payload.metadata,
         "capabilities": payload.capabilities,
+        "kinds": payload.kinds,
+        "agent_type": payload.agent_type,
+        "mcp_manifest": payload.mcp_manifest,
     });
 
     let record = state.store.upsert_runner(record_data).await.map_err(|e| match e {
@@ -175,10 +189,29 @@ pub async fn register_runner(
         other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
     })?;
 
-    // Register host role
+    // Project the advertised mcp_manifest into the normalized capability index
+    // so skill/tool routing and `capability_index_rows` reflect this runner.
+    // Done on every register so the index never lags the manifest.
     let now = utc_now();
+    let cap_rows = fabric_store_rqlite::mcp_manifest::normalize_manifest_to_rows(
+        &payload.runner_id,
+        payload.mcp_manifest.as_ref().unwrap_or(&Value::Null),
+    );
+    if let Err(e) = state
+        .store
+        .replace_runner_capabilities(&payload.runner_id, &cap_rows, &now)
+        .await
+    {
+        tracing::warn!(runner = %payload.runner_id, error = %e, "capability index projection failed");
+    }
+
+    // Register host role — Loom (command-only) runners are host runners, Fabric
+    // (agent) runners are agent runners.
+    let is_command_only = payload.kinds.iter().any(|k| k == "command")
+        && !payload.kinds.iter().any(|k| k == "agent");
+    let role = if is_command_only { "host_runner" } else { "agent_runner" };
     let _ = state.store.set_host_role(
-        &payload.hostname, "agent_runner", true, Some("registered"),
+        &payload.hostname, role, true, Some("registered"),
         json!({"runner_id": payload.runner_id}), &now,
     ).await;
 

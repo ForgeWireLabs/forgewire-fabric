@@ -110,17 +110,31 @@ class DispatcherSession:
             LOGGER.warning("dispatcher registration failed (%s); unsigned dispatch will be used on Python hubs", exc)
 
     def build_signed_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Return a copy of ``payload`` with dispatcher_id, timestamp, nonce, signature."""
+        """Return a fully-formed signed ``POST /tasks/v2`` body for an agent brief.
+
+        The returned body carries the same canonical brief fields the signature
+        covers (``scope_globs``/``base_commit``/``branch`` and the rest) so the
+        body validates against the hub's required-field schema and matches the
+        signature exactly. The capability-routed dispatchers nest these under
+        ``context``; we lift them to the top level here. The agent-routing
+        fields (``dispatch``/``skill``/``tool``/``args``/``input``/``target``)
+        are out-of-band body fields the hub reads but does not require in the
+        signed set — they pass through unchanged.
+        """
         ts = now_ts()
         nonce = fresh_nonce()
-        envelope: dict[str, Any] = {
-            "op": "dispatch",
-            "dispatcher_id": self.dispatcher_id,
+        context = payload.get("context") or {}
+        scope_globs = payload.get("scope_globs")
+        if scope_globs is None:
+            scope_globs = context.get("scope_globs") or []
+        base_commit = payload.get("base_commit") or context.get("base_commit") or ("0" * 40)
+        branch = payload.get("branch") or context.get("branch") or ""
+        brief: dict[str, Any] = {
             "title": payload.get("title") or "",
             "prompt": payload.get("prompt") or "",
-            "scope_globs": payload.get("scope_globs") or [],
-            "base_commit": payload.get("base_commit") or ("0" * 40),
-            "branch": payload.get("branch") or "",
+            "scope_globs": scope_globs,
+            "base_commit": base_commit,
+            "branch": branch,
             "todo_id": payload.get("todo_id"),
             "timeout_minutes": payload.get("timeout_minutes") or 60,
             "priority": payload.get("priority") or 100,
@@ -135,12 +149,24 @@ class DispatcherSession:
             "require_base_commit": payload.get("require_base_commit") or False,
             "kind": payload.get("kind") or "agent",
             "max_cost_usd": payload.get("max_cost_usd"),
+        }
+        envelope: dict[str, Any] = {
+            "op": "dispatch",
+            "dispatcher_id": self.dispatcher_id,
+            **brief,
             "timestamp": ts,
             "nonce": nonce,
         }
         sig = sign_payload(self._identity, envelope)
+        # Agent-routing body fields (out-of-band; hub reads, signature does not cover).
+        routing = {
+            k: payload[k]
+            for k in ("dispatch", "skill", "tool", "args", "input", "target")
+            if k in payload
+        }
         return {
-            **payload,
+            **brief,
+            **routing,
             "dispatcher_id": self.dispatcher_id,
             "timestamp": ts,
             "nonce": nonce,

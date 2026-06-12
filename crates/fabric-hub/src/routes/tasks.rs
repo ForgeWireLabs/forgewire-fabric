@@ -959,6 +959,12 @@ fn dispatch_params(p: &DispatchPayload, dispatcher_id: Option<&str>) -> CreateTa
         dispatch,
         skill: p.skill.clone(),
         tool: p.tool.clone(),
+        // Phase 2.8 (M2.8.10): carry the Loom executable payload through to the
+        // task row. Without this the command was signed + audited but lost, and
+        // the runner fell back to executing the (empty) prompt.
+        command: p.command.clone(),
+        cwd: p.cwd.clone(),
+        env: p.env.clone(),
         initial_status: None,
     }
 }

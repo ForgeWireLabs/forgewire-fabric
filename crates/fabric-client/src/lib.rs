@@ -264,6 +264,18 @@ impl HubClient {
         self.get("/audit/tail").await
     }
 
+    // -- Cluster registry (auth) -----------------------------------------------
+
+    /// Fabric agent registry: every runner with `kinds ∋ "agent"` plus its manifest.
+    pub async fn list_agents(&self) -> Result<Value, ClientError> {
+        self.get("/agents").await
+    }
+
+    /// Cluster host map: hosts with their runners, dispatchers, and roles.
+    pub async fn list_hosts(&self) -> Result<Value, ClientError> {
+        self.get("/hosts").await
+    }
+
     // -- Healthz (no auth) ---------------------------------------------------
 
     pub async fn healthz(&self) -> Result<Value, ClientError> {

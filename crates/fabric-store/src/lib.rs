@@ -75,6 +75,15 @@ pub struct CreateTaskParams {
     /// Phase 2.8 (M2.8.2): tool name for dispatch="tool" briefs.
     #[serde(default)]
     pub tool: Option<String>,
+    /// Phase 2.8 (M2.8.10): Loom executable payload for kind="command" briefs.
+    /// `command` is the argv the runner executes; `cwd` the working directory;
+    /// `env` the brief-supplied env overlay. NULL/None for agent briefs.
+    #[serde(default)]
+    pub command: Option<Vec<String>>,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub env: Option<Value>,
     /// M2.9.2: override the initial task status. `None` → "queued" (default).
     /// Only "held" is a valid non-default value; used when the dispatch gate
     /// returns `needs_approval`.
@@ -120,6 +129,14 @@ pub struct TaskRow {
     /// Phase 2.8 (M2.8.2): tool name for dispatch="tool" briefs.
     #[serde(default)]
     pub tool: Option<String>,
+    /// Phase 2.8 (M2.8.10): Loom executable payload (kind="command"). The Loom
+    /// runner reads these off the claimed task to spawn the subprocess.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<Value>,
 }
 
 /// Atomic claim result — either the task was claimed or someone else got it.

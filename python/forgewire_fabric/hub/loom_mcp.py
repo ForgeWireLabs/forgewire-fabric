@@ -128,12 +128,20 @@ class DispatcherSession:
             )
 
     def build_signed_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Return ``payload`` augmented with dispatcher_id, timestamp, nonce, signature."""
+        """Return a fully-formed signed ``POST /tasks/v2`` body for a command brief.
+
+        The returned body carries the **same** canonical brief fields that go
+        into the signature (``scope_globs``/``base_commit``/``branch`` and the
+        rest), so the body always validates against the hub's required-field
+        schema and matches the signature exactly. Returning only the caller's
+        sparse ``payload`` keys (the old behaviour) produced a 422 on the Rust
+        hub because ``scope_globs`` was absent from the body even though it was
+        signed.
+        """
         ts = now_ts()
         nonce = fresh_nonce()
-        envelope: dict[str, Any] = {
-            "op": "dispatch",
-            "dispatcher_id": self.dispatcher_id,
+        # The canonical brief — identical bytes go into the signature and the body.
+        brief: dict[str, Any] = {
             "title": payload.get("title") or "",
             "prompt": payload.get("prompt") or "",
             "scope_globs": payload.get("scope_globs") or [],
@@ -153,6 +161,11 @@ class DispatcherSession:
             "require_base_commit": payload.get("require_base_commit") or False,
             "kind": "command",
             "max_cost_usd": payload.get("max_cost_usd"),
+        }
+        envelope: dict[str, Any] = {
+            "op": "dispatch",
+            "dispatcher_id": self.dispatcher_id,
+            **brief,
             "timestamp": ts,
             "nonce": nonce,
         }
@@ -161,20 +174,29 @@ class DispatcherSession:
         command: list[str] = payload.get("command") or []
         cwd: str = payload.get("cwd") or ""
         env_map: dict[str, str] = payload.get("env") or {}
+        loom_body: dict[str, Any] = {}
         if command:
             envelope["loom_command"] = command
             envelope["loom_cwd"] = cwd
             envelope["loom_env_keys"] = sorted(env_map.keys())
             envelope["loom_env_digest"] = _loom_env_digest(env_map)
+            # The runner executes command/cwd/env from the body; the hub
+            # re-derives the digest from these and checks it against the
+            # signed envelope.
+            loom_body = {
+                "command": command,
+                "cwd": payload.get("cwd"),
+                "env": env_map,
+                "loom_env_digest": envelope["loom_env_digest"],
+            }
         sig = sign_payload(self._identity, envelope)
         return {
-            **payload,
+            **brief,
+            **loom_body,
             "dispatcher_id": self.dispatcher_id,
             "timestamp": ts,
             "nonce": nonce,
             "signature": sig,
-            # Surface digest so the hub can re-verify and the runner can cross-check.
-            **({"loom_env_digest": envelope["loom_env_digest"]} if command else {}),
         }
 
 

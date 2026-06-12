@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Update the ForgeWire Rust binaries on THIS node, safely and in place.
 

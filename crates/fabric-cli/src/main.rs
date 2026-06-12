@@ -633,6 +633,45 @@ async fn main() {
                 }
             }
 
+            // ── Cluster registry (M2.8.10: queues, capability index, agents, hosts)
+            match client.healthz().await {
+                Ok(health) => {
+                    let fabric_q = health.pointer("/queues/fabric").and_then(|v| v.as_i64()).unwrap_or(-1);
+                    let loom_q   = health.pointer("/queues/loom").and_then(|v| v.as_i64()).unwrap_or(-1);
+                    let cap_rows = health["capability_index_rows"].as_i64().unwrap_or(-1);
+                    if fabric_q < 0 || loom_q < 0 {
+                        println!("Queues:  FAIL — healthz has no fabric/loom queue depths (pre-v4 hub?)");
+                        failures += 1;
+                    } else {
+                        println!("Queues:  OK   (fabric={fabric_q}, loom={loom_q})");
+                    }
+                    if cap_rows < 0 {
+                        println!("Capability index:  FAIL — healthz has no capability_index_rows");
+                        failures += 1;
+                    } else {
+                        println!("Capability index:  OK   ({cap_rows} row(s))");
+                    }
+                }
+                Err(_) => {} // already counted as a hub connectivity failure above
+            }
+            print!("Agents:  ");
+            match client.list_agents().await {
+                Ok(v) => {
+                    let n = v["agents"].as_array().map_or(0, |a| a.len());
+                    println!("OK   ({n} agent runner(s))");
+                }
+                Err(e) => { println!("FAIL — {e}"); failures += 1; }
+            }
+            print!("Hosts:  ");
+            match client.list_hosts().await {
+                Ok(v) => {
+                    let n = v["hosts"].as_array().map_or(0, |a| a.len());
+                    if n == 0 { println!("WARN — no hosts in registry"); warnings += 1; }
+                    else { println!("OK   ({n} host(s))"); }
+                }
+                Err(e) => { println!("FAIL — {e}"); failures += 1; }
+            }
+
             // ── Token file ───────────────────────────────────────────────────
             let token_path = token_file.as_deref().map(String::from).unwrap_or_else(|| {
                 if cfg!(windows) { r"C:\ProgramData\forgewire\hub.token".into() }

@@ -407,6 +407,14 @@ impl SchemaStore for RqliteStore {
             // without deserializing the full brief metadata.
             ("tasks", "skill", "TEXT"),
             ("tasks", "tool", "TEXT"),
+            // Phase 2.8 (M2.8.10) — Loom executable payload. kind='command'
+            // briefs carry the argv/cwd/env the runner actually executes; these
+            // were signed + audited but never persisted, so the runner claimed a
+            // task with no command and fell back to running the empty prompt.
+            // command/env are JSON-encoded; cwd is a plain path. NULL for agent briefs.
+            ("tasks", "command", "TEXT"),
+            ("tasks", "cwd", "TEXT"),
+            ("tasks", "loom_env", "TEXT"),
         ];
 
         for (table, column, col_type) in &additive {
@@ -653,6 +661,24 @@ fn row_to_task(row: &Value) -> TaskRow {
         dispatch: opt_str(row, "dispatch"),
         skill: opt_str(row, "skill"),
         tool: opt_str(row, "tool"),
+        // Phase 2.8 (M2.8.10): Loom executable payload. `command`/`loom_env`
+        // are stored as JSON text; decode them so the claimed-task JSON the Loom
+        // runner reads carries a real argv array and env object (not a string).
+        command: if row["command"].is_null() {
+            None
+        } else if let Some(s) = row["command"].as_str() {
+            serde_json::from_str(s).ok()
+        } else {
+            Some(row["command"].clone())
+        },
+        cwd: opt_str(row, "cwd"),
+        env: if row["loom_env"].is_null() {
+            None
+        } else if let Some(s) = row["loom_env"].as_str() {
+            serde_json::from_str(s).ok()
+        } else {
+            Some(row["loom_env"].clone())
+        },
     }
 }
 
@@ -696,6 +722,36 @@ fn row_to_runner(row: &Value) -> RunnerRow {
         },
         mcp_manifest_version: row["mcp_manifest_version"].as_i64().unwrap_or(0),
     }
+}
+
+/// Project the Phase 2.8 capability fields out of an `upsert_runner` payload
+/// into the column values to persist: `(kinds_json, agent_type, mcp_manifest_json,
+/// mcp_manifest_version)`. A missing/empty `kinds` falls back to `["agent"]` so
+/// pre-2.8 callers and partial payloads keep the historical default. The
+/// manifest version is the wall-clock epoch of this write, so a re-register with
+/// a changed manifest always advances it.
+fn runner_capability_cols(data: &Value) -> (String, Option<String>, Option<String>, i64) {
+    let kinds = match data.get("kinds") {
+        Some(Value::Array(a)) if !a.is_empty() => {
+            serde_json::to_string(a).unwrap_or_else(|_| "[\"agent\"]".into())
+        }
+        _ => "[\"agent\"]".to_owned(),
+    };
+    let agent_type = data
+        .get("agent_type")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_owned());
+    let (mcp_manifest, version) = match data.get("mcp_manifest") {
+        Some(m) if !m.is_null() => (
+            Some(serde_json::to_string(m).unwrap_or_else(|_| "null".into())),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0),
+        ),
+        _ => (None, 0),
+    };
+    (kinds, agent_type, mcp_manifest, version)
 }
 
 fn row_to_dispatcher(row: &Value) -> DispatcherRow {
@@ -797,11 +853,15 @@ impl TaskStore for RqliteStore {
         let secrets_json = p.secrets_needed.as_ref().map(|v| serde_json::to_string(v).unwrap_or_else(|_| "[]".into()));
         let egress_json = p.network_egress.as_ref().map(|v| serde_json::to_string(v).unwrap_or_else(|_| "null".into()));
         let require_bc: i64 = if p.require_base_commit { 1 } else { 0 };
+        // Phase 2.8 (M2.8.10): persist the Loom executable payload so the runner
+        // can read command/cwd/env off the claimed task. JSON-encode command/env.
+        let command_json = p.command.as_ref().map(|v| serde_json::to_string(v).unwrap_or_else(|_| "[]".into()));
+        let env_json = p.env.as_ref().map(|v| serde_json::to_string(v).unwrap_or_else(|_| "{}".into()));
 
         let status = p.initial_status.as_deref().unwrap_or("queued");
         let id = self.execute_insert(
-            "INSERT INTO tasks (todo_id,title,prompt,scope_globs,base_commit,branch,timeout_minutes,priority,metadata,required_tools,required_tags,tenant,workspace_root,require_base_commit,dispatcher_id,required_capabilities,secrets_needed,network_egress,kind,dispatch,skill,tool,created_at,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            &[json!(p.todo_id), json!(p.title), json!(p.prompt), json!(scope_json), json!(p.base_commit), json!(p.branch), json!(p.timeout_minutes), json!(p.priority), json!(meta_json), json!(tools_json), json!(tags_json), json!(p.tenant), json!(p.workspace_root), json!(require_bc), json!(p.dispatcher_id), json!(caps_json), json!(secrets_json), json!(egress_json), json!(p.kind), json!(p.dispatch), json!(p.skill), json!(p.tool), json!(now), json!(status)],
+            "INSERT INTO tasks (todo_id,title,prompt,scope_globs,base_commit,branch,timeout_minutes,priority,metadata,required_tools,required_tags,tenant,workspace_root,require_base_commit,dispatcher_id,required_capabilities,secrets_needed,network_egress,kind,dispatch,skill,tool,command,cwd,loom_env,created_at,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            &[json!(p.todo_id), json!(p.title), json!(p.prompt), json!(scope_json), json!(p.base_commit), json!(p.branch), json!(p.timeout_minutes), json!(p.priority), json!(meta_json), json!(tools_json), json!(tags_json), json!(p.tenant), json!(p.workspace_root), json!(require_bc), json!(p.dispatcher_id), json!(caps_json), json!(secrets_json), json!(egress_json), json!(p.kind), json!(p.dispatch), json!(p.skill), json!(p.tool), json!(command_json), json!(p.cwd), json!(env_json), json!(now), json!(status)],
         ).await.map_err(|e| StoreError::Backend(e.to_string()))?;
         self.get_task(id).await
     }
@@ -896,14 +956,22 @@ impl RunnerStore for RqliteStore {
         let runner_id = data["runner_id"].as_str().ok_or_else(|| StoreError::Backend("missing runner_id".into()))?.to_owned();
         let public_key = data["public_key"].as_str().unwrap_or("").to_owned();
         let now = utc_now();
+        let (kinds, agent_type, mcp_manifest, mcp_manifest_version) = runner_capability_cols(&data);
 
-        // Prune ghost runners from same hostname
+        // Prune ghost runners from the same hostname — but only ghosts that share
+        // this runner's role (`kinds`). A host may run a Loom runner (["command"])
+        // and a Fabric runner (["agent"]) side by side (hard rule #12: combined
+        // mode), and a stale-heartbeat window (e.g. during a hub restart) must never
+        // let one role's re-registration delete its co-located sibling. Scoping the
+        // prune to a matching `kinds` still cleans up a superseded same-role identity
+        // (e.g. a reinstall that minted a fresh runner_id) while leaving distinct
+        // roles untouched.
         if let Some(hostname) = data["hostname"].as_str() {
             if !hostname.is_empty() {
                 let cutoff = utc_offset(-120);
                 self.execute_one(
-                    "DELETE FROM runners WHERE hostname=? AND runner_id!=? AND last_heartbeat<?",
-                    &[json!(hostname), json!(runner_id), json!(cutoff)],
+                    "DELETE FROM runners WHERE hostname=? AND runner_id!=? AND kinds=? AND last_heartbeat<?",
+                    &[json!(hostname), json!(runner_id), json!(kinds), json!(cutoff)],
                 ).await?;
             }
         }
@@ -920,8 +988,8 @@ impl RunnerStore for RqliteStore {
             let metadata = serde_json::to_string(data.get("metadata").unwrap_or(&json!({}))).unwrap_or_else(|_| "{}".into());
             let capabilities = serde_json::to_string(data.get("capabilities").unwrap_or(&json!({}))).unwrap_or_else(|_| "{}".into());
             self.execute_one(
-                "UPDATE runners SET hostname=?,os=?,arch=?,cpu_model=?,cpu_count=?,ram_mb=?,gpu=?,tools=?,tags=?,scope_prefixes=?,tenant=?,workspace_root=?,runner_version=?,protocol_version=?,max_concurrent=?,state='online',drain_requested=0,metadata=?,capabilities=?,last_heartbeat=?,claim_failures_consecutive=0,last_claim_error=NULL WHERE runner_id=?",
-                &[json!(data["hostname"]), json!(data["os"]), json!(data["arch"]), json!(data["cpu_model"]), json!(data["cpu_count"]), json!(data["ram_mb"]), json!(data["gpu"]), json!(tools), json!(tags), json!(scope_prefixes), json!(data["tenant"]), json!(data["workspace_root"]), json!(data["runner_version"]), json!(data["protocol_version"]), json!(data["max_concurrent"]), json!(metadata), json!(capabilities), json!(now), json!(runner_id)],
+                "UPDATE runners SET hostname=?,os=?,arch=?,cpu_model=?,cpu_count=?,ram_mb=?,gpu=?,tools=?,tags=?,scope_prefixes=?,tenant=?,workspace_root=?,runner_version=?,protocol_version=?,max_concurrent=?,state='online',drain_requested=0,metadata=?,capabilities=?,kinds=?,agent_type=?,mcp_manifest=?,mcp_manifest_version=?,last_heartbeat=?,claim_failures_consecutive=0,last_claim_error=NULL WHERE runner_id=?",
+                &[json!(data["hostname"]), json!(data["os"]), json!(data["arch"]), json!(data["cpu_model"]), json!(data["cpu_count"]), json!(data["ram_mb"]), json!(data["gpu"]), json!(tools), json!(tags), json!(scope_prefixes), json!(data["tenant"]), json!(data["workspace_root"]), json!(data["runner_version"]), json!(data["protocol_version"]), json!(data["max_concurrent"]), json!(metadata), json!(capabilities), json!(kinds), json!(agent_type), json!(mcp_manifest), json!(mcp_manifest_version), json!(now), json!(runner_id)],
             ).await?;
         } else {
             let tools = serde_json::to_string(&data["tools"]).unwrap_or_else(|_| "[]".into());
@@ -930,8 +998,8 @@ impl RunnerStore for RqliteStore {
             let metadata = serde_json::to_string(data.get("metadata").unwrap_or(&json!({}))).unwrap_or_else(|_| "{}".into());
             let capabilities = serde_json::to_string(data.get("capabilities").unwrap_or(&json!({}))).unwrap_or_else(|_| "{}".into());
             self.execute_one(
-                "INSERT INTO runners (runner_id,public_key,hostname,os,arch,cpu_model,cpu_count,ram_mb,gpu,tools,tags,scope_prefixes,tenant,workspace_root,runner_version,protocol_version,max_concurrent,state,drain_requested,metadata,first_seen,last_heartbeat,capabilities) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'online',0,?,?,?,?)",
-                &[json!(runner_id), json!(public_key), json!(data["hostname"]), json!(data["os"]), json!(data["arch"]), json!(data["cpu_model"]), json!(data["cpu_count"]), json!(data["ram_mb"]), json!(data["gpu"]), json!(tools), json!(tags), json!(scope_prefixes), json!(data["tenant"]), json!(data["workspace_root"]), json!(data["runner_version"]), json!(data["protocol_version"]), json!(data["max_concurrent"]), json!(metadata), json!(now), json!(now), json!(capabilities)],
+                "INSERT INTO runners (runner_id,public_key,hostname,os,arch,cpu_model,cpu_count,ram_mb,gpu,tools,tags,scope_prefixes,tenant,workspace_root,runner_version,protocol_version,max_concurrent,state,drain_requested,metadata,first_seen,last_heartbeat,capabilities,kinds,agent_type,mcp_manifest,mcp_manifest_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'online',0,?,?,?,?,?,?,?,?)",
+                &[json!(runner_id), json!(public_key), json!(data["hostname"]), json!(data["os"]), json!(data["arch"]), json!(data["cpu_model"]), json!(data["cpu_count"]), json!(data["ram_mb"]), json!(data["gpu"]), json!(tools), json!(tags), json!(scope_prefixes), json!(data["tenant"]), json!(data["workspace_root"]), json!(data["runner_version"]), json!(data["protocol_version"]), json!(data["max_concurrent"]), json!(metadata), json!(now), json!(now), json!(capabilities), json!(kinds), json!(agent_type), json!(mcp_manifest), json!(mcp_manifest_version)],
             ).await?;
         }
 
@@ -1920,6 +1988,201 @@ mod tests {
             .await
             .expect("final read");
         assert!(empty.is_empty(), "expected empty, got {empty:?}");
+    }
+
+    /// M2.8.10 regression: `upsert_runner` must persist the Phase 2.8 surface
+    /// columns (`kinds`, `agent_type`). Before the fix the INSERT/UPDATE omitted
+    /// them entirely, so a Loom runner that registered `kinds=["command"]` was
+    /// stored as the schema default `["agent"]` and `/tasks/claim-loom` 403'd —
+    /// Loom dispatch was impossible on a freshly-registered runner.
+    #[tokio::test]
+    async fn upsert_runner_persists_kinds_command() {
+        let store = match test_store() {
+            Some(s) => s,
+            None => {
+                eprintln!("SKIP upsert_runner_persists_kinds — rqlite not reachable");
+                return;
+            }
+        };
+        match store.init_schema().await {
+            Ok(_) => {}
+            Err(StoreError::Backend(msg)) if msg.contains("quorum loss") => {
+                eprintln!("SKIP upsert_runner_persists_kinds — quorum loss");
+                return;
+            }
+            Err(e) => panic!("init_schema: {e}"),
+        }
+        if let Err(e) = store.run_additive_migrations().await {
+            if matches!(&e, StoreError::Backend(m) if m.contains("quorum loss")) {
+                eprintln!("SKIP upsert_runner_persists_kinds — quorum loss mid-migration");
+                return;
+            }
+            panic!("run_additive_migrations: {e}");
+        }
+
+        let runner = format!(
+            "test-loom-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let pk = "00".repeat(32);
+
+        // Register as a Loom (command) runner.
+        let rec = store
+            .upsert_runner(json!({
+                "runner_id": runner,
+                "public_key": pk,
+                "hostname": "test-host",
+                "os": "windows",
+                "arch": "x86_64",
+                "tools": [],
+                "tags": [],
+                "scope_prefixes": [],
+                "runner_version": "0.8.0",
+                "protocol_version": 4,
+                "max_concurrent": 2,
+                "metadata": {},
+                "capabilities": {},
+                "kinds": ["command"],
+                "agent_type": null,
+            }))
+            .await
+            .expect("upsert loom runner");
+        assert_eq!(rec.kinds, json!(["command"]), "kinds must round-trip as ['command']");
+
+        // Re-read to confirm it persisted (not just echoed).
+        let back = store.get_runner(&runner).await.expect("get_runner");
+        assert_eq!(back.kinds, json!(["command"]), "kinds must persist across reads");
+        assert!(back.agent_type.is_none(), "agent_type should be null for a Loom runner");
+
+        // A missing kinds field keeps the historical default for compatibility.
+        let agent = format!("{runner}-agent");
+        let arec = store
+            .upsert_runner(json!({
+                "runner_id": agent,
+                "public_key": pk,
+                "hostname": "test-host-2",
+                "os": "windows",
+                "arch": "x86_64",
+                "runner_version": "0.8.0",
+                "protocol_version": 4,
+                "max_concurrent": 1,
+            }))
+            .await
+            .expect("upsert agent runner");
+        assert_eq!(arec.kinds, json!(["agent"]), "absent kinds must default to ['agent']");
+
+        store.delete_runner(&runner).await.ok();
+        store.delete_runner(&agent).await.ok();
+    }
+
+    /// M2.8.10 follow-up regression: the same-hostname ghost-prune must be scoped
+    /// to the registering runner's role (`kinds`). A combined-mode host (hard rule
+    /// #12) runs a Loom runner (`["command"]`) and a Fabric runner (`["agent"]`)
+    /// side by side. Before the fix the prune deleted *any* same-hostname row whose
+    /// `last_heartbeat` was stale, so a hub-restart window (heartbeats lapse > 120s)
+    /// let one role's re-registration evict its live sibling — a 404'd runner. The
+    /// prune must (a) leave a different-role sibling alone even when stale, and
+    /// (b) still reap a superseded *same-role* identity (e.g. a reinstall).
+    #[tokio::test]
+    async fn ghost_prune_is_scoped_to_kinds() {
+        let store = match test_store() {
+            Some(s) => s,
+            None => {
+                eprintln!("SKIP ghost_prune_is_scoped_to_kinds — rqlite not reachable");
+                return;
+            }
+        };
+        match store.init_schema().await {
+            Ok(_) => {}
+            Err(StoreError::Backend(msg)) if msg.contains("quorum loss") => {
+                eprintln!("SKIP ghost_prune_is_scoped_to_kinds — quorum loss");
+                return;
+            }
+            Err(e) => panic!("init_schema: {e}"),
+        }
+        if let Err(e) = store.run_additive_migrations().await {
+            if matches!(&e, StoreError::Backend(m) if m.contains("quorum loss")) {
+                eprintln!("SKIP ghost_prune_is_scoped_to_kinds — quorum loss mid-migration");
+                return;
+            }
+            panic!("run_additive_migrations: {e}");
+        }
+
+        let host = format!(
+            "combined-host-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        let loom_id = format!("{host}-loom");
+        let agent_id = format!("{host}-agent");
+        let pk_loom = "11".repeat(32);
+        let pk_agent = "22".repeat(32);
+
+        let base = |id: &str, kinds: Value| {
+            json!({
+                "runner_id": id,
+                "public_key": if kinds == json!(["command"]) { &pk_loom } else { &pk_agent },
+                "hostname": host,
+                "os": "windows",
+                "arch": "x86_64",
+                "runner_version": "0.8.0",
+                "protocol_version": 4,
+                "max_concurrent": 1,
+                "kinds": kinds,
+            })
+        };
+
+        // Both roles register on the same host.
+        store.upsert_runner(base(&loom_id, json!(["command"]))).await.expect("register loom");
+        store.upsert_runner(base(&agent_id, json!(["agent"]))).await.expect("register agent");
+
+        // Simulate a hub-restart window: the Loom runner's heartbeat lapsed and its
+        // last_heartbeat is now well past the 120s offline cutoff.
+        store
+            .execute_one(
+                "UPDATE runners SET last_heartbeat=? WHERE runner_id=?",
+                &[json!(utc_offset(-600)), json!(loom_id)],
+            )
+            .await
+            .expect("backdate loom heartbeat");
+
+        // The Fabric runner re-registers (a routine heartbeat re-attach). This runs
+        // the prune. The stale Loom sibling has a *different* role, so it must survive.
+        store.upsert_runner(base(&agent_id, json!(["agent"]))).await.expect("re-register agent");
+        let survived = store.get_runner(&loom_id).await;
+        assert!(
+            survived.is_ok(),
+            "combined-mode Loom sibling must survive a Fabric re-registration; got {survived:?}"
+        );
+
+        // Positive control: a *same-role* stale ghost (a superseded Loom identity)
+        // on the same host MUST be reaped when a fresh Loom runner registers.
+        let loom_ghost = format!("{host}-loom-old");
+        store.upsert_runner(base(&loom_ghost, json!(["command"]))).await.expect("register loom ghost");
+        store
+            .execute_one(
+                "UPDATE runners SET last_heartbeat=? WHERE runner_id=?",
+                &[json!(utc_offset(-600)), json!(loom_ghost)],
+            )
+            .await
+            .expect("backdate loom ghost heartbeat");
+        // A new Loom identity re-attaches on the same host.
+        let loom_new = format!("{host}-loom-new");
+        store.upsert_runner(base(&loom_new, json!(["command"]))).await.expect("register new loom");
+        assert!(
+            store.get_runner(&loom_ghost).await.is_err(),
+            "a stale same-role (command) ghost must be pruned by a new command runner"
+        );
+
+        store.delete_runner(&loom_id).await.ok();
+        store.delete_runner(&agent_id).await.ok();
+        store.delete_runner(&loom_ghost).await.ok();
+        store.delete_runner(&loom_new).await.ok();
     }
 }
 

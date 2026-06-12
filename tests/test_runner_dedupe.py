@@ -62,6 +62,7 @@ def _register(
     *,
     hostname: str,
     ts: int | None = None,
+    kinds: list[str] | None = None,
 ) -> None:
     ts = ts if ts is not None else int(time.time())
     nonce = secrets.token_hex(16)
@@ -90,6 +91,8 @@ def _register(
         "nonce": nonce,
         "signature": sig,
     }
+    if kinds is not None:
+        payload["kinds"] = kinds
     r = client.post("/runners/register", json=payload, headers=_auth())
     assert r.status_code == 200, r.text
 
@@ -154,6 +157,57 @@ def test_register_keeps_fresh_same_host_runner(tmp_path: Path) -> None:
         ids = {row["runner_id"] for row in r.json()["runners"]}
         assert other.runner_id in ids
         assert new.runner_id in ids
+
+
+def test_register_does_not_prune_different_role_same_host(tmp_path: Path) -> None:
+    """M2.8.10 follow-up: a combined-mode host runs a Loom runner
+    (``kinds=["command"]``) and a Fabric runner (``kinds=["agent"]``) side by
+    side (hard rule #12). A hub-restart window can lapse the Loom heartbeat past
+    the offline cutoff; the Fabric runner's routine re-registration must NOT
+    prune its stale-but-live Loom sibling. The ghost-prune is scoped to the
+    registrant's own ``kinds``, so distinct roles never evict each other.
+    """
+    app = _make_app(tmp_path)
+    db_path = tmp_path / "hub.db"
+    loom = load_or_create(tmp_path / "loom.json")
+    agent = load_or_create(tmp_path / "agent.json")
+    assert loom.runner_id != agent.runner_id
+
+    with TestClient(app) as c:
+        _register(c, loom, hostname="HOST-A", kinds=["command"])
+        _register(c, agent, hostname="HOST-A", kinds=["agent"])
+        # Hub-restart window: the Loom runner's heartbeat lapsed.
+        _backdate_heartbeat(db_path, loom.runner_id, HEARTBEAT_OFFLINE_SECONDS + 30)
+        # The Fabric runner re-attaches and runs the prune.
+        _register(c, agent, hostname="HOST-A", kinds=["agent"])
+
+        r = c.get("/runners", headers=_auth())
+        ids = {row["runner_id"] for row in r.json()["runners"]}
+        # The different-role Loom sibling survives despite its stale heartbeat.
+        assert loom.runner_id in ids, "combined-mode Loom sibling was wrongly pruned"
+        assert agent.runner_id in ids
+
+
+def test_register_prunes_stale_same_role_same_host(tmp_path: Path) -> None:
+    """Positive control for the kinds-scoped prune: a superseded *same-role*
+    identity (a reinstalled Loom runner with a new ``runner_id``) on the same
+    host is still reaped when a fresh Loom runner registers.
+    """
+    app = _make_app(tmp_path)
+    db_path = tmp_path / "hub.db"
+    ghost = load_or_create(tmp_path / "loom_ghost.json")
+    fresh = load_or_create(tmp_path / "loom_fresh.json")
+    assert ghost.runner_id != fresh.runner_id
+
+    with TestClient(app) as c:
+        _register(c, ghost, hostname="HOST-A", kinds=["command"])
+        _backdate_heartbeat(db_path, ghost.runner_id, HEARTBEAT_OFFLINE_SECONDS + 30)
+        _register(c, fresh, hostname="HOST-A", kinds=["command"])
+
+        r = c.get("/runners", headers=_auth())
+        ids = {row["runner_id"] for row in r.json()["runners"]}
+        assert ghost.runner_id not in ids, "stale same-role ghost should be pruned"
+        assert fresh.runner_id in ids
 
 
 def test_register_does_not_prune_different_host(tmp_path: Path) -> None:
