@@ -441,6 +441,17 @@ Write-Host ""
 Write-Host "-- 3/6 -- Runner (Rust binary)..." -ForegroundColor Cyan
 $runnerInstaller = Join-Path $PSScriptRoot "nssm-install-runner.ps1"
 $scope = if ($ScopePrefixes) { $ScopePrefixes } else { $WorkspaceRoot }
+# The Rust forgewire-runner is a COMMAND runner and must advertise kind:command.
+# Untagged runners default to "agent" on the hub, which leaves the command_runner
+# host-role with no live backing — it stays at its stale install-time status and
+# the dashboard paints the host "degraded" even though the runner is online.
+# Merge kind:command into any operator-supplied tags (without duplicating it).
+$runnerTags = if ($Tags) {
+    $hasKind = $Tags -split ',' | Where-Object { $_.Trim().ToLower().Replace('=', ':') -eq 'kind:command' }
+    if ($hasKind) { $Tags } else { "kind:command,$Tags" }
+} else {
+    "kind:command"
+}
 & $runnerInstaller `
     -BinDir       $BinDir `
     -HubUrl       $effectiveHubUrl `
@@ -448,7 +459,7 @@ $scope = if ($ScopePrefixes) { $ScopePrefixes } else { $WorkspaceRoot }
     -WorkspaceRoot $WorkspaceRoot `
     -ScopePrefixes $scope `
     -MaxConcurrent $MaxConcurrent `
-    -Tags         $Tags `
+    -Tags         $runnerTags `
     -NoWatchdog  # watchdog installed in step 4
 Write-Host "-- 3/6 -- Runner OK" -ForegroundColor Green
 
