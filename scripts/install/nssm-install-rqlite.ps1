@@ -95,14 +95,16 @@ $RqlitedExe    = Join-Path $RqliteDir "rqlited.exe"
 
 New-Item -ItemType Directory -Force -Path $DataDir, $RqliteDataDir, $LogDir, $RqliteDir | Out-Null
 
-# ---- Auto-detect LAN IP if not specified -----------------------------------
+# ---- Advertise by HOSTNAME, never a baked-in IP (ADDR-3 / R1) --------------
+# Peers reach this node by its stable hostname; the ADDR-2 managed hosts block
+# (maintained by the runner from signed presence) keeps that name resolving to
+# the current DHCP address with no service restart. Persisting the LAN IP into
+# AppParameters was the root of the stale-address failures (it rots on every
+# lease change). The hostname never rots.
 if (-not $AdvertiseHost) {
-    $AdvertiseHost = (Get-NetIPAddress -AddressFamily IPv4 |
-        Where-Object { $_.IPAddress -ne '127.0.0.1' -and $_.PrefixOrigin -ne 'WellKnown' } |
-        Sort-Object -Property InterfaceMetric |
-        Select-Object -First 1).IPAddress
+    $AdvertiseHost = $env:COMPUTERNAME
     if (-not $AdvertiseHost) { $AdvertiseHost = "127.0.0.1" }
-    Write-Host "Auto-detected LAN address: $AdvertiseHost"
+    Write-Host "Advertising rqlite by hostname: $AdvertiseHost (resolved via the managed hosts block)"
 }
 
 # ---- LAN beacon discovery --------------------------------------------------
@@ -327,14 +329,29 @@ $rqliteArgs = @(
     "-raft-leader-lease-timeout", "2s"
 )
 
-if ($JoinAddress) {
+# First-boot-only -join (ADDR-3): -join is needed ONLY when this node has no
+# existing raft state. A node that already joined reads its peers from its own
+# raft log and must NOT re-run the join handshake — left in the args, rqlited
+# re-runs join on every restart and EXITS after 5 failed attempts, which on a
+# flaky LAN turns a healthy member into an NSSM crash loop (the 2026-06-12
+# incident). We therefore add -join only when the data dir is empty.
+$hasRaftState = (Test-Path $RqliteDataDir) -and
+    ((Get-ChildItem $RqliteDataDir -Force -ErrorAction SilentlyContinue | Measure-Object).Count -gt 0)
+
+if ($JoinAddress -and -not $hasRaftState) {
     $rqliteArgs += @("-join", $JoinAddress)
-    Write-Host "Joining existing cluster at $JoinAddress"
+    Write-Host "First boot (no raft state) — joining existing cluster at $JoinAddress"
     if (-not $joinAsVoter) {
         # -raft-non-voter makes this node a read-only standby from startup.
         # The hub's cluster_manager will promote it to voter if a 3rd node joins.
         $rqliteArgs += @("-raft-non-voter")
         Write-Host "Starting as non-voter (hot standby) — will auto-promote to voter when 3rd node joins."
+    }
+} elseif ($JoinAddress -and $hasRaftState) {
+    Write-Host "Existing raft state present — booting from local state, NOT re-running -join (ADDR-3 first-boot-only)."
+    if (-not $joinAsVoter) {
+        $rqliteArgs += @("-raft-non-voter")
+        Write-Host "Preserving non-voter (hot standby) role."
     }
 } else {
     Write-Host "No -JoinAddress -- bootstrapping as single-node leader."

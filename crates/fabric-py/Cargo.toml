@@ -16,8 +16,8 @@ fabric-claim-router.workspace = true
 fabric-streams.workspace = true
 serde_json.workspace = true
 
-pyo3 = { version = "0.24", features = ["extension-module", "abi3-py310"] }
-pythonize = "0.24"
+pyo3 = { version = "0.29", features = ["extension-module", "abi3-py310"] }
+pythonize = "0.29"
 
 [lints]
 workspace = true

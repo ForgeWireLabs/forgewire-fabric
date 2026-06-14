@@ -1,3 +1,8 @@
+#Requires -Version 7.0
+# ^ This installer uses PowerShell 7 language features. Run it with `pwsh`, not
+#   the built-in Windows PowerShell 5.1 `powershell`. Under 5.1 this directive
+#   produces a clear "requires version 7.0" error instead of cryptic parse
+#   failures. Install PS7 with: winget install Microsoft.PowerShell
 <#
 .SYNOPSIS
     One-command ForgeWire Fabric installer. Installs rqlite, hub, runner, watchdogs, VSIX.
@@ -112,6 +117,42 @@ if (-not (Get-Command nssm.exe -ErrorAction SilentlyContinue)) {
     throw "nssm.exe not found on PATH. Install: winget install nssm.nssm"
 }
 
+# ── Hostname → LAN-reachable IPv4 for one-shot control calls ──────────────────
+# A bare LAN hostname frequently resolves to a *public* IPv6 (AAAA) served by
+# the ISP resolver, while the only reachable address is IPv4 advertised via
+# mDNS/NetBIOS as "<host>.local". .NET's HTTP stack then tries the IPv6 first
+# and the request hangs until timeout with an EMPTY HTTP status (looks like a
+# rejected token, but it never connected). The raft layer (Go) resolves the
+# bare hostname to IPv4 fine, so we only rewrite the URL for the installer's
+# own HTTP probes — the cluster keeps its DHCP-proof hostname identity.
+function Resolve-ConnectableUrl {
+    param([string]$Url)
+    try { $u = [System.Uri]$Url } catch { return $Url }
+    $hostName = $u.Host
+    $parsed = [System.Net.IPAddress]::None
+    if ([System.Net.IPAddress]::TryParse($hostName, [ref]$parsed)) { return $Url }
+
+    $ipv4 = New-Object System.Collections.Generic.List[string]
+    foreach ($name in @($hostName, "$hostName.local")) {
+        try { $addrs = [System.Net.Dns]::GetHostAddresses($name) } catch { continue }
+        foreach ($a in $addrs) {
+            if ($a.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) {
+                $s = $a.ToString()
+                if (-not $s.StartsWith('169.254.')) { [void]$ipv4.Add($s) }
+            }
+        }
+    }
+    if ($ipv4.Count -eq 0) { return $Url }   # no IPv4 anywhere; leave as-is
+    # Prefer a private/LAN address over any public IPv4 that slipped in.
+    $private = $ipv4 | Where-Object {
+        $_ -match '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)'
+    } | Select-Object -First 1
+    $pick = if ($private) { $private } else { $ipv4[0] }
+    $builder = [System.UriBuilder]$u
+    $builder.Host = $pick
+    return $builder.Uri.AbsoluteUri.TrimEnd('/')
+}
+
 # ── Locate fabric root ────────────────────────────────────────────────────────
 if (-not $FabricRoot) {
     $FabricRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
@@ -184,8 +225,8 @@ if (-not $HubUrl -and -not $ForceHub) {
 
     # Fallback: Python mDNS if available
     if (-not $discoveredHub) {
-        $python = (Get-Command python.exe -ErrorAction SilentlyContinue) ??
-                  (Get-Command python3.exe -ErrorAction SilentlyContinue)
+        $python = Get-Command python.exe -ErrorAction SilentlyContinue
+        if (-not $python) { $python = Get-Command python3.exe -ErrorAction SilentlyContinue }
         if ($python) {
             $discovered = & $python.Source -c @"
 import json
@@ -276,18 +317,25 @@ if ($isHubNode) {
     # writing any services. A wrong token means a broken install.
     Write-Host ""
     Write-Host "Verifying token against hub at $effectiveHubUrl ..." -ForegroundColor Cyan
+    # Resolve a hostname hub URL to a LAN-reachable IPv4 so the .NET HTTP probe
+    # does not stall on a public IPv6 (see Resolve-ConnectableUrl). The cluster
+    # still records the hostname; this only affects this one-shot check.
+    $verifyBase = Resolve-ConnectableUrl $effectiveHubUrl
+    if ($verifyBase -ne $effectiveHubUrl) {
+        Write-Host "  (probing via $verifyBase to avoid public-IPv6 resolution)" -ForegroundColor DarkGray
+    }
     try {
         $authCheck = Invoke-WebRequest `
-            -Uri "$effectiveHubUrl/runners" `
+            -Uri "$verifyBase/runners" `
             -Headers @{ Authorization = "Bearer $($Token.Trim())" } `
-            -UseBasicParsing -TimeoutSec 5 -ErrorAction Stop
+            -UseBasicParsing -TimeoutSec 8 -ErrorAction Stop
         if ($authCheck.StatusCode -eq 200) {
             Write-Host "  Token verified." -ForegroundColor Green
         } else {
             throw "Unexpected status $($authCheck.StatusCode)"
         }
     } catch {
-        $status = $_.Exception.Response?.StatusCode?.value__
+        $status = if ($_.Exception.Response) { $_.Exception.Response.StatusCode.value__ } else { $null }
         Write-Host ""
         Write-Host "ERROR: Token rejected by hub (HTTP $status)." -ForegroundColor Red
         Write-Host "  The token you provided does not match the hub at $effectiveHubUrl."
@@ -435,19 +483,49 @@ if (-not $SkipVsix) {
     if (-not $codeExe) {
         Write-Warning "VS Code not on PATH. Skipping VSIX. Install manually later."
     } else {
-        # Find latest pre-built VSIX in dist/ first, then root vscode/
+        # Pick the VSIX to install. Old builds leave many stale .vsix files
+        # lying around (and under two different extension names — "forgewire"
+        # and the legacy "forgewire-fabric"), so we must NOT just grab the first
+        # dir that has any match: dist\ commonly holds only OLD artifacts and
+        # would shadow the current build in vscode\. Instead:
+        #   1. Install the file that exactly matches the current package.json
+        #      name+version (deterministic, always the right extension).
+        #   2. Fallback: the globally-highest version across ALL search dirs.
         $vsixDirs = @(
             (Join-Path $FabricRoot "vscode\dist"),
             (Join-Path $FabricRoot "vscode"),
             $BinDir,
             $DataDir
         )
+        $allVsix = foreach ($d in $vsixDirs) {
+            Get-ChildItem $d -Filter "*.vsix" -ErrorAction SilentlyContinue
+        }
+
+        # 1. Exact match to the current source version.
+        $wantName = $null; $wantVer = $null
+        $vsixPkg = Join-Path $FabricRoot "vscode\package.json"
+        if (Test-Path $vsixPkg) {
+            try {
+                $pj = Get-Content $vsixPkg -Raw | ConvertFrom-Json
+                $wantName = $pj.name; $wantVer = $pj.version
+            } catch {}
+        }
         $vsixFile = $null
-        foreach ($d in $vsixDirs) {
-            $vsixFile = Get-ChildItem $d -Filter "forgewire-*.vsix" -ErrorAction SilentlyContinue |
-                Sort-Object { [version]($_.BaseName -replace 'forgewire-fabric-','') } -Descending |
+        if ($wantName -and $wantVer) {
+            $vsixFile = $allVsix |
+                Where-Object { $_.Name -eq "$wantName-$wantVer.vsix" } |
                 Select-Object -First 1
-            if ($vsixFile) { break }
+        }
+        # 2. Fallback: highest semver across all dirs (skip names with no version).
+        if (-not $vsixFile) {
+            $vsixFile = $allVsix |
+                ForEach-Object {
+                    if ($_.BaseName -match '(\d+\.\d+\.\d+)$') {
+                        [pscustomobject]@{ File = $_; Ver = [version]$Matches[1] }
+                    }
+                } |
+                Sort-Object Ver -Descending |
+                Select-Object -First 1 -ExpandProperty File
         }
 
         if ($vsixFile) {
@@ -537,15 +615,18 @@ if ($isHubNode) {
     $clusterYml = Join-Path $configDir "cluster.yaml"
     New-Item -ItemType Directory -Force -Path $configDir | Out-Null
 
-    $localIp = (Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-        Where-Object { $_.PrefixOrigin -in @('Dhcp','Manual') -and $_.IPAddress -notlike '169.*' } |
-        Select-Object -First 1).IPAddress
-    if (-not $localIp) { $localIp = "127.0.0.1" }
+    # ADDR-3 / R1: cluster.yaml records HOSTNAMES, never DHCP-volatile IPs.
+    # The DR backup chain and chaos-drill SSH resolve these names via the
+    # ADDR-2 managed hosts block, so a lease change never strands the config.
+    $localHost = $env:COMPUTERNAME
+    if (-not $localHost) { $localHost = "127.0.0.1" }
 
     $clusterYmlContent = @"
 # ForgeWire rqlite cluster topology.
 # Generated by install-fabric.ps1 on $(Get-Date -Format 'yyyy-MM-dd HH:mm') UTC
 # This file is gitignored. Re-run install-fabric.ps1 to regenerate.
+# Hosts are HOSTNAMES (ADDR-3 / R1) — resolved via the managed hosts block,
+# never hard-coded IPs (which rot on DHCP lease changes).
 
 cluster_id: forgewire-prod-1
 hub_protocol_version: 3
@@ -553,7 +634,7 @@ hub_protocol_version: 3
 voters:
   - label: node1
     node_id: $($env:COMPUTERNAME.ToLower())-rqlite
-    host: $localIp
+    host: $localHost
     port: $RqliteHttpPort
     raft_port: $RqliteRaftPort
     role: voter
@@ -583,7 +664,7 @@ chaos:
     key_source: '~\.ssh\id_ed25519_forgewire'
     aliases:
       - alias: forgewire-hub
-        hostname: $localIp
+        hostname: $localHost
         user: $($env:USERNAME)
 "@
     Set-Content -Path $clusterYml -Value $clusterYmlContent -Encoding UTF8

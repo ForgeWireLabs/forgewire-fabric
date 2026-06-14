@@ -45,7 +45,7 @@
     pwsh -File update-fabric.ps1 -StageDir C:\new-binaries
 
 .EXAMPLE
-    pwsh -File update-fabric.ps1 -FromHub http://10.36.147.95:8765
+    pwsh -File update-fabric.ps1 -FromHub http://forgewire-hub:8765
 #>
 [CmdletBinding(DefaultParameterSetName = 'Stage')]
 param(

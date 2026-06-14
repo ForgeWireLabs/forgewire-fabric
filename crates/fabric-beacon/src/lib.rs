@@ -35,6 +35,13 @@
 
 #![deny(rust_2018_idioms)]
 
+pub mod presence;
+pub use presence::{
+    collect_presence, collect_presence_addrs, presence_tick, serve_presence,
+    canonical_presence_bytes, NodeAdvert, ObservedPresence, PresenceError, PresenceRecord,
+    DEFAULT_PRESENCE_PORT, PRESENCE_FRESH_SECS, PRESENCE_VERSION, ROLE_NODE, ROLE_NODE_QUERY,
+};
+
 use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
@@ -132,7 +139,7 @@ pub fn token_hash(token: &str) -> String {
     hex::encode(h.finalize())[..16].to_owned()
 }
 
-fn now_unix() -> u64 {
+pub(crate) fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -156,7 +163,7 @@ fn primary_ipv4() -> Option<Ipv4Addr> {
 /// Broadcast targets for the given port: the limited broadcast address plus, if
 /// the primary IPv4 is known, the directed /24 broadcast of that subnet (covers
 /// networks that drop 255.255.255.255 but pass directed broadcasts).
-fn broadcast_targets(port: u16) -> Vec<SocketAddr> {
+pub(crate) fn broadcast_targets(port: u16) -> Vec<SocketAddr> {
     let mut out = vec![SocketAddr::from((Ipv4Addr::BROADCAST, port))];
     if let Some(ip) = primary_ipv4() {
         let o = ip.octets();
@@ -169,7 +176,7 @@ fn broadcast_targets(port: u16) -> Vec<SocketAddr> {
     out
 }
 
-fn parse(buf: &[u8]) -> Option<Beacon> {
+pub(crate) fn parse(buf: &[u8]) -> Option<Beacon> {
     serde_json::from_slice::<Beacon>(buf).ok().filter(Beacon::is_valid)
 }
 

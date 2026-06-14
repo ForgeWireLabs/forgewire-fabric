@@ -36,6 +36,8 @@ from typing import Any
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
+from forgewire_fabric import __version__
+
 from forgewire_fabric.hub.client import (
     BlackboardClient,
     BlackboardError,
@@ -734,7 +736,7 @@ async def _run() -> None:
     # dispatch goes through signed POST /tasks/v2 (required by the Rust hub).
     session = DispatcherSession.load_or_create()
     await session.register(client)
-    server = Server("forgewire-fabric")
+    server = Server("forgewire-fabric", version=__version__)
     registry = ToolRegistry()
     _register_tools(registry, client, session)
     registry.bind(server)

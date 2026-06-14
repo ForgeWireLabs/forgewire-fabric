@@ -11,6 +11,8 @@
 
 #![deny(rust_2018_idioms)]
 
+pub mod directory;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -51,6 +53,10 @@ pub struct RunnerConfig {
     pub poll_interval: Duration,
     /// UDP port for the LAN discovery beacon.
     pub beacon_port: u16,
+    /// UDP port for the v2 node-presence responder (ADDR-1).
+    pub presence_port: u16,
+    /// Interval between unsolicited presence announces.
+    pub presence_announce: Duration,
 }
 
 impl RunnerConfig {
@@ -62,6 +68,14 @@ impl RunnerConfig {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(fabric_beacon::DEFAULT_BEACON_PORT);
+        let presence_port = std::env::var("FORGEWIRE_PRESENCE_PORT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(fabric_beacon::DEFAULT_PRESENCE_PORT);
+        let presence_announce_secs: u64 = std::env::var("FORGEWIRE_PRESENCE_ANNOUNCE_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(15);
         let token_file = std::env::var("FORGEWIRE_HUB_TOKEN_FILE").unwrap_or_else(|_| {
             if cfg!(windows) {
                 r"C:\ProgramData\forgewire\hub.token".to_owned()
@@ -118,8 +132,116 @@ impl RunnerConfig {
             max_concurrent,
             poll_interval: Duration::from_secs_f64(poll_secs),
             beacon_port,
+            presence_port,
+            presence_announce: Duration::from_secs(presence_announce_secs.max(5)),
         })
     }
+}
+
+/// Probe which fabric-relevant services are listening on this host right now.
+/// Honest advertisement: only ports that actually accept a local TCP connect
+/// make it into the presence record.
+pub fn probe_local_services() -> std::collections::BTreeMap<String, u16> {
+    use std::net::TcpStream;
+    let candidates: [(&str, u16); 4] = [
+        ("rqlite_http", 4001),
+        ("rqlite_raft", 4002),
+        ("hub", 8765),
+        ("ssh", 22),
+    ];
+    let mut out = std::collections::BTreeMap::new();
+    for (name, port) in candidates {
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        if TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok() {
+            out.insert(name.to_owned(), port);
+        }
+    }
+    out
+}
+
+/// A non-repeating query nonce: nanoseconds-since-epoch || an in-process
+/// counter, hex-encoded. Replay-proofing needs uniqueness, not cryptographic
+/// randomness (the threat is replay of an *old* captured response; a nonce
+/// that never repeats defeats it). Zero extra dependency.
+fn fresh_nonce() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let c = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{nanos:016x}{c:08x}")
+}
+
+/// Spawn the ADDR-2 directory + managed-hosts reconciler on a dedicated OS
+/// thread (blocking UDP query + file I/O). Never fatal: presence and hosts
+/// reconciliation are availability features. Each cycle actively queries
+/// (broadcast + unicast to known peers) with a fresh nonce, merges verified
+/// same-cluster records, expires the silent, and rewrites the managed hosts
+/// block so flat-hostname consumers (rqlite, SSH, DR) resolve deterministically
+/// across DHCP moves.
+pub fn spawn_directory_loop(
+    identity: &IdentityFile,
+    config: &RunnerConfig,
+) -> std::thread::JoinHandle<()> {
+    let want_token_hash = fabric_beacon::token_hash(&config.token);
+    let self_node_id = identity.id.clone();
+    let presence_port = config.presence_port;
+    let interval = config.presence_announce; // reconcile at the announce cadence
+    let directory_path = directory::default_directory_path();
+    let hosts_path = directory::default_hosts_path();
+    std::thread::spawn(move || {
+        info!(
+            hosts = %hosts_path.display(),
+            directory = %directory_path.display(),
+            "starting node directory + managed-hosts reconciler (ADDR-2)"
+        );
+        loop {
+            let _ = directory::directory_tick(
+                &directory_path,
+                &hosts_path,
+                presence_port,
+                &want_token_hash,
+                &self_node_id,
+                &fresh_nonce(),
+                directory::DEFAULT_EXPIRY,
+                Duration::from_millis(1200),
+            );
+            std::thread::sleep(interval);
+        }
+    })
+}
+
+/// Spawn the v2 node-presence responder on a dedicated OS thread (it is a
+/// blocking UDP loop). Never fatal: a bind failure (port in use, no network)
+/// is logged and the runner continues — presence is an availability feature,
+/// not a dependency. Same posture as the hub's v1 beacon.
+pub fn spawn_presence_responder(
+    identity: &IdentityFile,
+    config: &RunnerConfig,
+) -> std::thread::JoinHandle<()> {
+    let advert = fabric_beacon::NodeAdvert {
+        node_id: identity.id.clone(),
+        hostname: gethostname(),
+        services: probe_local_services(),
+        token_hash: fabric_beacon::token_hash(&config.token),
+        public_key_hex: identity.public_key_hex.clone(),
+        secret_key_hex: identity.secret_key_hex.clone(),
+    };
+    let port = config.presence_port;
+    let interval = config.presence_announce;
+    std::thread::spawn(move || {
+        info!(
+            node_id = %advert.node_id,
+            services = ?advert.services.keys().collect::<Vec<_>>(),
+            port,
+            "starting node presence responder (beacon v2)"
+        );
+        if let Err(e) = fabric_beacon::serve_presence(advert, port, interval) {
+            warn!("presence responder unavailable (continuing without): {e}");
+        }
+    })
 }
 
 /// Resolve a working hub URL: prefer a reachable configured URL, otherwise

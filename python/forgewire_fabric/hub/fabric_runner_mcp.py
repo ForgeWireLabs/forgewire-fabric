@@ -45,13 +45,14 @@ from forgewire_fabric.runner.runner_capabilities import (
     sign_payload,
 )
 from forgewire_fabric.runner.mcp_introspection import build_mcp_manifest, manifest_hash
+from forgewire_fabric import __version__
 
 
 LOGGER = logging.getLogger("forgewire_fabric.fabric_runner_mcp")
 
 PROTOCOL_VERSION = 4
 HEARTBEAT_INTERVAL_SECONDS = 20
-DEFAULT_VERSION = "0.17.0"  # Python package line (forgewire_fabric.__version__)
+DEFAULT_VERSION = __version__  # Python package line (forgewire_fabric.__version__)
 SELF_UPDATE_MIN_INTERVAL_SECONDS = 60
 
 
@@ -666,7 +667,7 @@ async def _run() -> None:
     )
     registration_task = asyncio.create_task(_register_with_retries(session))
     heartbeat_task = asyncio.create_task(_heartbeat_loop(session))
-    server = Server("forgewire-fabric-runner")
+    server = Server("forgewire-fabric-runner", version=__version__)
     registry = ToolRegistry()
     _register_tools(registry, session)
     registry.bind(server)

@@ -16,12 +16,28 @@
 //! the voter-status mutation API and can be called by any node on behalf of
 //! another node.
 //!
-//! **Demotion** (voter → non-voter): Cannot be done at runtime without
-//! restarting the target node's rqlite service. Demotion is therefore handled
-//! at install time via `-raft-non-voter` in the service startup parameters
-//! (see `scripts/install/nssm-install-rqlite.ps1`). When a 2-node cluster has
-//! two voters, the manager logs a warning and leaves correction to the operator
-//! (re-run the install script on the standby machine with the new parameters).
+//! **Demotion** (voter → non-voter, ADDR-5): the manager attempts an in-place
+//! demote of the **non-leader** voter via `POST <leader>/join` with
+//! `{"voter": false}` (the mirror of promotion), then **verifies** by
+//! re-reading `/nodes`.
+//!
+//! ⚠️ **rqlite v10 limitation (found by the 2026-06-12 live drill):** rqlite
+//! v10.0.3 does **not** expose an HTTP `/join` endpoint (it 404s; only
+//! `DELETE /remove` exists). Suffrage is fixed at *join time* via the rqlited
+//! `-raft-non-voter` flag and cannot be mutated at runtime over HTTP. So on
+//! v10 both this demote and the promotion above degrade to their verified
+//! fallback: record the needed action and log an operator/runner instruction.
+//! The deployed safety net for the 2-voter quorum trap is therefore:
+//!   1. install-time prevention (ADDR-3: the 2nd node joins as non-voter),
+//!   2. the `forgewire-fabric doctor` **Suffrage** warning,
+//!   3. **ADDR-5b (follow-up): runner-side self-heal** — a node that finds
+//!      itself a voter in a 2-node non-leader position restarts its *own*
+//!      rqlite with `-raft-non-voter` (local service control the hub lacks).
+//! This is strictly better than the old warn-only behavior (no verify, no
+//! record, no instruction), but full automatic demote needs ADDR-5b.
+//!
+//! Every suffrage change/attempt is recorded in `cluster.last_suffrage_action`
+//! (timestamp + action), surfaced by `forgewire-fabric doctor`.
 //!
 //! ## Scheduled snapshot
 //!
@@ -99,6 +115,30 @@ async fn promote_to_voter(leader_http: &str, node: &RqliteNode) -> anyhow::Resul
     }
 }
 
+/// Demote an existing voter to non-voter in place (ADDR-5).
+///
+/// `POST <leader>/join` with `{"voter": false}` maps to Raft `AddNonvoter`,
+/// which forces an existing voter to non-voter status without a restart — the
+/// mirror of [`promote_to_voter`]. The config change commits under current
+/// quorum, then quorum drops by one.
+async fn demote_to_nonvoter(leader_http: &str, node: &RqliteNode) -> anyhow::Result<()> {
+    let body = serde_json::json!({
+        "id":    node.id,
+        "addr":  node.addr,
+        "voter": false,
+    });
+    let r = http_client()
+        .post(format!("{leader_http}/join"))
+        .json(&body).send().await?;
+    if r.status().is_success() {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "demote_to_nonvoter({}) → HTTP {}", node.id, r.status()
+        ))
+    }
+}
+
 async fn trigger_snapshot(base_url: &str) {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
@@ -113,105 +153,187 @@ async fn trigger_snapshot(base_url: &str) {
 
 // ── topology logic ────────────────────────────────────────────────────────────
 
-async fn apply_topology_from(base_url: &str, nodes: &[RqliteNode]) -> anyhow::Result<Option<String>> {
-    let total = nodes.len();
-    if total == 0 { return Ok(None); }
+/// The suffrage action the topology rules call for. Pure decision, separated
+/// from execution so it is unit-testable without a live cluster (the ADDR-5
+/// rules are the load-bearing part — a wrong decision can strand the quorum
+/// trap or force an election).
+#[derive(Debug, Clone, PartialEq)]
+enum TopologyAction {
+    /// Correct topology — nothing to do.
+    Nothing,
+    /// Promote these reachable non-voters to voter (3+-node full quorum).
+    Promote(Vec<String>),
+    /// Demote this non-leader voter to non-voter (2-node quorum-trap fix).
+    Demote(String),
+    /// Leaderless recovery: promote this reachable non-voter.
+    EmergencyPromote(String),
+}
 
-    let voters:     Vec<&RqliteNode> = nodes.iter().filter(|n| n.voter).collect();
+/// Pure topology decision from a node snapshot. See the module table.
+fn decide_topology(nodes: &[RqliteNode]) -> TopologyAction {
+    let total = nodes.len();
+    if total == 0 {
+        return TopologyAction::Nothing;
+    }
+    let voters: Vec<&RqliteNode> = nodes.iter().filter(|n| n.voter).collect();
     let non_voters: Vec<&RqliteNode> = nodes.iter().filter(|n| !n.voter).collect();
+
+    match total {
+        // Single node: stable leader.
+        1 => TopologyAction::Nothing,
+
+        // Two nodes → 1 voter (leader) + 1 non-voter (standby).
+        2 => match voters.len() {
+            1 => TopologyAction::Nothing,
+            // The quorum trap: demote the NON-LEADER voter (never the leader,
+            // which would force an election). Demote only if it is reachable.
+            2 => match nodes.iter().find(|n| n.voter && !n.leader && n.reachable) {
+                Some(target) => TopologyAction::Demote(target.id.clone()),
+                None => TopologyAction::Nothing, // can't safely act this cycle
+            },
+            // Leaderless: promote a reachable non-voter to recover.
+            0 => match non_voters.iter().find(|n| n.reachable) {
+                Some(n) => TopologyAction::EmergencyPromote(n.id.clone()),
+                None => TopologyAction::Nothing,
+            },
+            _ => TopologyAction::Nothing,
+        },
+
+        // Three or more nodes → all voters for full quorum.
+        _ => {
+            let to_promote: Vec<String> = non_voters
+                .iter()
+                .filter(|n| n.reachable)
+                .map(|n| n.id.clone())
+                .collect();
+            if to_promote.is_empty() {
+                TopologyAction::Nothing
+            } else {
+                TopologyAction::Promote(to_promote)
+            }
+        }
+    }
+}
+
+async fn apply_topology_from(base_url: &str, nodes: &[RqliteNode]) -> anyhow::Result<Option<String>> {
+    let voters = nodes.iter().filter(|n| n.voter).count();
     let leader = nodes.iter().find(|n| n.leader);
+    let leader_http = leader.map(|l| l.api_addr.as_str()).unwrap_or(base_url);
 
     debug!(
-        total, voters = voters.len(), non_voters = non_voters.len(),
+        total = nodes.len(), voters, non_voters = nodes.len() - voters,
         leader = ?leader.map(|l| &l.id),
         "cluster topology check"
     );
 
-    match total {
-        // ── Single node ────────────────────────────────────────────────────
-        1 => {
-            debug!("single-node cluster: stable leader, nothing to do");
-            Ok(None)
-        }
+    match decide_topology(nodes) {
+        TopologyAction::Nothing => Ok(None),
 
-        // ── Two nodes ──────────────────────────────────────────────────────
-        // Target: 1 voter (leader) + 1 non-voter (hot standby).
-        2 => {
-            match voters.len() {
-                1 => {
-                    // Already correct.
-                    debug!("2-node cluster: correct topology (1 voter, 1 standby)");
-                    Ok(None)
-                }
-                2 => {
-                    // Both are voters. This is stable with generous Raft timeouts
-                    // but ideally the non-leader should be a non-voter for maximum
-                    // stability. Runtime demotion requires a service restart on the
-                    // standby; the install script handles this on next deploy.
-                    warn!(
-                        "2-node cluster has 2 voters — Raft elections may occur on slow heartbeats. \
-                         Re-run nssm-install-rqlite.ps1 on the standby machine to make it a \
-                         non-voter (hot standby). The hub's cluster manager cannot demote a \
-                         running node without a service restart."
-                    );
-                    Ok(None)
-                }
-                0 => {
-                    // No voters — cluster is leaderless. Attempt recovery by
-                    // promoting the first reachable non-voter.
-                    warn!("2-node cluster has 0 voters — attempting emergency recovery");
-                    if let Some(node) = non_voters.iter().find(|n| n.reachable) {
-                        let target_http = &node.api_addr;
-                        info!("emergency: promoting {} to voter for recovery", node.id);
-                        promote_to_voter(target_http, node).await?;
-                        Ok(Some(format!("emergency recovery: promoted {} to voter", node.id)))
-                    } else {
-                        Err(anyhow::anyhow!("2-node cluster has 0 voters and no reachable nodes"))
-                    }
-                }
-                _ => Ok(None),
-            }
-        }
-
-        // ── Three or more nodes ────────────────────────────────────────────
-        // Target: all voters for full Raft quorum.
-        n => {
-            if non_voters.is_empty() {
-                debug!("{n}-node cluster: all voters, full quorum active");
-                return Ok(None);
-            }
-
-            // Promote non-voters to voters. Use the leader's HTTP endpoint.
-            let leader_http = leader
-                .map(|l| l.api_addr.as_str())
-                .unwrap_or(base_url);
-
+        TopologyAction::Promote(ids) => {
             let mut promoted = Vec::new();
-            for node in &non_voters {
-                if !node.reachable {
-                    warn!("skipping promotion of {} — not reachable", node.id);
-                    continue;
-                }
-                info!("promoting {} to voter ({n}-node cluster, full quorum)", node.id);
-                match promote_to_voter(leader_http, node).await {
-                    Ok(()) => {
-                        info!("{} promoted to voter", node.id);
-                        promoted.push(node.id.clone());
+            let mut failed = false;
+            for id in &ids {
+                if let Some(node) = nodes.iter().find(|n| &n.id == id) {
+                    info!("promoting {} to voter ({}-node cluster, full quorum)", id, nodes.len());
+                    match promote_to_voter(leader_http, node).await {
+                        Ok(()) => promoted.push(id.clone()),
+                        // rqlite v10 has no HTTP /join → this 404s. Fall back to
+                        // guidance instead of silently failing every cycle.
+                        Err(e) => { warn!("promotion of {id} failed: {e}"); failed = true; }
                     }
-                    Err(e) => warn!("promotion of {} failed: {e}", node.id),
                 }
             }
-
-            if promoted.is_empty() {
+            if !promoted.is_empty() {
+                let action = format!("promoted to voter: {}", promoted.join(", "));
+                record_suffrage_action(base_url, &action).await;
+                Ok(Some(action))
+            } else if failed {
+                warn!(
+                    "could not promote non-voter(s) to voter over HTTP (rqlite v10 has no \
+                     runtime /join). OPERATOR/ADDR-5b: the standby must restart its rqlite \
+                     as a voter to reach full quorum."
+                );
+                record_suffrage_action(base_url, "promote-to-voter unsupported on this rqlite (needs node restart)").await;
                 Ok(None)
             } else {
-                Ok(Some(format!(
-                    "{n}-node cluster: promoted to voter: {}",
-                    promoted.join(", ")
-                )))
+                Ok(None)
+            }
+        }
+
+        TopologyAction::EmergencyPromote(id) => {
+            let node = nodes.iter().find(|n| n.id == id)
+                .ok_or_else(|| anyhow::anyhow!("emergency target vanished"))?;
+            warn!("2-node cluster leaderless — emergency promoting {id} to voter");
+            promote_to_voter(&node.api_addr, node).await?;
+            let action = format!("emergency recovery: promoted {id} to voter");
+            record_suffrage_action(base_url, &action).await;
+            Ok(Some(action))
+        }
+
+        TopologyAction::Demote(id) => {
+            let node = nodes.iter().find(|n| n.id == id)
+                .ok_or_else(|| anyhow::anyhow!("demote target vanished"))?;
+            info!("2-node cluster has 2 voters (quorum trap) — demoting non-leader voter {id} to standby");
+            match demote_to_nonvoter(leader_http, node).await {
+                Ok(()) => {
+                    // Verify rqlite actually honored the in-place demote.
+                    let demoted = match fetch_nodes(base_url).await {
+                        Ok(after) => after.iter().any(|n| n.id == id && !n.voter),
+                        Err(_) => false,
+                    };
+                    if demoted {
+                        let action = format!("demoted {id} to non-voter (quorum-trap fix)");
+                        record_suffrage_action(base_url, &action).await;
+                        Ok(Some(action))
+                    } else {
+                        warn!(
+                            "in-place demote of {id} did not take effect (rqlite v10 has no \
+                             runtime suffrage mutation). 2-VOTER QUORUM TRAP ACTIVE — losing \
+                             either node halts writes. ADDR-5b/OPERATOR: restart {id}'s rqlite \
+                             with -raft-non-voter (re-run nssm-install-rqlite.ps1 on the standby)."
+                        );
+                        record_suffrage_action(base_url, &format!(
+                            "2-voter trap: demote of {id} needs node restart (rqlite v10, ADDR-5b)"
+                        )).await;
+                        Ok(None)
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "demote of {id} over HTTP failed: {e} (rqlite v10 has no /join). \
+                         2-VOTER QUORUM TRAP ACTIVE. ADDR-5b/OPERATOR: restart {id}'s rqlite \
+                         with -raft-non-voter (re-run nssm-install-rqlite.ps1 on the standby)."
+                    );
+                    record_suffrage_action(base_url, &format!(
+                        "2-voter trap: demote of {id} needs node restart (rqlite v10, ADDR-5b)"
+                    )).await;
+                    Ok(None)
+                }
             }
         }
     }
+}
+
+const SUFFRAGE_ACTION_LABEL: &str = "cluster.last_suffrage_action";
+
+/// Record the most recent suffrage change as an operator-visible label
+/// (timestamp + action). Surfaced by `forgewire-fabric doctor`. Best-effort.
+async fn record_suffrage_action(base_url: &str, action: &str) {
+    let payload = serde_json::json!({ "action": action, "at": chrono_now_iso() });
+    let value_json = match serde_json::to_string(&payload) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let _ = http_client()
+        .post(format!("{base_url}/db/execute"))
+        .json(&serde_json::json!([[
+            "INSERT INTO labels (key, value_json, updated_at) VALUES (?, ?, ?) \
+             ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
+            SUFFRAGE_ACTION_LABEL,
+            value_json,
+            chrono_now_iso(),
+        ]]))
+        .send().await;
 }
 
 // ── preferred leader (3+ node case) ──────────────────────────────────────────
@@ -320,6 +442,94 @@ async fn maybe_transfer_leadership(base_url: &str, nodes: &[RqliteNode]) -> anyh
 }
 
 // ── entry point ───────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(id: &str, voter: bool, leader: bool, reachable: bool) -> RqliteNode {
+        RqliteNode {
+            id: id.to_owned(),
+            api_addr: format!("http://{id}:4001"),
+            addr: format!("{id}:4002"),
+            voter,
+            reachable,
+            leader,
+        }
+    }
+
+    #[test]
+    fn single_node_is_stable() {
+        assert_eq!(decide_topology(&[node("a", true, true, true)]), TopologyAction::Nothing);
+    }
+
+    #[test]
+    fn two_nodes_one_voter_is_correct() {
+        let nodes = [node("a", true, true, true), node("b", false, false, true)];
+        assert_eq!(decide_topology(&nodes), TopologyAction::Nothing);
+    }
+
+    #[test]
+    fn two_voters_demotes_the_non_leader() {
+        // The quorum trap: must demote the NON-LEADER voter, never the leader.
+        let nodes = [node("leader", true, true, true), node("standby", true, false, true)];
+        assert_eq!(decide_topology(&nodes), TopologyAction::Demote("standby".to_owned()));
+    }
+
+    #[test]
+    fn two_voters_never_demotes_when_non_leader_unreachable() {
+        // If the candidate is unreachable we cannot safely commit the change.
+        let nodes = [node("leader", true, true, true), node("standby", true, false, false)];
+        assert_eq!(decide_topology(&nodes), TopologyAction::Nothing);
+    }
+
+    #[test]
+    fn two_nodes_leaderless_emergency_promotes() {
+        let nodes = [node("a", false, false, true), node("b", false, false, false)];
+        assert_eq!(decide_topology(&nodes), TopologyAction::EmergencyPromote("a".to_owned()));
+    }
+
+    #[test]
+    fn three_nodes_promotes_reachable_non_voters() {
+        let nodes = [
+            node("a", true, true, true),
+            node("b", false, false, true),
+            node("c", false, false, true),
+        ];
+        match decide_topology(&nodes) {
+            TopologyAction::Promote(ids) => {
+                assert_eq!(ids.len(), 2);
+                assert!(ids.contains(&"b".to_owned()) && ids.contains(&"c".to_owned()));
+            }
+            other => panic!("expected Promote, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn three_nodes_skips_unreachable_non_voter() {
+        let nodes = [
+            node("a", true, true, true),
+            node("b", false, false, false), // unreachable — don't promote
+            node("c", true, false, true),
+        ];
+        assert_eq!(decide_topology(&nodes), TopologyAction::Nothing);
+    }
+
+    #[test]
+    fn three_nodes_all_voters_is_stable() {
+        let nodes = [
+            node("a", true, true, true),
+            node("b", true, false, true),
+            node("c", true, false, true),
+        ];
+        assert_eq!(decide_topology(&nodes), TopologyAction::Nothing);
+    }
+
+    #[test]
+    fn empty_is_nothing() {
+        assert_eq!(decide_topology(&[]), TopologyAction::Nothing);
+    }
+}
 
 /// Spawn the cluster topology manager as a background task.
 ///

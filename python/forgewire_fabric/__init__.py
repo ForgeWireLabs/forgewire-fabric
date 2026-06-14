@@ -30,10 +30,14 @@ __all__ = [
 ]
 
 # Python package version line — independent of and monotonic across the Rust
-# daemon line (Cargo workspace 0.8.0). M2.9 touched the Python surface
-# (loom signing, signed stdin, hub parity) → 0.16.0 → 0.17.0. Never move this
-# down to "align" with Rust; the two artifacts are versioned separately.
-__version__ = "0.17.0"
+# daemon line (Cargo workspace 0.9.0). M2.9 touched the Python surface
+# (loom signing, signed stdin, hub parity) → 0.16.0 → 0.17.0. M2.8.9/M2.8.10
+# removed the MCP shims + /tasks/claim-v2 alias and hard-rejected missing kind
+# (breaking the dispatch surface), and the runner-identity loader gained
+# cross-runtime schema support → 0.17.0 → 0.18.0. Never move this down to
+# "align" with Rust; the two artifacts are versioned separately. See
+# VERSIONING.md for the full scheme.
+__version__ = "0.18.0"
 
 # Compat envelope for the ``forgewire-runtime`` (PyO3) wheel. The hub and
 # runner check this at import time and log a loud warning if a mismatching

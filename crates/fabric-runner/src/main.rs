@@ -45,6 +45,12 @@ async fn main() {
     let client = Arc::new(HubClient::new(&config.hub_url, &config.token));
     let config = Arc::new(config);
 
+    // v2 node presence (ADDR-1): signed, DHCP-proof, never fatal.
+    let _presence = fabric_runner::spawn_presence_responder(&identity, &config);
+    // Node directory + managed-hosts reconciler (ADDR-2): keeps flat-hostname
+    // resolution deterministic across DHCP moves with no service restarts.
+    let _directory = fabric_runner::spawn_directory_loop(&identity, &config);
+
     // Register (retries until success)
     register_with_retries(&client, &identity, &config).await;
 

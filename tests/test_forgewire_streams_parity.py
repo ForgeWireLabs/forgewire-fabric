@@ -51,6 +51,9 @@ _BASE_TASK = {
     "scope_globs": ["src/**"],
     "base_commit": "a" * 40,
     "branch": "main",
+    # M2.8.9: kind is hard-required (missing kind -> 400); the legacy
+    # /tasks/claim path used below serves kind='agent' tasks only.
+    "kind": "agent",
 }
 
 
@@ -74,7 +77,8 @@ def _make_client() -> TestClient:
 
 def _setup_running_task(client: TestClient) -> int:
     """Dispatch, claim, and start a task. Returns the claimed task_id."""
-    client.post("/tasks", json=_BASE_TASK, headers=BEARER)
+    dispatched = client.post("/tasks", json=_BASE_TASK, headers=BEARER)
+    assert dispatched.status_code == 200, f"dispatch failed: {dispatched.status_code} {dispatched.text}"
     claim = client.post(
         "/tasks/claim",
         json={"worker_id": "bench-worker", "hostname": "bench-host"},

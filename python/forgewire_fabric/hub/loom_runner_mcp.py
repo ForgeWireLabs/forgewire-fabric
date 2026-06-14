@@ -59,11 +59,13 @@ from forgewire_fabric.runner.runner_capabilities import (
 )
 
 
+from forgewire_fabric import __version__
+
 LOGGER = logging.getLogger("forgewire_fabric.loom_runner_mcp")
 
 PROTOCOL_VERSION = 4
 HEARTBEAT_INTERVAL_SECONDS = 20
-DEFAULT_VERSION = "0.17.0"  # Python package line (forgewire_fabric.__version__)
+DEFAULT_VERSION = __version__  # Python package line (forgewire_fabric.__version__)
 
 
 def _truthy(value: str | None) -> bool:
@@ -611,7 +613,7 @@ async def _run() -> None:
     registration_task = asyncio.create_task(_register_with_retries(session))
     heartbeat_task = asyncio.create_task(_heartbeat_loop(session))
     stdin_poll_task = asyncio.create_task(_stdin_drain_loop(session))
-    server = Server("forgewire-loom-runner")
+    server = Server("forgewire-loom-runner", version=__version__)
     registry = ToolRegistry()
     _register_tools(registry, session)
     registry.bind(server)

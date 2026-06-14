@@ -206,18 +206,18 @@ fn pick_task<'py>(
     for (i, item) in tasks.iter().enumerate() {
         seen += 1;
         let d = item
-            .downcast::<PyDict>()
+            .cast::<PyDict>()
             .map_err(|_| PyValueError::new_err("each task must be a dict"))?;
         if task_matches(d, &runner_view)? {
             idx_match = Some(i as i64);
             break;
         }
     }
-    let idx_py: PyObject = match idx_match {
+    let idx_py: Py<PyAny> = match idx_match {
         Some(i) => i.into_pyobject(py)?.into_any().unbind(),
         None => py.None(),
     };
-    let seen_py: PyObject = seen.into_pyobject(py)?.into_any().unbind();
+    let seen_py: Py<PyAny> = seen.into_pyobject(py)?.into_any().unbind();
     PyTuple::new(py, [idx_py, seen_py])
 }
 

@@ -289,6 +289,21 @@ if ($KeepData) {
             catch { Write-Warn2 "could not fully remove $d ($($_.Exception.Message)) - a file may still be locked" }
         }
     }
+
+    # install-fabric.ps1 also mirrors the bearer token to the per-user home dir
+    # ($HOME\.forgewire\hub.token) so the VS Code / MCP client can read it without
+    # admin. A full uninstall must clear that too, otherwise a stale token from a
+    # previous cluster lingers across a "fresh" reinstall. Remove the token (and
+    # the .forgewire dir if it is left empty).
+    $userForgewire = Join-Path $env:USERPROFILE ".forgewire"
+    $userToken     = Join-Path $userForgewire "hub.token"
+    if (Test-Path $userToken) {
+        try { Remove-Item -Path $userToken -Force -ErrorAction Stop; Write-Ok "removed $userToken" }
+        catch { Write-Warn2 "could not remove $userToken ($($_.Exception.Message))" }
+    }
+    if ((Test-Path $userForgewire) -and -not (Get-ChildItem -Force $userForgewire -ErrorAction SilentlyContinue)) {
+        try { Remove-Item -Path $userForgewire -Force -ErrorAction Stop; Write-Ok "removed empty $userForgewire" } catch {}
+    }
 }
 
 # ── 8. VS Code extension (optional) ───────────────────────────────────────────

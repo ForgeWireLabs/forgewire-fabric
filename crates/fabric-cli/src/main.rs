@@ -576,6 +576,32 @@ async fn main() {
                                 } else {
                                     println!("OK  (leader={leader_addr}, state={state})");
                                 }
+
+                                // ── Suffrage check (ADDR-5): a 2-voter cluster is a
+                                // quorum trap — losing either node halts writes.
+                                let nodes_url = format!("http://{rqlite_host}:{rqlite_port}/nodes?nonvoters");
+                                if let Ok(nr) = reqwest::get(&nodes_url).await {
+                                    if let Ok(nb) = nr.json::<serde_json::Value>().await {
+                                        if let Some(map) = nb.as_object() {
+                                            let total = map.len();
+                                            let voters = map.values()
+                                                .filter(|v| v.get("voter").and_then(|x| x.as_bool()).unwrap_or(false))
+                                                .count();
+                                            print!("Suffrage:  ");
+                                            if total == 2 && voters == 2 {
+                                                println!("WARN — 2-voter cluster (quorum=2): losing EITHER node halts writes.");
+                                                println!("  The cluster manager auto-demotes the standby to non-voter; if it");
+                                                println!("  persists, re-run nssm-install-rqlite.ps1 on the standby. Add a 3rd");
+                                                println!("  node for full fault tolerance (all become voters).");
+                                                warnings += 1;
+                                            } else if total == 1 {
+                                                println!("OK   (single-node leader; add nodes for HA)");
+                                            } else {
+                                                println!("OK   ({voters} voter(s) / {total} node(s))");
+                                            }
+                                        }
+                                    }
+                                }
                             } else {
                                 println!("OK  (readyz=200, status parse failed)");
                             }

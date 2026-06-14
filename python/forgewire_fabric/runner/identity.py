@@ -114,11 +114,33 @@ def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-_IDENTITY_FIELDS = frozenset({"runner_id", "public_key", "private_key"})
+# Canonical field names mapped to the aliases we accept on disk. The native
+# Rust runner (crates/fabric-runner) is the authoritative writer and emits the
+# ``id`` / ``public_key_hex`` / ``secret_key_hex`` form; the Python sidecar
+# historically wrote the unsuffixed ``runner_id`` / ``public_key`` /
+# ``private_key`` form. We read both so a single identity file works across
+# both runtimes instead of the sidecar rejecting what the runner produced.
+_IDENTITY_ALIASES = {
+    "runner_id": ("runner_id", "id"),
+    "public_key": ("public_key", "public_key_hex"),
+    "private_key": ("private_key", "secret_key_hex"),
+}
+
+
+def _first_present(data: dict, names: tuple[str, ...]) -> str | None:
+    for name in names:
+        if name in data and str(data[name]).strip():
+            return str(data[name]).strip()
+    return None
 
 
 def _validate_identity_record(data: object) -> dict[str, str]:
     """Validate the on-disk identity JSON and return a normalized dict.
+
+    Accepts both the Python-native schema (``runner_id`` / ``public_key`` /
+    ``private_key``) and the Rust runtime schema (``id`` / ``public_key_hex``
+    / ``secret_key_hex``); the native runner is the authoritative writer, so
+    the sidecar must read whatever it produces.
 
     Identity files are operator-portable (used by ``runner identity import``
     when migrating a runner role to a new machine); we therefore validate
@@ -126,14 +148,18 @@ def _validate_identity_record(data: object) -> dict[str, str]:
     """
     if not isinstance(data, dict):
         raise ValueError("identity file must contain a JSON object")
-    missing = _IDENTITY_FIELDS - data.keys()
+    resolved = {
+        canon: _first_present(data, names)
+        for canon, names in _IDENTITY_ALIASES.items()
+    }
+    missing = sorted(canon for canon, value in resolved.items() if not value)
     if missing:
-        raise ValueError(f"identity file missing required fields: {sorted(missing)}")
-    runner_id = str(data["runner_id"]).strip()
-    public_key = str(data["public_key"]).strip().lower()
-    private_key = str(data["private_key"]).strip().lower()
-    # Parse as UUID to reject obviously malformed ids.
-    uuid.UUID(runner_id)
+        raise ValueError(f"identity file missing required fields: {missing}")
+    # runner_id may be a UUID (Python-minted) or a stable host-derived id
+    # (Rust-minted, e.g. "DESKTOP-228U8GL-runner"); accept any non-empty token.
+    runner_id = resolved["runner_id"]
+    public_key = resolved["public_key"].lower()
+    private_key = resolved["private_key"].lower()
     if len(public_key) != 64 or len(private_key) != 64:
         raise ValueError("public/private key must be 32 raw bytes (64 hex chars)")
     bytes.fromhex(public_key)

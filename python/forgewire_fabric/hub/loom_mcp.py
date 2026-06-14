@@ -34,6 +34,8 @@ from typing import Any
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 
+from forgewire_fabric import __version__
+
 from forgewire_fabric.hub.client import (
     BlackboardClient,
     BlackboardError,
@@ -605,7 +607,7 @@ async def _run() -> None:
     client = load_client_from_env()
     session = DispatcherSession.load_or_create()
     await session.register(client)
-    server = Server("forgewire-loom")
+    server = Server("forgewire-loom", version=__version__)
     registry = ToolRegistry()
     _register_tools(registry, client, session)
     registry.bind(server)
