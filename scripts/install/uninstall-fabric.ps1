@@ -311,7 +311,9 @@ if ($RemoveVsix) {
     Write-Step "Removing VS Code extension"
     $code = (Get-Command code -ErrorAction SilentlyContinue).Source
     if ($code) {
-        $exts = & $code --list-extensions 2>$null | Where-Object { $_ -match '^digitalhallucinations\.forgewire' }
+        # Match both the current (forgewirelabs) and legacy (digitalhallucinations)
+        # publisher so upgrades from an old-publisher install are also cleaned up.
+        $exts = & $code --list-extensions 2>$null | Where-Object { $_ -match '^(forgewirelabs|digitalhallucinations)\.forgewire' }
         foreach ($e in $exts) {
             try { & $code --uninstall-extension $e 2>$null | Out-Null; Write-Ok "uninstalled $e" } catch { Write-Warn2 "could not uninstall $e" }
         }
