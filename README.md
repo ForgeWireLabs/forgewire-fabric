@@ -58,7 +58,7 @@ ForgeWire Fabric exists for operators who want remote agents and private compute
 Build the workspace and generate identities:
 
 ```bash
-git clone https://github.com/DigitalHallucinations/forgewire-fabric.git
+git clone https://github.com/ForgeWireLabs/forgewire-fabric.git
 cd forgewire-fabric
 cargo build --release
 
@@ -162,7 +162,7 @@ Every row links to the code, tests, or docs that back it.
 <a name="service-install"></a>Windows is the most validated long-running path today. Download the installer, **read it**, then run it:
 
 ```powershell
-iwr https://raw.githubusercontent.com/DigitalHallucinations/forgewire-fabric/main/scripts/install/install-fabric.ps1 -OutFile install-fabric.ps1
+iwr https://raw.githubusercontent.com/ForgeWireLabs/forgewire-fabric/main/scripts/install/install-fabric.ps1 -OutFile install-fabric.ps1
 # inspect install-fabric.ps1, then:
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\install-fabric.ps1 -WorkspaceRoot C:\Projects\your-repo
 ```
@@ -206,7 +206,7 @@ Two operational notes:
 - The hub speaks plain HTTP by default. **Put TLS in front of any hub exposed beyond a trusted LAN** — see [docs/operations/tls.md](docs/operations/tls.md).
 - The bearer token authorizes dispatch. Treat it like an SSH private key.
 
-Found a vulnerability? Please report it privately via [GitHub Security Advisories](https://github.com/DigitalHallucinations/forgewire-fabric/security/advisories/new) rather than a public issue — see [SECURITY.md](SECURITY.md).
+Found a vulnerability? Please report it privately via [GitHub Security Advisories](https://github.com/ForgeWireLabs/forgewire-fabric/security/advisories/new) rather than a public issue — see [SECURITY.md](SECURITY.md).
 
 ---
 

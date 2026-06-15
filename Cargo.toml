@@ -29,7 +29,7 @@ members = [
 version = "0.9.0"
 edition = "2021"
 license = "Apache-2.0"
-repository = "https://github.com/DigitalHallucinations/forgewire-fabric"
+repository = "https://github.com/ForgeWireLabs/forgewire-fabric"
 authors = ["ForgeWire Contributors"]
 
 [workspace.dependencies]

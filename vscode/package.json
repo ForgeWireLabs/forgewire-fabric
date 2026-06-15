@@ -22,12 +22,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/DigitalHallucinations/forgewire.git",
+    "url": "https://github.com/ForgeWireLabs/forgewire.git",
     "directory": "vscode"
   },
-  "homepage": "https://github.com/DigitalHallucinations/forgewire",
+  "homepage": "https://github.com/ForgeWireLabs/forgewire",
   "bugs": {
-    "url": "https://github.com/DigitalHallucinations/forgewire/issues"
+    "url": "https://github.com/ForgeWireLabs/forgewire/issues"
   },
   "main": "./dist/extension.js",
   "activationEvents": [

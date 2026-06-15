@@ -1,6 +1,6 @@
 [Unit]
 Description=ForgeWire Hub (signed remote dispatch fabric)
-Documentation=https://github.com/DigitalHallucinations/forgewire-fabric
+Documentation=https://github.com/ForgeWireLabs/forgewire-fabric
 After=network-online.target
 Wants=network-online.target
 

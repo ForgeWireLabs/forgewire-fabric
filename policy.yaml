@@ -109,7 +109,7 @@ egress_allowlist:
 #
 # Type: list[str]   Default: []
 approvers:
-  - "github:DigitalHallucinations"
+  - "github:ForgeWireLabs"
 
 # Minimum number of approvers required before a held task resumes.
 # Currently enforced as "at least one consume_approval call succeeds."

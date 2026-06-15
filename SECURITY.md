@@ -3,7 +3,7 @@
 ## Reporting a vulnerability
 
 Please report vulnerabilities **privately** via
-[GitHub Security Advisories](https://github.com/DigitalHallucinations/forgewire-fabric/security/advisories/new)
+[GitHub Security Advisories](https://github.com/ForgeWireLabs/forgewire-fabric/security/advisories/new)
 rather than opening a public issue. Include the affected component (hub,
 runner, CLI, MCP server, installer), a reproduction, and the impact as you
 understand it. You will get an acknowledgement, and a fix or mitigation will

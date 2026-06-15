@@ -1,6 +1,6 @@
 # ForgeWire Fabric VS Code Extension
 
-> Drive a [ForgeWire](https://github.com/DigitalHallucinations/forgewire-fabric) compute fabric from inside VS Code. Cross-platform (Windows / macOS / Linux). Apache-2.0.
+> Drive a [ForgeWire](https://github.com/ForgeWireLabs/forgewire-fabric) compute fabric from inside VS Code. Cross-platform (Windows / macOS / Linux). Apache-2.0.
 
 ForgeWire turns any cluster of machines into a signed, scope-bounded task fabric. This extension is the GUI for it: connect to a hub, watch runners and tasks live, dispatch sealed briefs, and tail per-task stream output — all without leaving the editor. It can also start a hub or a runner locally with two clicks, so any computer running VS Code can join a cluster regardless of OS.
 
@@ -107,4 +107,4 @@ All commands are under the **ForgeWire** category in the command palette:
 
 ## Reporting issues
 
-Please file issues at <https://github.com/DigitalHallucinations/forgewire-fabric/issues>. Include the extension version, VS Code version, and the OS of the failing machine.
+Please file issues at <https://github.com/ForgeWireLabs/forgewire-fabric/issues>. Include the extension version, VS Code version, and the OS of the failing machine.

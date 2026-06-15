@@ -1,6 +1,6 @@
 [Unit]
 Description=ForgeWire Runner (claims signed remote dispatches)
-Documentation=https://github.com/DigitalHallucinations/forgewire-fabric
+Documentation=https://github.com/ForgeWireLabs/forgewire-fabric
 After=network-online.target
 Wants=network-online.target
 

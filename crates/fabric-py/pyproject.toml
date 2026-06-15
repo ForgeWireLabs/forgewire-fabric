@@ -18,8 +18,8 @@ classifiers = [
 dynamic = ["version"]
 
 [project.urls]
-Homepage = "https://github.com/DigitalHallucinations/forgewire-fabric"
-Repository = "https://github.com/DigitalHallucinations/forgewire-fabric"
+Homepage = "https://github.com/ForgeWireLabs/forgewire-fabric"
+Repository = "https://github.com/ForgeWireLabs/forgewire-fabric"
 
 [tool.maturin]
 manifest-path = "Cargo.toml"

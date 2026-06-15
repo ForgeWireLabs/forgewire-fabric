@@ -30,7 +30,7 @@ MCP-capable agent on any machine that can reach the hub.
 The deployed substrate is the native Rust binaries. Either build them:
 
 ```bash
-git clone https://github.com/DigitalHallucinations/forgewire-fabric.git
+git clone https://github.com/ForgeWireLabs/forgewire-fabric.git
 cd forgewire-fabric
 cargo build --release   # forgewire-hub, forgewire-runner, forgewire-loom-runner, forgewire-fabric-cli
 ```
