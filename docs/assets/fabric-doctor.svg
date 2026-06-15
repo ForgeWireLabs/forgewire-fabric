@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 931 536" width="931" height="536" role="img" aria-label="forgewire-fabric - operator CLI terminal output">
+  <defs><style>
+    text{font-family:'Cascadia Code','SF Mono','Consolas','Liberation Mono',monospace;font-size:15px;white-space:pre;}
+    .base{fill:#c3ccd9;} .ok{fill:#34d399;} .warn{fill:#fbbf24;} .fail{fill:#f87171;}
+    .prompt{fill:#34d399;font-weight:700;} .cmd{fill:#f1f5f9;font-weight:600;} .head{fill:#38bdf8;font-weight:700;} .dim{fill:#5b6b86;}
+  </style></defs>
+  <rect width="931" height="536" rx="12" fill="#0b1220"/>
+  <rect width="931" height="40" rx="12" fill="#0e1729"/><rect y="28" width="931" height="12" fill="#0e1729"/>
+  <circle cx="22" cy="20" r="6" fill="#f87171"/><circle cx="44" cy="20" r="6" fill="#fbbf24"/><circle cx="66" cy="20" r="6" fill="#34d399"/>
+  <text x="465.5" y="25" text-anchor="middle" class="dim" style="font-size:13px">forgewire-fabric - operator CLI</text>
+  <text x="28" y="56" xml:space="preserve" class="base"><tspan class="prompt">$</tspan> <tspan class="cmd">forgewire-fabric-cli doctor</tspan></text>
+  <text x="28" y="80" xml:space="preserve" class="base"></text>
+  <text x="28" y="104" xml:space="preserve" class="base">ForgeWire Fabric Doctor</text>
+  <text x="28" y="128" xml:space="preserve" class="base"><tspan class="dim">=======================</tspan></text>
+  <text x="28" y="152" xml:space="preserve" class="base"></text>
+  <text x="28" y="176" xml:space="preserve" class="base">rqlite (127.0.0.1:4001):  <tspan class="ok">OK</tspan>  (leader=hub-node:4002, state=Follower)</text>
+  <text x="28" y="200" xml:space="preserve" class="base">Hub (http://127.0.0.1:8765):  <tspan class="ok">OK</tspan>   (v0.9.0, proto=4, backend=rqlite:127.0.0.1:4001, runtime=rust)</text>
+  <text x="28" y="224" xml:space="preserve" class="base">  <tspan class="warn">WARN</tspan> sidecar_integrity=trusted_bearer: out-of-band fields are bearer-gated only.</text>
+  <text x="28" y="248" xml:space="preserve" class="base">       Upgrade dispatchers to protocol v3 to close this gap.</text>
+  <text x="28" y="272" xml:space="preserve" class="base">Token (~/.forgewire/hub.token):  <tspan class="ok">OK</tspan>   (64 chars)</text>
+  <text x="28" y="296" xml:space="preserve" class="base">Identity (runner_identity.json):  <tspan class="ok">OK</tspan>   (workstation-runner, purpose=runner, pk=79fca6c5...)</text>
+  <text x="28" y="320" xml:space="preserve" class="base">Identity (hub_identity.json):  not found (optional)</text>
+  <text x="28" y="344" xml:space="preserve" class="base"></text>
+  <text x="28" y="368" xml:space="preserve" class="base">Native binaries:</text>
+  <text x="28" y="392" xml:space="preserve" class="base">  forgewire-hub              <tspan class="ok">OK</tspan></text>
+  <text x="28" y="416" xml:space="preserve" class="base">  forgewire-runner           <tspan class="ok">OK</tspan></text>
+  <text x="28" y="440" xml:space="preserve" class="base">  forgewire-fabric-cli       <tspan class="ok">OK</tspan></text>
+  <text x="28" y="464" xml:space="preserve" class="base"></text>
+  <text x="28" y="488" xml:space="preserve" class="base">RESULT: 0 failures, 1 warning(s) - cluster is <tspan class="warn">degraded</tspan></text>
+</svg>

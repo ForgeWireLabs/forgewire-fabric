@@ -10,6 +10,10 @@ ForgeWire Fabric is a self-hosted control plane for trusted remote execution. Yo
 
 No hosted control plane. No shared SSH key sprayed across agents. No mystery worker deciding what happened.
 
+![forgewire-fabric-cli doctor — a healthy hub on an rqlite-backed cluster](docs/assets/fabric-doctor.svg)
+
+*`forgewire-fabric-cli doctor` against a live cluster (hostnames anonymized).*
+
 ---
 
 ## How it works
