@@ -71,12 +71,12 @@
         "forgewire.hubPin": {
           "type": "string",
           "default": "",
-          "description": "Manual override: when set, the extension dispatches to this URL only and does not probe candidates. Use the *Pin to Hubâ€¦* command to set this. Clear with *Unpin Hub*."
+          "description": "Manual override: when set, the extension dispatches to this URL only and does not probe candidates. Use the *Pin to Hub…* command to set this. Clear with *Unpin Hub*."
         },
         "forgewire.hubName": {
           "type": "string",
           "default": "",
-          "description": "Friendly display name for the hub (shown in the sidebar and status bar). Purely cosmetic â€” no effect on hub identity or auth."
+          "description": "Friendly display name for the hub (shown in the sidebar and status bar). Purely cosmetic — no effect on hub identity or auth."
         },
         "forgewire.runnerAliases": {
           "type": "object",
@@ -305,25 +305,25 @@
       },
       {
         "command": "forgewire.openSettings",
-        "title": "Open Settingsâ€¦",
+        "title": "Open Settings…",
         "category": "ForgeWire",
         "icon": "$(gear)"
       },
       {
         "command": "forgewire.renameHub",
-        "title": "Rename Hubâ€¦",
+        "title": "Rename Hub…",
         "category": "ForgeWire",
         "icon": "$(edit)"
       },
       {
         "command": "forgewire.renameHost",
-        "title": "Rename Hostâ€¦",
+        "title": "Rename Host…",
         "category": "ForgeWire",
         "icon": "$(edit)"
       },
       {
         "command": "forgewire.renameRunner",
-        "title": "Rename Runner Aliasâ€¦",
+        "title": "Rename Runner Alias…",
         "category": "ForgeWire",
         "icon": "$(edit)"
       },
@@ -358,7 +358,7 @@
       },
       {
         "command": "forgewire.pinHub",
-        "title": "Pin to Hubâ€¦",
+        "title": "Pin to Hub…",
         "category": "ForgeWire",
         "icon": "$(pin)"
       },
@@ -370,19 +370,19 @@
       },
       {
         "command": "forgewire.promoteHub",
-        "title": "Promote This Node to Hubâ€¦",
+        "title": "Promote This Node to Hub…",
         "category": "ForgeWire",
         "icon": "$(arrow-up)"
       },
       {
         "command": "forgewire.demoteHub",
-        "title": "Demote Active Hubâ€¦",
+        "title": "Demote Active Hub…",
         "category": "ForgeWire",
         "icon": "$(arrow-down)"
       },
       {
         "command": "forgewire.editHubCandidates",
-        "title": "Edit Hub Candidatesâ€¦",
+        "title": "Edit Hub Candidates…",
         "category": "ForgeWire",
         "icon": "$(list-tree)"
       },
@@ -820,6 +820,11 @@
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
     "typescript": "^5.4.0",
-    "@vscode/vsce": "^2.32.0"
+    "@vscode/vsce": "^3.9.2"
+  },
+  "overrides": {
+    "undici": ">=7.28.0",
+    "form-data": ">=4.0.6",
+    "markdown-it": ">=14.2.0"
   }
 }

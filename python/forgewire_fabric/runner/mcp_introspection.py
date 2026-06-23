@@ -5,7 +5,7 @@ heartbeats when the connected-server topology changes. Loom (command-kind)
 runners never import this module — the lazy import is deliberate.
 
 The manifest format matches the wire spec from
-``todos/114-forgewire-fabric/phase-2.8-loom-fabric-surface-split.md``:
+``work/active/114-forgewire-fabric/README.md`` (phase-2.8 surface-split spec in git history):
 
 .. code-block:: json
 

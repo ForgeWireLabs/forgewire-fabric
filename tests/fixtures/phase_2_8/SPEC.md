@@ -1,7 +1,7 @@
 # Phase 2.8 — Frozen Spec for Fixtures
 
 > **Status:** locked at M2.8.0 (2026-06-08). Subsequent milestones (M2.8.1+) implement against this contract.
-> **Phase doc:** [`todos/114-forgewire-fabric/phase-2.8-loom-fabric-surface-split.md`](../../../../todos/114-forgewire-fabric/phase-2.8-loom-fabric-surface-split.md)
+> **Phase doc:** [`todos/114-forgewire-fabric/phase-2.8-loom-fabric-surface-split.md`](../../../../work/active/114-forgewire-fabric/README.md)
 
 These fixtures are the byte-exact contract that the Rust + Python implementations must round-trip through. Any change to the JSON shapes here must be a deliberate, versioned spec amendment, not a side effect of code changes.
 

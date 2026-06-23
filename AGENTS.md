@@ -4,7 +4,7 @@
 > file is the *how*: invariants, supervision discipline, and shipping
 > conventions that survive milestone churn. For the *what* — milestone
 > slicing, roadmap, phase docs — see todo 114 in the sibling repo at
-> [`forgewire/todos/114-forgewire-fabric/`](../forgewire/todos/114-forgewire-fabric/).
+> [`forgewire/work/active/114-forgewire-fabric/`](../forgewire/work/active/114-forgewire-fabric/).
 >
 > The thesis at [`forgewire/docs/thesis.md`](../forgewire/docs/thesis.md)
 > is binding here: **graceful degradation, parity paths, audit trails,
@@ -315,9 +315,9 @@ local-clone divergence guard for manual/operator use. Wiring it into
 
 ## 13. Pointers
 
-- **Milestones / roadmap:** [`forgewire/todos/114-forgewire-fabric/`](../forgewire/todos/114-forgewire-fabric/)
+- **Milestones / roadmap:** [`forgewire/work/active/114-forgewire-fabric/`](../forgewire/work/active/114-forgewire-fabric/)
 - **Phase doc (operator control plane):**
-  [`phase-2.5-operator-control-plane.md`](../forgewire/todos/114-forgewire-fabric/phase-2.5-operator-control-plane.md)
+  [`work/active/114-forgewire-fabric/README.md`](../forgewire/work/active/114-forgewire-fabric/README.md) (phase-2.5-operator-control-plane detail in git history)
 - **Test policy:** [`tests/AGENTS.md`](tests/AGENTS.md)
 - **Live smoke pattern:** any `scripts/live_smoke_*.py` already in
   the repo is a copyable template.

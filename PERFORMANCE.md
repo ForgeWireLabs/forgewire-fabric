@@ -56,7 +56,7 @@ These are tracked as Stage C follow-ups; the current numbers are already good en
 
 ## Acceptance for Stage C.1
 
-Per [phase-0-foundations.md](../todos/114-forgewire-fabric/phase-0-foundations.md) (former stage-C-rust-core):
+Per [phase-0-foundations.md](../work/active/114-forgewire-fabric/README.md) (former stage-C-rust-core):
 
 - [x] Parity with Python implementation (`tests/remote/test_forgewire_runtime_parity.py` — 11 passing).
 - [x] Rust + Python sign/verify round-trip is byte-identical.
