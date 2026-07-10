@@ -45,6 +45,7 @@ logs/
 
 # Build artifacts and scratch
 tmp/
+desktop/dist-installer/
 
 # Environment-specific / private — must never appear in the public mirror
 config/cluster.yaml
