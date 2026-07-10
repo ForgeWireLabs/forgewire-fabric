@@ -347,6 +347,15 @@ async fn main() {
         backend: format!("rqlite:{rqlite_host}:{rqlite_port}"),
         stream_buffer: Arc::new(StreamBuffer::new(stream_profile)),
         input_queues: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        forgelink: {
+            let cfg = fabric_hub::forgelink::ForgeLinkConfig::from_env();
+            if cfg.enabled() {
+                info!(channel = %cfg.channel_id, "ForgeLink HITL routing enabled (AGH-028)");
+            } else {
+                tracing::info!("ForgeLink HITL routing disabled — using Fabric's built-in approval pane");
+            }
+            cfg
+        },
     });
 
     // Public routes (no auth)

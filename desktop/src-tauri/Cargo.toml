@@ -1,0 +1,24 @@
+[package]
+name = "forgewire-fabric-desktop"
+version = "0.1.0"
+description = "Tauri desktop control panel for ForgeWire Fabric"
+authors = ["ForgeWire Contributors"]
+license = "Apache-2.0"
+repository = "https://github.com/ForgeWireLabs/forgewire-fabric"
+edition = "2021"
+
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2.5.3", features = [] }
+
+[dependencies]
+fabric-client = { path = "../../crates/fabric-client" }
+fabric-identity = { path = "../../crates/fabric-identity" }
+fabric-types = { path = "../../crates/fabric-types" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tauri = { version = "2.11.5", features = [] }
+tokio = { version = "1.48", features = ["rt-multi-thread"] }
+toml = "0.9"

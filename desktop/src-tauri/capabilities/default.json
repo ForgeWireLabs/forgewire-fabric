@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Allow the main ForgeWire Fabric desktop window to use Tauri core IPC and app commands.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

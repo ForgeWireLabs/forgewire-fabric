@@ -1,0 +1,34 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "ForgeWire Fabric",
+  "version": "0.1.0",
+  "identifier": "com.forgewire.fabric.desktop",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "ForgeWire Fabric",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 1040,
+        "minHeight": 680,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src http://*:* https://*:* ws://*:* wss://*:*; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "category": "DeveloperTool",
+    "shortDescription": "ForgeWire Fabric desktop control panel",
+    "longDescription": "A Tauri desktop client for inspecting ForgeWire Fabric hubs, runners, agents, tasks, approvals, cost, and audit posture."
+  }
+}

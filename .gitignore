@@ -20,6 +20,11 @@ build/
 *.egg-info/
 wheels/
 
+# Node / web clients
+node_modules/
+**/src-tauri/gen/
+!desktop/src-tauri/Cargo.lock
+
 # Editors / IDE
 .vscode/
 .idea/

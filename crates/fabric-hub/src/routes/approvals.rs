@@ -13,8 +13,9 @@ use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::forgelink::{self, ForgeLinkDecision};
 use crate::state::HubState;
-use crate::utils::utc_now;
+use crate::utils::{audit_append, utc_now};
 
 #[derive(Deserialize)]
 pub struct ListQuery {
@@ -56,7 +57,35 @@ pub async fn get_approval(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     match row {
         None => Err((StatusCode::NOT_FOUND, "approval not found".into())),
-        Some(a) => Ok(Json(serde_json::to_value(a).unwrap_or(Value::Null))),
+        Some(a) => {
+            // Decision write-back (AGH-028, decision 0004): if this approval is still
+            // pending and was routed to ForgeLink, poll ForgeLink for the operator's
+            // decision and resolve it here — exactly as Fabric's built-in approve/deny
+            // would — so the dispatcher's poll observes the governed decision. Best
+            // effort: any failure leaves the approval pending (Fabric's pane still works).
+            if a.status == "pending" && state.forgelink.reconcile_enabled() {
+                if let Ok(Some(decision)) = forgelink::fetch_decision(&state.forgelink, &approval_id).await {
+                    let (status_str, reason) = match decision {
+                        ForgeLinkDecision::Approved => ("approved", "approved in ForgeLink"),
+                        ForgeLinkDecision::Denied => ("denied", "denied in ForgeLink"),
+                    };
+                    let now = utc_now();
+                    if state.store.resolve_approval(&approval_id, status_str, Some("forgelink"), Some(reason), &now).await.is_ok() {
+                        let _ = audit_append(
+                            &*state.store,
+                            "forgelink_decision_synced",
+                            None,
+                            &json!({ "approval_id": approval_id, "decision": status_str }),
+                        )
+                        .await;
+                        if let Ok(Some(updated)) = state.store.get_approval(&approval_id).await {
+                            return Ok(Json(serde_json::to_value(updated).unwrap_or(Value::Null)));
+                        }
+                    }
+                }
+            }
+            Ok(Json(serde_json::to_value(a).unwrap_or(Value::Null)))
+        }
     }
 }
 

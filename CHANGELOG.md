@@ -5,6 +5,34 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project
 uses [semantic versioning](https://semver.org/spec/v2.0.0.html) for the Python
 package. The VSIX (`vscode/`) is versioned independently.
 
+## [Unreleased]
+
+### Added
+
+- **ForgeLink HITL routing** (`fabric-hub`): when ForgeLink is configured and
+  reachable, a held approval is automatically routed to ForgeLink as the governed
+  decision surface — an evidence-bearing `agent-governance-v1` approval request on
+  ForgeLink's agent channel (ForgeLink work item 016, AGH-028; decision 0004).
+  - New `forgelink` module: `ForgeLinkConfig::from_env()` reads `FORGELINK_BASE_URL`,
+    `FORGELINK_CHANNEL_ID` (default `forgewire`), and `FORGELINK_CHANNEL_TOKEN`;
+    `FORGELINK_HITL=off|0|false|disabled` is the operator opt-out.
+  - Routing is **best-effort and time-bounded** (3s): on any failure — ForgeLink
+    absent, unreachable, or opted out — the hub **falls back silently** to Fabric's
+    built-in approval pane with no loss of function. ForgeLink is never a hard
+    dependency.
+  - The held-dispatch response includes `forgelink_routed` (the ForgeLink request
+    id when routed), and the audit trail records `forgelink_routed` /
+    `forgelink_unavailable`.
+  - **Decision write-back:** `GET /approvals/{id}` reconciles a pending,
+    ForgeLink-routed approval by polling ForgeLink's status (`fabric-<approval_id>`)
+    and resolving it (approved/denied) exactly as Fabric's built-in approve/deny
+    would, so the dispatcher's poll observes the governed decision and the held task
+    proceeds. Needs `FORGELINK_MCP_TOKEN` (the status route is MCP-safe); best-effort,
+    leaving the approval pending on any failure. Audit records
+    `forgelink_decision_synced`.
+  - 6 new `fabric-hub` unit tests (config/opt-out/reconcile gating, kind→authority
+    mapping, the agent-governance-v1 request body, and decision classification).
+
 ## [0.5.0] - 2026-06-02  *(Rust workspace — see version note)*
 
 > **Version note:** The Rust workspace tracks its own semver independently of the Python package.

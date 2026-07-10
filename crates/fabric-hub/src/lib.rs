@@ -6,6 +6,7 @@
 #![deny(rust_2018_idioms)]
 
 pub mod auth;
+pub mod forgelink;
 pub mod routes;
 pub mod state;
 pub mod utils;

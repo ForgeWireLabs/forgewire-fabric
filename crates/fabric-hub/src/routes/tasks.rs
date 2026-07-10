@@ -441,11 +441,50 @@ pub async fn dispatch_task_signed(
             }),
         )
         .await;
+
+        // Route the approval to ForgeLink as the governed decision surface when it
+        // is configured and reachable (AGH-028, decision 0004). Best-effort and
+        // time-bounded: any failure falls back to Fabric's built-in approval pane.
+        let mut forgelink_routed: Option<String> = None;
+        if state.forgelink.enabled() {
+            let body = crate::forgelink::build_approval_request(
+                &approval_id,
+                &payload.base.title,
+                &reason,
+                &payload.base.kind,
+                if payload.base.branch.is_empty() { None } else { Some(payload.base.branch.as_str()) },
+                &payload.base.scope_globs,
+                "forgewire-fabric",
+            );
+            match crate::forgelink::route_approval(&state.forgelink, &body).await {
+                Ok(fl_id) => {
+                    forgelink_routed = Some(fl_id.clone());
+                    let _ = audit_append(
+                        &*state.store,
+                        "forgelink_routed",
+                        Some(task.id),
+                        &json!({ "approval_id": approval_id, "forgelink_request_id": fl_id }),
+                    )
+                    .await;
+                }
+                Err(e) => {
+                    let _ = audit_append(
+                        &*state.store,
+                        "forgelink_unavailable",
+                        Some(task.id),
+                        &json!({ "approval_id": approval_id, "error": e, "fallback": "fabric_builtin_pane" }),
+                    )
+                    .await;
+                }
+            }
+        }
+
         return Ok(Json(json!({
             "status": "held",
             "task_id": task.id,
             "approval_id": approval_id,
             "reason": reason,
+            "forgelink_routed": forgelink_routed,
             "message": "dispatch requires approval; task is held pending review",
         })));
     }

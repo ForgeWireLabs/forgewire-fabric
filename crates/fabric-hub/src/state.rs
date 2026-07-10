@@ -35,4 +35,7 @@ pub struct HubState {
     /// M2.9.4 (F4): per-task signed stdin batches; populated by POST /tasks/{id}/input,
     /// drained by runners via GET /tasks/{id}/input?after_seq=N.
     pub input_queues: Arc<InputQueue>,
+    /// Optional routing of HITL approvals to ForgeLink as the governed decision
+    /// surface (work item 016 AGH-028; decision 0004). Disabled unless configured.
+    pub forgelink: crate::forgelink::ForgeLinkConfig,
 }
