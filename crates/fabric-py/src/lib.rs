@@ -1,4 +1,4 @@
-﻿//! PyO3 bindings exposing the ForgeWire Rust runtime to Python.
+//! PyO3 bindings exposing the ForgeWire Rust runtime to Python.
 //!
 //! Stage C.1 surface:
 //! - `verify_signature(public_key_hex: str, payload: bytes, signature_hex: str) -> bool`
@@ -17,12 +17,16 @@ use pythonize::depythonize;
 use serde_json::Value;
 
 use fabric_claim_router::RunnerView;
-use fabric_streams::StreamCounter;
 use fabric_protocol::{
-    canonicalize as canonicalize_rs, sign_envelope_hex, sign_payload_hex,
-    verify_envelope_hex, verify_signature_hex, ProtocolError,
+    canonicalize as canonicalize_rs, sign_envelope_hex, sign_payload_hex, verify_envelope_hex,
+    verify_signature_hex, ProtocolError,
 };
+use fabric_streams::StreamCounter;
 
+// Takes ownership (not `&ProtocolError`) so every call site can stay the
+// ergonomic `.map_err(map_err)` (a `FnOnce(ProtocolError) -> _`) instead of
+// `.map_err(|e| map_err(&e))` at each call site.
+#[allow(clippy::needless_pass_by_value)]
 fn map_err(e: ProtocolError) -> PyErr {
     PyValueError::new_err(e.to_string())
 }
@@ -40,7 +44,10 @@ fn sign_payload(secret_key_hex: &str, payload: &[u8]) -> PyResult<String> {
 }
 
 #[pyfunction]
-fn canonicalize<'py>(py: Python<'py>, envelope: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyBytes>> {
+fn canonicalize<'py>(
+    py: Python<'py>,
+    envelope: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyBytes>> {
     let value: Value = depythonize(envelope)
         .map_err(|e| PyValueError::new_err(format!("envelope must be JSON-compatible: {e}")))?;
     let bytes = canonicalize_rs(&value).map_err(map_err)?;
@@ -148,11 +155,7 @@ fn task_matches(task: &Bound<'_, PyDict>, runner: &RunnerView) -> PyResult<bool>
             for item in tl_obj.try_iter()? {
                 let t_obj = item?;
                 let t: &str = t_obj.extract()?;
-                if !runner
-                    .tools
-                    .iter()
-                    .any(|rt| rt.eq_ignore_ascii_case(t))
-                {
+                if !runner.tools.iter().any(|rt| rt.eq_ignore_ascii_case(t)) {
                     return Ok(false);
                 }
             }
@@ -252,11 +255,11 @@ impl PyStreamCounter {
     /// Allocate the next sequence for `task_id`. Raises `LookupError` if
     /// the counter has not been primed.
     fn next_seq(&self, task_id: i64) -> PyResult<u64> {
-        self.inner
-            .next_seq(task_id)
-            .ok_or_else(|| pyo3::exceptions::PyLookupError::new_err(format!(
+        self.inner.next_seq(task_id).ok_or_else(|| {
+            pyo3::exceptions::PyLookupError::new_err(format!(
                 "stream counter for task {task_id} not primed"
-            )))
+            ))
+        })
     }
 
     /// Forget a task's counter. After this, [`next_seq`] requires re-priming.

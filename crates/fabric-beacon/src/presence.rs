@@ -233,7 +233,7 @@ pub fn presence_tick(advert: &NodeAdvert, udp_port: u16) -> Result<(), PresenceE
 /// query nonce, and re-announces every `announce_interval`. Spawn on a
 /// dedicated thread. Coexists with v1: hub-role queries are ignored here.
 pub fn serve_presence(
-    advert: NodeAdvert,
+    advert: &NodeAdvert,
     udp_port: u16,
     announce_interval: Duration,
 ) -> Result<(), PresenceError> {
@@ -271,7 +271,9 @@ pub fn serve_presence(
                     }
                 }
             }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => {}
+            Err(e)
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => {
+            }
             Err(_) => std::thread::sleep(Duration::from_millis(200)),
         }
     }
@@ -332,17 +334,22 @@ pub fn collect_presence_addrs(
                         }
                     }
                     let key = rec.node_id.clone();
-                    if !found.contains_key(&key) {
+                    if let std::collections::hash_map::Entry::Vacant(entry) =
+                        found.entry(key.clone())
+                    {
                         let sig_valid = rec.signature_valid();
-                        order.push(key.clone());
-                        found.insert(
-                            key,
-                            ObservedPresence { record: rec, source: src.ip(), sig_valid },
-                        );
+                        order.push(key);
+                        entry.insert(ObservedPresence {
+                            record: rec,
+                            source: src.ip(),
+                            sig_valid,
+                        });
                     }
                 }
             }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => {}
+            Err(e)
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => {
+            }
             Err(e) => return Err(e),
         }
     }
@@ -359,7 +366,12 @@ pub fn collect_presence(
     want_token_hash: Option<&str>,
     nonce: &str,
 ) -> io::Result<Vec<ObservedPresence>> {
-    collect_presence_addrs(&crate::broadcast_targets(udp_port), timeout, want_token_hash, nonce)
+    collect_presence_addrs(
+        &crate::broadcast_targets(udp_port),
+        timeout,
+        want_token_hash,
+        nonce,
+    )
 }
 
 /// Passively listen for unsolicited announces for `timeout` on an ephemeral
@@ -430,7 +442,10 @@ mod tests {
         let advert = test_advert("node-a", 4001);
         let rec = advert.record("").unwrap();
         let v2_bytes = serde_json::to_vec(&rec).unwrap();
-        assert!(crate::parse(&v2_bytes).is_none(), "v1 parser must reject v2");
+        assert!(
+            crate::parse(&v2_bytes).is_none(),
+            "v1 parser must reject v2"
+        );
 
         let v1_hub = br#"{"magic":"FWBEACON","v":1,"role":"hub","port":8765}"#;
         assert!(parse_presence(v1_hub).is_none(), "v2 parser must reject v1");
@@ -498,7 +513,7 @@ mod tests {
         let expected_pk = advert.public_key_hex.clone();
         let want = advert.token_hash.clone();
         std::thread::spawn(move || {
-            let _ = serve_presence(advert, port, Duration::from_millis(60_000));
+            let _ = serve_presence(&advert, port, Duration::from_millis(60_000));
         });
         std::thread::sleep(Duration::from_millis(150));
 

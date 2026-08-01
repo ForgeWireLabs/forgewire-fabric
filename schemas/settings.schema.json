@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://forgewire.dev/schemas/fabric-settings-v1.json",
+  "title": "ForgeWire Fabric Settings v1",
+  "description": "Hub-wide settings layered between immutable defaults and repo/task policy. Tier-1 control-plane values remain in rqlite; an external history database is optional and never in the failover path.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "schema_version": {
+      "const": 1,
+      "description": "Settings document schema version."
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "daily_usd": { "type": ["number", "null"], "minimum": 0 },
+        "weekly_usd": { "type": ["number", "null"], "minimum": 0 },
+        "warning_fraction": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+      }
+    },
+    "runner": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "default_capability_tags": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "heartbeat_seconds": { "type": "integer", "minimum": 2, "maximum": 300 }
+      }
+    },
+    "secrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "key_provider": {
+          "type": "string",
+          "enum": ["file", "os-keychain"],
+          "description": "Master-key provider. Secret values themselves are never settings values."
+        },
+        "key_file": {
+          "type": ["string", "null"],
+          "x-sensitive": true,
+          "description": "Path to an ACL-restricted master-key file. Redacted from list/export output."
+        }
+      }
+    },
+    "ha": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "type": "string", "enum": ["single", "active-passive", "active-active"] },
+        "require_voter_loss_tolerance": { "type": "boolean" }
+      }
+    },
+    "history": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["thin", "external", "fabric-managed"],
+          "readOnly": true,
+          "description": "Derived history mode. Thin mode is fully functional and has no external database dependency."
+        },
+        "external_db": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "dsn": {
+              "type": ["string", "null"],
+              "x-sensitive": true,
+              "description": "Operator-supplied PostgreSQL-compatible DSN. Discovery never supplies credentials or connects automatically."
+            },
+            "autodetect": {
+              "type": "boolean",
+              "description": "Observational port discovery only; never authorizes a database connection."
+            },
+            "provision": {
+              "type": "boolean",
+              "description": "Request a separately supervised, optional Fabric-managed Tier-2 sink."
+            },
+            "connect_timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 60 },
+            "retry_seconds": { "type": "integer", "minimum": 1, "maximum": 3600 }
+          }
+        }
+      }
+    },
+    "desktop": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "update_channel": { "type": "string", "enum": ["stable", "preview"] },
+        "updater_endpoint": { "type": ["string", "null"], "format": "uri" }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "114C self-service authentication settings. Only fields an implemented code path actually reads belong here -- see crates/fabric-hub/src/routes/authn.rs.",
+      "properties": {
+        "bootstrap": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "local_only": {
+              "type": "boolean",
+              "description": "Require POST /auth/bootstrap to originate from a loopback source address. Disabling this is an explicit, documented risk acceptance -- prefer the alternative one-time bootstrap secret file instead of disabling it."
+            }
+          }
+        },
+        "sessions": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "idle_timeout_minutes": { "type": "integer", "minimum": 5, "maximum": 1440 },
+            "absolute_timeout_hours": { "type": "integer", "minimum": 1, "maximum": 720 },
+            "step_up_freshness_minutes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10,
+              "description": "114C.6 administrative step-up freshness window. Capped at 10 -- policy may shorten but not silently lengthen a security limit beyond the reviewed maximum."
+            }
+          }
+        },
+        "passkeys": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "114C.6. Off by default (enabled=false) until an operator explicitly configures rp_id/allowed_origins -- a fresh capability defaults closed, not open. `HubState.webauthn` is None (not a startup failure) whenever this is disabled or misconfigured; passkey routes then fail closed with AccountPolicyViolation, the rest of the hub stays healthy.",
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "rp_id": {
+              "type": ["string", "null"],
+              "description": "WebAuthn relying-party ID -- must be a registrable domain (e.g. \"localhost\" or \"fabric.example\"), never an IP literal (\"127.0.0.1\" is rejected even when an allowed_origins entry uses that literal as its host -- use rp_id \"localhost\" for loopback deployments instead). Null means passkeys cannot be built regardless of `enabled`."
+            },
+            "rp_name": { "type": "string" },
+            "allowed_origins": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "description": "Must be `https://...`, or exactly `http://localhost` / `http://127.0.0.1` (the WebAuthn secure-context loopback carve-out). Any other plain-HTTP origin (e.g. a LAN address) is rejected at config-load time, not left to fail confusingly mid-ceremony -- 114C.6 is scoped to loopback/HTTPS deployments only."
+              },
+              "uniqueItems": true
+            }
+          }
+        }
+      }
+    }
+  },
+  "required": ["schema_version", "budget", "runner", "secrets", "ha", "history", "desktop", "auth"]
+}

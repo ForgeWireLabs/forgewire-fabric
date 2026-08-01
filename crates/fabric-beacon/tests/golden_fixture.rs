@@ -12,8 +12,7 @@ use std::path::PathBuf;
 use fabric_beacon::{canonical_presence_bytes, PresenceRecord};
 
 fn fixture_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/beacon/presence_v2.json")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/beacon/presence_v2.json")
 }
 
 #[test]

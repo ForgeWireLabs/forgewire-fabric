@@ -11,12 +11,25 @@ use serde_json::{json, Value};
 use crate::state::HubState;
 use crate::utils::utc_now;
 
+owned_router! {
+    pub fn router, ROUTES {
+        "GET" get "/labels" => get_labels;
+        "PUT" put "/labels/hub" => set_hub_label;
+        "PUT" put "/labels/runners/{runner_id}" => set_runner_label;
+        "PUT" put "/labels/hosts/{hostname}" => set_host_label;
+        "POST" post "/hosts/roles" => set_host_role;
+    }
+}
+
 // ---- GET /labels -----------------------------------------------------------
 
 pub async fn get_labels(
     State(state): State<Arc<HubState>>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    let labels = state.store.get_labels().await
+    let labels = state
+        .store
+        .get_labels()
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(labels))
 }
@@ -38,9 +51,15 @@ pub async fn set_hub_label(
         return Err((StatusCode::BAD_REQUEST, "hub name max 80 chars".into()));
     }
     let now = utc_now();
-    state.store.set_hub_name(name, payload.updated_by.as_deref(), &now).await
+    state
+        .store
+        .set_hub_name(name, payload.updated_by.as_deref(), &now)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let labels = state.store.get_labels().await
+    let labels = state
+        .store
+        .get_labels()
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(labels))
 }
@@ -63,9 +82,15 @@ pub async fn set_runner_label(
         return Err((StatusCode::BAD_REQUEST, "runner alias max 80 chars".into()));
     }
     let now = utc_now();
-    state.store.set_runner_alias(&runner_id, alias, payload.updated_by.as_deref(), &now).await
+    state
+        .store
+        .set_runner_alias(&runner_id, alias, payload.updated_by.as_deref(), &now)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let labels = state.store.get_labels().await
+    let labels = state
+        .store
+        .get_labels()
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(labels))
 }
@@ -88,9 +113,15 @@ pub async fn set_host_label(
         return Err((StatusCode::BAD_REQUEST, "host alias max 80 chars".into()));
     }
     let now = utc_now();
-    state.store.set_host_alias(&hostname, alias, payload.updated_by.as_deref(), &now).await
+    state
+        .store
+        .set_host_alias(&hostname, alias, payload.updated_by.as_deref(), &now)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let labels = state.store.get_labels().await
+    let labels = state
+        .store
+        .get_labels()
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(labels))
 }
@@ -112,9 +143,19 @@ pub async fn set_host_role(
     Json(payload): Json<HostRolePayload>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let now = utc_now();
-    let row = state.store.set_host_role(
-        &payload.hostname, &payload.role, payload.enabled,
-        payload.status.as_deref(), payload.metadata, &now,
-    ).await.map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(json!({"role": serde_json::to_value(row).unwrap_or(Value::Null)})))
+    let row = state
+        .store
+        .set_host_role(
+            &payload.hostname,
+            &payload.role,
+            payload.enabled,
+            payload.status.as_deref(),
+            payload.metadata,
+            &now,
+        )
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(
+        json!({"role": serde_json::to_value(row).unwrap_or(Value::Null)}),
+    ))
 }

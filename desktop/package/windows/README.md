@@ -22,6 +22,12 @@ Uninstall:
 pwsh -NoProfile -ExecutionPolicy Bypass -File uninstall-forgewire-fabric-desktop.ps1 -Yes
 ```
 
+Validate the installed package against the two real Fabric machines:
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File test-forgewire-fabric-desktop.ps1
+```
+
 The installer creates:
 
 - `%LOCALAPPDATA%\Programs\ForgeWire Fabric\ForgeWire Fabric.exe`
@@ -34,3 +40,5 @@ hub token and dispatcher identity from the normal Fabric locations at runtime.
 
 The uninstaller removes only UI artifacts. It intentionally leaves Fabric hub,
 runner, rqlite, hub token, dispatcher identities, and ProgramData state intact.
+The validator never prints the bearer token and fails if the live host inventory
+contains anything other than the two operator-supplied real machines.

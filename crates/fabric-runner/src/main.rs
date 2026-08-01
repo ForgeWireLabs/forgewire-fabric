@@ -7,8 +7,8 @@ use std::sync::Arc;
 
 use fabric_client::{HeartbeatStats, HubClient};
 use fabric_runner::{
-    claim_loop, drain_and_shutdown, heartbeat_loop, load_or_create_identity,
-    register_with_retries, RunnerConfig,
+    claim_loop, drain_and_shutdown, heartbeat_loop, load_or_create_identity, register_with_retries,
+    RunnerConfig,
 };
 use tokio::sync::{watch, Mutex};
 use tracing::info;
@@ -17,8 +17,7 @@ use tracing::info;
 async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 

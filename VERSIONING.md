@@ -10,10 +10,10 @@ it, and how to verify the running cluster reflects the bump.
 
 | Artifact | Version source(s) | Reported at runtime by | Current |
 |---|---|---|---|
-| **Rust daemons** (hub, runner, loom-runner, cli, protocol) | `Cargo.toml` `[workspace.package] version` (all crates `version.workspace = true`) | Hub `GET /healthz` → `package_version` / `version` | `0.9.0` |
-| **Python package** `forgewire-fabric` (hub server, MCP sidecars, runner sidecar) | `pyproject.toml` `version` **and** `python/forgewire_fabric/__init__.py` `__version__` — keep these two equal | `importlib.metadata.version("forgewire-fabric")`; all four MCP servers' `serverInfo.version` (via `Server(name, version=__version__)`) | `0.18.0` |
-| **VS Code extension** (VSIX) | `vscode/package.json` `version` | VS Code extension host / marketplace | `0.6.1` |
-| **Wire protocol** | `PROTOCOL_VERSION` constants (Rust `fabric-protocol`, Python MCP servers) | Hub `/healthz` → `protocol_version`; MCP handshake | `4` |
+| **Rust hub** | `crates/fabric-hub/Cargo.toml` (the deployable binary may advance independently of the published workspace libraries) | Hub `GET /healthz` → `package_version` / `version` | `0.11.0` |
+| **Python package** `forgewire-fabric` (MCP sidecars, client, runner sidecar) | `pyproject.toml` `version` **and** `python/forgewire_fabric/__init__.py` `__version__` — keep these two equal | `importlib.metadata.version("forgewire-fabric")`; all four MCP servers' `serverInfo.version` (via `Server(name, version=__version__)`) | `0.19.0` |
+| **VS Code extension** (VSIX) | `vscode/package.json` `version` | VS Code extension host / marketplace | `0.7.0` |
+| **Wire protocol** | `PROTOCOL_VERSION` constants (Rust `fabric-hub`, Python MCP servers) | Hub `/healthz` → `protocol_version`; MCP handshake | `4` |
 
 > The `forgewire-runtime` PyO3 wheel (`crates/fabric-py`) carries its own
 > dynamic version and is gated by `RUNTIME_COMPAT` in `__init__.py`; bump that
@@ -48,6 +48,12 @@ imply a protocol bump.
   shims and `/tasks/claim-v2`, hard-reject missing `kind` (breaking dispatch
   surface), cross-runtime runner-identity schema support.
 
+- Python `0.18.0 → 0.18.1` (Jul-26): Windows runner installers export both
+  Python and native Rust identity-path variables, preserving one machine-scoped
+  runner identity across runtime migrations.
+- Rust hub `0.10.0 → 0.11.0` and Python `0.18.1 → 0.19.0` (Jul-31): close
+  the final Rust route-parity gaps and retire the duplicate Python hub/policy
+  implementation. Published Rust library crates remain on `0.10.0`.
 ## Pin → rebuild → reinstall → verify
 
 "Pinned, no regression" means: after bumping a source version, the **built and

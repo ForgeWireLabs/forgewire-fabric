@@ -1,0 +1,22 @@
+{
+  "desktop-228u8gl-rqlite": {
+    "id": "desktop-228u8gl-rqlite",
+    "api_addr": "http://DESKTOP-228U8GL:4001",
+    "addr": "DESKTOP-228U8GL:4002",
+    "version": "v10.0.3",
+    "voter": false,
+    "reachable": true,
+    "leader": false,
+    "time_s": "0s"
+  },
+  "desktop-38gvf8d-rqlite": {
+    "id": "desktop-38gvf8d-rqlite",
+    "api_addr": "http://DESKTOP-38GVF8D:4001",
+    "addr": "DESKTOP-38GVF8D:4002",
+    "version": "v10.0.3",
+    "voter": true,
+    "reachable": true,
+    "leader": true,
+    "time_s": "0s"
+  }
+}

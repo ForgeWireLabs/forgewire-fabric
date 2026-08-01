@@ -24,6 +24,7 @@ reason when none is registered, rather than fail.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 import uuid
 
@@ -201,14 +202,6 @@ async def test_command_brief_not_claimable_via_fabric(hub_url: str, token: str, 
 
         try:
             # A Fabric claim from the agent runner must not return this command task.
-            claim_payload = {
-                "runner_id": fabric["runner_id"],
-                "scope_prefixes": fabric.get("scope_prefixes") or [],
-                "tools": fabric.get("tools") or [],
-                "tags": [],
-                "tenant": fabric.get("tenant"),
-                "workspace_root": fabric.get("workspace_root"),
-            }
             # The signed claim path is runner-private; here we only assert the
             # command task never surfaces on the fabric queue listing.
             waiting = await client.list_tasks(status="queued", limit=200)
@@ -217,10 +210,8 @@ async def test_command_brief_not_claimable_via_fabric(hub_url: str, token: str, 
             assert ours[0].get("kind") == "command", ours[0]
             assert ours[0].get("dispatch") in (None, "", "command"), ours[0]
         finally:
-            try:
+            with contextlib.suppress(BlackboardError):
                 await client.cancel_task(task_id)
-            except BlackboardError:
-                pass
 
 
 # ── 5. registries answer ─────────────────────────────────────────────────────────

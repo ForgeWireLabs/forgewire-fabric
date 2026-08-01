@@ -85,7 +85,7 @@ if (-not $NoStartMenuShortcut) {
 $uninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\ForgeWire Fabric Desktop"
 New-Item -Path $uninstallKey -Force | Out-Null
 New-ItemProperty -Path $uninstallKey -Name "DisplayName" -Value "ForgeWire Fabric" -PropertyType String -Force | Out-Null
-New-ItemProperty -Path $uninstallKey -Name "DisplayVersion" -Value "0.1.0" -PropertyType String -Force | Out-Null
+New-ItemProperty -Path $uninstallKey -Name "DisplayVersion" -Value "0.3.0" -PropertyType String -Force | Out-Null
 New-ItemProperty -Path $uninstallKey -Name "Publisher" -Value "ForgeWire" -PropertyType String -Force | Out-Null
 New-ItemProperty -Path $uninstallKey -Name "InstallLocation" -Value $InstallDir -PropertyType String -Force | Out-Null
 New-ItemProperty -Path $uninstallKey -Name "DisplayIcon" -Value "$target,0" -PropertyType String -Force | Out-Null

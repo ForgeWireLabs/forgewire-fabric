@@ -10,8 +10,6 @@ import pytest
 @pytest.mark.parametrize(
     ("module_name", "component", "missing_attr"),
     [
-        ("forgewire_fabric.hub._router", "hub.claim_router", "pick_task"),
-        ("forgewire_fabric.hub._streams", "hub.stream_counter", "StreamCounter"),
         ("forgewire_fabric.hub._crypto", "hub.crypto", "sign_envelope"),
     ],
 )
@@ -26,8 +24,6 @@ def test_strict_parity_raises_misconfigured_when_required_mapping_missing(
 
     # Populate all known attrs except the one under test.
     attrs = {
-        "pick_task": lambda tasks, runner: (None, 0),
-        "StreamCounter": object,
         "canonicalize": lambda envelope: b"{}",
         "verify_signature": lambda public_key_hex, payload, signature_hex: True,
         "sign_payload": lambda secret_key_hex, payload: "",

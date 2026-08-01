@@ -23,6 +23,7 @@ Model recap:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import socket
@@ -160,10 +161,8 @@ def collect_presence_addrs(
 
         def send_query() -> None:
             for t in targets:
-                try:
+                with contextlib.suppress(OSError):
                     sock.sendto(query, t)
-                except OSError:
-                    pass
 
         send_query()
         deadline = _time.monotonic() + timeout
@@ -174,7 +173,7 @@ def collect_presence_addrs(
                 last_query = _time.monotonic()
             try:
                 data, (src_ip, _) = sock.recvfrom(_MAX_DATAGRAM)
-            except socket.timeout:
+            except TimeoutError:
                 continue
             try:
                 rec = json.loads(data.decode("utf-8"))
@@ -262,7 +261,7 @@ class PresenceResponder:
                 last_announce = now
             try:
                 data, src = sock.recvfrom(_MAX_DATAGRAM)
-            except socket.timeout:
+            except TimeoutError:
                 continue
             except OSError:
                 continue

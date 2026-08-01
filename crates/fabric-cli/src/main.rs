@@ -16,13 +16,19 @@
 
 use std::path::PathBuf;
 
+mod doctor;
+
 use clap::{Parser, Subcommand};
-use serde_json::{json, Value};
 use fabric_client::HubClient;
 use fabric_types::KeyPurpose;
+use serde_json::{json, Value};
 
 #[derive(Parser)]
-#[command(name = "forgewire-fabric-cli", version, about = "ForgeWire Fabric operator CLI (native Rust)")]
+#[command(
+    name = "forgewire-fabric-cli",
+    version,
+    about = "ForgeWire Fabric operator CLI (native Rust)"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -32,7 +38,11 @@ struct Cli {
 enum Commands {
     /// Check hub health
     Health {
-        #[arg(long, env = "FORGEWIRE_HUB_URL", default_value = "http://127.0.0.1:8765")]
+        #[arg(
+            long,
+            env = "FORGEWIRE_HUB_URL",
+            default_value = "http://127.0.0.1:8765"
+        )]
         hub_url: String,
     },
     /// Identity management
@@ -45,12 +55,52 @@ enum Commands {
         #[command(subcommand)]
         action: AuditAction,
     },
-    /// Run diagnostic checks
-    Doctor {
-        #[arg(long, env = "FORGEWIRE_HUB_URL", default_value = "http://127.0.0.1:8765")]
+    /// Role-separated bearer token lifecycle (reviewer authority required)
+    RoleTokens {
+        #[command(subcommand)]
+        action: RoleTokenAction,
+    },
+    /// Read or mutate schema-validated hub settings.
+    Settings {
+        #[command(subcommand)]
+        action: SettingsAction,
+    },
+    /// Human-account self-service authentication (114C).
+    Auth {
+        #[command(subcommand)]
+        action: AuthAction,
+    },
+    /// Account export/import tooling (114C.5). `admin`/`reviewer`, step-up
+    /// gated hub-side -- these commands need an already-elevated human
+    /// session's access secret (`--access-secret-file`), not a role token.
+    Accounts {
+        #[command(subcommand)]
+        action: AccountsAction,
+    },
+    /// Show the optional Tier-2 history exporter status.
+    HistoryStatus {
+        #[arg(
+            long,
+            env = "FORGEWIRE_HUB_URL",
+            default_value = "http://127.0.0.1:8765"
+        )]
         hub_url: String,
         #[arg(long, env = "FORGEWIRE_HUB_TOKEN_FILE")]
         token_file: Option<String>,
+    },
+    /// Run diagnostic checks
+    Doctor {
+        #[arg(
+            long,
+            env = "FORGEWIRE_HUB_URL",
+            default_value = "http://127.0.0.1:8765"
+        )]
+        hub_url: String,
+        #[arg(long, env = "FORGEWIRE_HUB_TOKEN_FILE")]
+        token_file: Option<String>,
+        /// Emit the stable machine-readable diagnostic schema.
+        #[arg(long)]
+        json: bool,
     },
     /// Replay a recorded task: reconstruct its sealed brief at the exact base
     /// commit and (unless --dry-run) re-dispatch it. With --dry-run it only
@@ -72,7 +122,11 @@ enum Commands {
         /// --dry-run; the replay is re-dispatched over the SIGNED /tasks/v2 path.
         #[arg(long, short)]
         identity: Option<PathBuf>,
-        #[arg(long, env = "FORGEWIRE_HUB_URL", default_value = "http://127.0.0.1:8765")]
+        #[arg(
+            long,
+            env = "FORGEWIRE_HUB_URL",
+            default_value = "http://127.0.0.1:8765"
+        )]
         hub_url: String,
         #[arg(long, env = "FORGEWIRE_HUB_TOKEN_FILE")]
         token_file: Option<String>,
@@ -141,7 +195,11 @@ enum IdentityAction {
 enum AuditAction {
     /// Show the current audit chain tail hash
     Tail {
-        #[arg(long, env = "FORGEWIRE_HUB_URL", default_value = "http://127.0.0.1:8765")]
+        #[arg(
+            long,
+            env = "FORGEWIRE_HUB_URL",
+            default_value = "http://127.0.0.1:8765"
+        )]
         hub_url: String,
         #[arg(long, env = "FORGEWIRE_HUB_TOKEN_FILE")]
         token_file: Option<String>,
@@ -150,7 +208,11 @@ enum AuditAction {
     Verify {
         #[arg(long)]
         task_id: i64,
-        #[arg(long, env = "FORGEWIRE_HUB_URL", default_value = "http://127.0.0.1:8765")]
+        #[arg(
+            long,
+            env = "FORGEWIRE_HUB_URL",
+            default_value = "http://127.0.0.1:8765"
+        )]
         hub_url: String,
         #[arg(long, env = "FORGEWIRE_HUB_TOKEN_FILE")]
         token_file: Option<String>,
@@ -164,7 +226,206 @@ enum AuditAction {
         /// UTC day to export, formatted YYYY-MM-DD.
         #[arg(long)]
         day: String,
-        #[arg(long, env = "FORGEWIRE_HUB_URL", default_value = "http://127.0.0.1:8765")]
+        #[arg(
+            long,
+            env = "FORGEWIRE_HUB_URL",
+            default_value = "http://127.0.0.1:8765"
+        )]
+        hub_url: String,
+        #[arg(long, env = "FORGEWIRE_HUB_TOKEN_FILE")]
+        token_file: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum RoleTokenAction {
+    /// List role-token metadata (never credential values or hashes)
+    List {
+        #[arg(long)]
+        include_revoked: bool,
+        #[arg(
+            long,
+            env = "FORGEWIRE_HUB_URL",
+            default_value = "http://127.0.0.1:8765"
+        )]
+        hub_url: String,
+        #[arg(long, env = "FORGEWIRE_HUB_TOKEN_FILE")]
+        token_file: Option<String>,
+    },
+    /// Issue a new role token; its credential is shown exactly once
+    Issue {
+        #[arg(long)]
+        label: String,
+        #[arg(long, value_delimiter = ',', required = true)]
+        roles: Vec<String>,
+        #[arg(
+            long,
+            env = "FORGEWIRE_HUB_URL",
+            default_value = "http://127.0.0.1:8765"
+        )]
+        hub_url: String,
+        #[arg(long, env = "FORGEWIRE_HUB_TOKEN_FILE")]
+        token_file: Option<String>,
+    },
+    /// Split the legacy bundle, or import an existing bearer from a protected file
+    Migrate {
+        /// Split the installed legacy bundle into dispatcher, runner,
+        /// observer, approver, and reviewer credentials.
+        #[arg(long)]
+        split: bool,
+        #[arg(long, conflicts_with = "split")]
+        from_token_file: Option<PathBuf>,
+        #[arg(long, default_value = "legacy compatibility split")]
+        label: String,
+        #[arg(long, value_delimiter = ',', conflicts_with = "split")]
+        roles: Vec<String>,
+        #[arg(
+            long,
+            env = "FORGEWIRE_HUB_URL",
+            default_value = "http://127.0.0.1:8765"
+        )]
+        hub_url: String,
+        #[arg(long, env = "FORGEWIRE_HUB_TOKEN_FILE")]
+        token_file: Option<String>,
+    },
+    /// Revoke a role token by its public token id
+    Revoke {
+        token_id: String,
+        #[arg(
+            long,
+            env = "FORGEWIRE_HUB_URL",
+            default_value = "http://127.0.0.1:8765"
+        )]
+        hub_url: String,
+        #[arg(long, env = "FORGEWIRE_HUB_TOKEN_FILE")]
+        token_file: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum AuthAction {
+    /// `true` while the realm has no administrator yet.
+    BootstrapStatus {
+        #[arg(
+            long,
+            env = "FORGEWIRE_HUB_URL",
+            default_value = "http://127.0.0.1:8765"
+        )]
+        hub_url: String,
+    },
+    /// Create the realm's first administrator. The hub must be reachable at
+    /// a loopback address (127.0.0.1/::1) by default -- run this on the hub
+    /// machine itself, not remotely, unless the hub's `auth.bootstrap.
+    /// local_only` setting has been explicitly disabled.
+    Bootstrap {
+        #[arg(long)]
+        username: String,
+        #[arg(long)]
+        display_name: String,
+        /// Prompted-equivalent: read from stdin if omitted, never taken as a
+        /// bare positional/visible argument, so it cannot linger in shell
+        /// history or a process listing.
+        #[arg(long)]
+        password: Option<String>,
+        /// Only needed if the hub was started with
+        /// FORGEWIRE_HUB_BOOTSTRAP_SECRET_FILE configured.
+        #[arg(long, env = "FORGEWIRE_HUB_BOOTSTRAP_SECRET")]
+        bootstrap_secret: Option<String>,
+        #[arg(
+            long,
+            env = "FORGEWIRE_HUB_URL",
+            default_value = "http://127.0.0.1:8765"
+        )]
+        hub_url: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum AccountsAction {
+    /// `GET /accounts/export`: print a redacted profile-only snapshot of
+    /// every account in the realm.
+    Export {
+        #[arg(
+            long,
+            env = "FORGEWIRE_HUB_URL",
+            default_value = "http://127.0.0.1:8765"
+        )]
+        hub_url: String,
+        #[arg(long, env = "FORGEWIRE_ACCESS_SECRET_FILE")]
+        access_secret_file: Option<String>,
+    },
+    /// `POST /accounts/import`: preview (default) or apply a ForgeWire
+    /// account-interchange document read from `--file`. Preview never
+    /// writes; pass `--apply` to actually create accounts.
+    Import {
+        /// Path to a JSON document matching the interchange schema
+        /// (`{ "schema_version", "source", "accounts": [...] }`).
+        #[arg(long)]
+        file: PathBuf,
+        /// Actually create accounts. Without this flag, only a preview is
+        /// computed and nothing is written -- the safe default.
+        #[arg(long)]
+        apply: bool,
+        #[arg(
+            long,
+            env = "FORGEWIRE_HUB_URL",
+            default_value = "http://127.0.0.1:8765"
+        )]
+        hub_url: String,
+        #[arg(long, env = "FORGEWIRE_ACCESS_SECRET_FILE")]
+        access_secret_file: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum SettingsAction {
+    /// Show the redacted effective/default/hub settings snapshot.
+    List {
+        #[arg(
+            long,
+            env = "FORGEWIRE_HUB_URL",
+            default_value = "http://127.0.0.1:8765"
+        )]
+        hub_url: String,
+        #[arg(long, env = "FORGEWIRE_HUB_TOKEN_FILE")]
+        token_file: Option<String>,
+    },
+    /// Print the settings JSON Schema.
+    Schema {
+        #[arg(
+            long,
+            env = "FORGEWIRE_HUB_URL",
+            default_value = "http://127.0.0.1:8765"
+        )]
+        hub_url: String,
+        #[arg(long, env = "FORGEWIRE_HUB_TOKEN_FILE")]
+        token_file: Option<String>,
+    },
+    /// Set one dotted key to a JSON value using revision compare-and-swap.
+    Set {
+        key: String,
+        value: String,
+        #[arg(long)]
+        expected_revision: i64,
+        #[arg(
+            long,
+            env = "FORGEWIRE_HUB_URL",
+            default_value = "http://127.0.0.1:8765"
+        )]
+        hub_url: String,
+        #[arg(long, env = "FORGEWIRE_HUB_TOKEN_FILE")]
+        token_file: Option<String>,
+    },
+    /// Reset one dotted key to the lower settings tier.
+    Reset {
+        key: String,
+        #[arg(long)]
+        expected_revision: i64,
+        #[arg(
+            long,
+            env = "FORGEWIRE_HUB_URL",
+            default_value = "http://127.0.0.1:8765"
+        )]
         hub_url: String,
         #[arg(long, env = "FORGEWIRE_HUB_TOKEN_FILE")]
         token_file: Option<String>,
@@ -175,15 +436,22 @@ enum AuditAction {
 async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "warn".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "warn".into()),
         )
         .init();
 
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Replay { task_id, with_model, on, dry_run, identity, hub_url, token_file } => {
+        Commands::Replay {
+            task_id,
+            with_model,
+            on,
+            dry_run,
+            identity,
+            hub_url,
+            token_file,
+        } => {
             let token = load_token(token_file.as_deref());
             let client = HubClient::new(&hub_url, &token);
 
@@ -224,8 +492,15 @@ async fn main() {
                 "metadata": metadata,
             });
             // Pass through optional routing fields when present.
-            for key in ["required_tools", "required_tags", "required_capabilities",
-                        "tenant", "workspace_root", "network_egress", "todo_id"] {
+            for key in [
+                "required_tools",
+                "required_tags",
+                "required_capabilities",
+                "tenant",
+                "workspace_root",
+                "network_egress",
+                "todo_id",
+            ] {
                 if let Some(v) = task.get(key) {
                     if !v.is_null() {
                         brief[key] = v.clone();
@@ -236,7 +511,10 @@ async fn main() {
             // 3. Show the reconstructed brief (to stderr so stdout can stay
             //    machine-readable on actual dispatch).
             eprintln!("Replay of task {task_id} — reconstructed brief:");
-            eprintln!("{}", serde_json::to_string_pretty(&brief).unwrap_or_default());
+            eprintln!(
+                "{}",
+                serde_json::to_string_pretty(&brief).unwrap_or_default()
+            );
 
             if dry_run {
                 eprintln!("DRY RUN — not dispatched.");
@@ -245,17 +523,17 @@ async fn main() {
 
             // 4. Re-dispatch over the SIGNED path. A dispatcher identity is
             //    mandatory — there is no unsigned dispatch.
-            let identity_path = match identity {
-                Some(p) => p,
-                None => {
-                    eprintln!("--identity <dispatcher key file> is required to dispatch a replay (or use --dry-run)");
-                    std::process::exit(2);
-                }
+            let Some(identity_path) = identity else {
+                eprintln!("--identity <dispatcher key file> is required to dispatch a replay (or use --dry-run)");
+                std::process::exit(2);
             };
             let dispatcher = match fabric_identity::load(&identity_path) {
                 Ok(id) => id,
                 Err(e) => {
-                    eprintln!("failed to load dispatcher identity {}: {e}", identity_path.display());
+                    eprintln!(
+                        "failed to load dispatcher identity {}: {e}",
+                        identity_path.display()
+                    );
                     std::process::exit(1);
                 }
             };
@@ -264,9 +542,14 @@ async fn main() {
                     let new_id = new_task.get("id").and_then(|v| v.as_i64());
                     match new_id {
                         Some(id) => println!("{id}"),
-                        None => println!("{}", serde_json::to_string(&new_task).unwrap_or_default()),
+                        None => {
+                            println!("{}", serde_json::to_string(&new_task).unwrap_or_default());
+                        }
                     }
-                    eprintln!("replayed task {task_id} -> new task {}", new_id.map(|i| i.to_string()).unwrap_or_else(|| "?".into()));
+                    eprintln!(
+                        "replayed task {task_id} -> new task {}",
+                        new_id.map(|i| i.to_string()).unwrap_or_else(|| "?".into())
+                    );
                 }
                 Err(e) => {
                     eprintln!("replay dispatch failed: {e}");
@@ -275,9 +558,15 @@ async fn main() {
             }
         }
 
-        Commands::Discover { timeout, token_file, port } => {
+        Commands::Discover {
+            timeout,
+            token_file,
+            port,
+        } => {
             let want = token_file.as_deref().and_then(|tf| {
-                std::fs::read_to_string(tf).ok().map(|t| fabric_beacon::token_hash(t.trim()))
+                std::fs::read_to_string(tf)
+                    .ok()
+                    .map(|t| fabric_beacon::token_hash(t.trim()))
             });
             eprintln!("listening for ForgeWire hubs on udp/{port} for {timeout}s...");
             let hubs = fabric_beacon::discover(
@@ -291,11 +580,21 @@ async fn main() {
                 std::process::exit(1);
             }
             for h in hubs {
-                println!("{}\t{}\tproto={}\tcluster={}", h.url, h.name, h.proto, h.token_hash);
+                println!(
+                    "{}\t{}\tproto={}\tcluster={}",
+                    h.url, h.name, h.proto, h.token_hash
+                );
             }
         }
 
-        Commands::Update { from_hub, only, include_vsix, node_timeout, beacon_port, token_file } => {
+        Commands::Update {
+            from_hub,
+            only,
+            include_vsix,
+            node_timeout,
+            beacon_port,
+            token_file,
+        } => {
             let token = load_token(token_file.as_deref());
             if token.is_empty() {
                 eprintln!("a hub token is required (set FORGEWIRE_HUB_TOKEN_FILE or --token-file)");
@@ -307,8 +606,12 @@ async fn main() {
                 vec![u.trim_end_matches('/').to_owned()]
             } else {
                 let want = fabric_beacon::token_hash(&token);
-                let found = fabric_beacon::discover(beacon_port, std::time::Duration::from_secs(4), Some(&want))
-                    .unwrap_or_default();
+                let found = fabric_beacon::discover(
+                    beacon_port,
+                    std::time::Duration::from_secs(4),
+                    Some(&want),
+                )
+                .unwrap_or_default();
                 found.into_iter().map(|h| h.url).collect()
             };
             if nodes.is_empty() {
@@ -324,8 +627,14 @@ async fn main() {
                 for n in &nodes {
                     let c = HubClient::new(n, &token);
                     if let Ok(m) = c.binaries_manifest().await {
-                        let count = m.get("files").and_then(|v| v.as_array()).map_or(0, |a| a.len());
-                        if count > 0 { s = Some(n.clone()); break; }
+                        let count = m
+                            .get("files")
+                            .and_then(|v| v.as_array())
+                            .map_or(0, |a| a.len());
+                        if count > 0 {
+                            s = Some(n.clone());
+                            break;
+                        }
                     }
                 }
                 match s {
@@ -340,34 +649,50 @@ async fn main() {
             match HubClient::new(&staging, &token).binaries_manifest().await {
                 Ok(m) => {
                     let v = m.get("version").and_then(|x| x.as_str()).unwrap_or("?");
-                    let n = m.get("files").and_then(|x| x.as_array()).map_or(0, |a| a.len());
+                    let n = m
+                        .get("files")
+                        .and_then(|x| x.as_array())
+                        .map_or(0, |a| a.len());
                     eprintln!("staging hub: {staging}  (version {v}, {n} file(s))");
                 }
-                Err(e) => { eprintln!("cannot read staging manifest from {staging}: {e}"); std::process::exit(1); }
+                Err(e) => {
+                    eprintln!("cannot read staging manifest from {staging}: {e}");
+                    std::process::exit(1);
+                }
             }
 
-            // 3. Order: every node except the staging hub first, staging hub LAST
-            //    (it must keep serving binaries to the others before updating itself).
-            nodes.sort();
-            nodes.dedup();
-            nodes.retain(|n| n != &staging);
-            nodes.push(staging.clone());
+            // 3. A cluster roll updates every discovered peer first and the
+            //    staging hub last so it remains available as the artifact
+            //    source. `--only` is a strict single-node contract: the
+            //    staging hub is a source, not an implicit second target.
+            nodes = order_update_nodes(nodes, &staging, only.is_some());
 
             // 4. Roll, one node at a time, health-gated on started_at advancing.
             let mut ok = 0usize;
             for node in &nodes {
                 let client = HubClient::new(node, &token);
-                let pre = client.healthz().await.ok()
+                let pre = client
+                    .healthz()
+                    .await
+                    .ok()
                     .and_then(|h| h.get("started_at").and_then(|v| v.as_f64()))
                     .unwrap_or(0.0);
-                let from = if node == &staging { None } else { Some(staging.as_str()) };
-                eprintln!("--> updating {node} (from {}) ...", from.unwrap_or("local stage"));
+                let from = if node == &staging {
+                    None
+                } else {
+                    Some(staging.as_str())
+                };
+                eprintln!(
+                    "--> updating {node} (from {}) ...",
+                    from.unwrap_or("local stage")
+                );
                 if let Err(e) = client.trigger_self_update(from, include_vsix).await {
                     eprintln!("    trigger failed: {e}  (aborting roll)");
                     std::process::exit(1);
                 }
                 // Wait for the node to restart (started_at advances) and be healthy.
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(node_timeout);
+                let deadline =
+                    std::time::Instant::now() + std::time::Duration::from_secs(node_timeout);
                 let mut healthy = false;
                 while std::time::Instant::now() < deadline {
                     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
@@ -388,7 +713,10 @@ async fn main() {
                 }
                 ok += 1;
             }
-            println!("cluster update complete: {ok}/{} node(s) rolled", nodes.len());
+            println!(
+                "cluster update complete: {ok}/{} node(s) rolled",
+                nodes.len()
+            );
         }
 
         Commands::Version => {
@@ -401,7 +729,10 @@ async fn main() {
             let client = HubClient::new(&hub_url, "");
             match client.healthz().await {
                 Ok(health) => {
-                    println!("{}", serde_json::to_string_pretty(&health).unwrap_or_default());
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&health).unwrap_or_default()
+                    );
                 }
                 Err(e) => {
                     eprintln!("hub unreachable at {hub_url}: {e}");
@@ -411,7 +742,11 @@ async fn main() {
         }
 
         Commands::Identity { action } => match action {
-            IdentityAction::Generate { purpose, output, id } => {
+            IdentityAction::Generate {
+                purpose,
+                output,
+                id,
+            } => {
                 let kp = match purpose.as_str() {
                     "runner" => KeyPurpose::Runner,
                     "dispatcher" => KeyPurpose::Dispatcher,
@@ -438,7 +773,10 @@ async fn main() {
                     println!("  purpose:    {}", identity.purpose);
                     println!("  public_key: {}", identity.public_key_hex);
                 } else {
-                    println!("{}", serde_json::to_string_pretty(&identity).unwrap_or_default());
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&identity).unwrap_or_default()
+                    );
                 }
             }
             IdentityAction::Show { path } => {
@@ -456,24 +794,38 @@ async fn main() {
                     println!("created_at: {t}");
                 }
             }
-            IdentityAction::Validate { path } => {
-                match fabric_identity::load(&path) {
-                    Ok(id) => {
-                        println!("VALID: {} (purpose={}, public_key={}...)", id.id, id.purpose, &id.public_key_hex[..16]);
-                    }
-                    Err(e) => {
-                        eprintln!("INVALID: {e}");
-                        std::process::exit(1);
-                    }
+            IdentityAction::Validate { path } => match fabric_identity::load(&path) {
+                Ok(id) => {
+                    println!(
+                        "VALID: {} (purpose={}, public_key={}...)",
+                        id.id,
+                        id.purpose,
+                        &id.public_key_hex[..16]
+                    );
                 }
-            }
+                Err(e) => {
+                    eprintln!("INVALID: {e}");
+                    std::process::exit(1);
+                }
+            },
         },
 
         Commands::Audit { action } => {
             let (hub_url, token_file) = match &action {
-                AuditAction::Tail { hub_url, token_file } => (hub_url.clone(), token_file.clone()),
-                AuditAction::Verify { hub_url, token_file, .. } => (hub_url.clone(), token_file.clone()),
-                AuditAction::Export { hub_url, token_file, .. } => (hub_url.clone(), token_file.clone()),
+                AuditAction::Tail {
+                    hub_url,
+                    token_file,
+                } => (hub_url.clone(), token_file.clone()),
+                AuditAction::Verify {
+                    hub_url,
+                    token_file,
+                    ..
+                } => (hub_url.clone(), token_file.clone()),
+                AuditAction::Export {
+                    hub_url,
+                    token_file,
+                    ..
+                } => (hub_url.clone(), token_file.clone()),
             };
             let token = load_token(token_file.as_deref());
             let client = HubClient::new(&hub_url, &token);
@@ -536,225 +888,303 @@ async fn main() {
             }
         }
 
-        Commands::Doctor { hub_url, token_file } => {
-            let mut failures = 0u32;
-            let mut warnings = 0u32;
-
-            println!("ForgeWire Fabric Doctor");
-            println!("=======================");
-            println!();
-
-            // ── rqlite (must check FIRST — hub depends on it) ────────────────
-            let rqlite_host = std::env::var("FORGEWIRE_HUB_RQLITE_HOST")
-                .unwrap_or_else(|_| "127.0.0.1".into());
-            let rqlite_port = std::env::var("FORGEWIRE_HUB_RQLITE_PORT")
-                .ok().and_then(|v| v.parse::<u16>().ok()).unwrap_or(4001);
-            let rqlite_status_url = format!("http://{rqlite_host}:{rqlite_port}/status");
-            let rqlite_readyz_url = format!("http://{rqlite_host}:{rqlite_port}/readyz");
-
-            print!("rqlite ({rqlite_host}:{rqlite_port}):  ");
-            match reqwest::get(&rqlite_readyz_url).await {
-                Ok(r) if r.status().is_success() => {
-                    // Check leader status from /status
-                    match reqwest::get(&rqlite_status_url).await {
-                        Ok(sr) if sr.status().is_success() => {
-                            if let Ok(body) = sr.json::<serde_json::Value>().await {
-                                let leader_addr = body
-                                    .pointer("/store/leader/addr")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("");
-                                let state = body
-                                    .pointer("/store/raft/state")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("unknown");
-                                if leader_addr.is_empty() {
-                                    println!("FAIL — no Raft leader elected (state={state})");
-                                    println!("  The rqlite cluster has no leader. Dispatch and claims will fail.");
-                                    println!("  Fix: ensure at least 2 of 3 rqlite nodes are reachable.");
-                                    println!("  Check: nssm status ForgeWireRqlite{}", if cfg!(windows) { "" } else { "" });
-                                    failures += 1;
-                                } else {
-                                    println!("OK  (leader={leader_addr}, state={state})");
-                                }
-
-                                // ── Suffrage check (ADDR-5): a 2-voter cluster is a
-                                // quorum trap — losing either node halts writes.
-                                let nodes_url = format!("http://{rqlite_host}:{rqlite_port}/nodes?nonvoters");
-                                if let Ok(nr) = reqwest::get(&nodes_url).await {
-                                    if let Ok(nb) = nr.json::<serde_json::Value>().await {
-                                        if let Some(map) = nb.as_object() {
-                                            let total = map.len();
-                                            let voters = map.values()
-                                                .filter(|v| v.get("voter").and_then(|x| x.as_bool()).unwrap_or(false))
-                                                .count();
-                                            print!("Suffrage:  ");
-                                            if total == 2 && voters == 2 {
-                                                println!("WARN — 2-voter cluster (quorum=2): losing EITHER node halts writes.");
-                                                println!("  The cluster manager auto-demotes the standby to non-voter; if it");
-                                                println!("  persists, re-run nssm-install-rqlite.ps1 on the standby. Add a 3rd");
-                                                println!("  node for full fault tolerance (all become voters).");
-                                                warnings += 1;
-                                            } else if total == 1 {
-                                                println!("OK   (single-node leader; add nodes for HA)");
-                                            } else {
-                                                println!("OK   ({voters} voter(s) / {total} node(s))");
-                                            }
-                                        }
-                                    }
-                                }
-                            } else {
-                                println!("OK  (readyz=200, status parse failed)");
-                            }
+        Commands::RoleTokens { action } => match action {
+            RoleTokenAction::List {
+                include_revoked,
+                hub_url,
+                token_file,
+            } => {
+                let client = HubClient::new(&hub_url, &load_token(token_file.as_deref()));
+                match client.list_role_tokens(include_revoked).await {
+                    Ok(value) => println!(
+                        "{}",
+                        serde_json::to_string_pretty(&value).unwrap_or_default()
+                    ),
+                    Err(error) => {
+                        eprintln!("role-token list failed: {error}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            RoleTokenAction::Issue {
+                label,
+                roles,
+                hub_url,
+                token_file,
+            } => {
+                let client = HubClient::new(&hub_url, &load_token(token_file.as_deref()));
+                match client.issue_role_token(&label, &roles).await {
+                    Ok(value) => {
+                        eprintln!("credential shown once; move it immediately into a protected token file");
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&value).unwrap_or_default()
+                        );
+                    }
+                    Err(error) => {
+                        eprintln!("role-token issue failed: {error}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+            RoleTokenAction::Migrate {
+                split,
+                from_token_file,
+                label,
+                roles,
+                hub_url,
+                token_file,
+            } => {
+                let client = HubClient::new(&hub_url, &load_token(token_file.as_deref()));
+                if split {
+                    match client.split_legacy_role_tokens(&label).await {
+                        Ok(value) => {
+                            eprintln!("five credentials shown once; move each immediately into a protected role-specific token file");
+                            println!(
+                                "{}",
+                                serde_json::to_string_pretty(&value).unwrap_or_default()
+                            );
                         }
-                        _ => println!("OK  (readyz=200)"),
+                        Err(error) => {
+                            eprintln!("legacy role-token split failed: {error}");
+                            std::process::exit(1);
+                        }
                     }
+                    return;
                 }
-                Ok(r) => {
-                    println!("FAIL — rqlite returned {} (not ready)", r.status());
-                    println!("  rqlite is running but not ready. Check rqlite logs.");
-                    failures += 1;
+                let from_token_file = from_token_file.unwrap_or_else(|| {
+                    eprintln!("--from-token-file is required unless --split is used");
+                    std::process::exit(2);
+                });
+                if roles.is_empty() {
+                    eprintln!("--roles is required unless --split is used");
+                    std::process::exit(2);
                 }
-                Err(e) => {
-                    println!("FAIL — rqlite not reachable: {e}");
-                    println!("  rqlite must be running. Start with:");
-                    if cfg!(windows) {
-                        println!("    nssm start ForgeWireRqliteNode1");
-                    } else {
-                        println!("    systemctl start forgewire-rqlite");
+                let migrated = std::fs::read_to_string(&from_token_file)
+                    .map(|value| value.trim().to_owned())
+                    .unwrap_or_else(|error| {
+                        eprintln!(
+                            "cannot read migration token file {}: {error}",
+                            from_token_file.display()
+                        );
+                        std::process::exit(1);
+                    });
+                match client.migrate_role_token(&migrated, &label, &roles).await {
+                    Ok(value) => println!(
+                        "{}",
+                        serde_json::to_string_pretty(&value).unwrap_or_default()
+                    ),
+                    Err(error) => {
+                        eprintln!("role-token migration failed: {error}");
+                        std::process::exit(1);
                     }
-                    failures += 1;
                 }
             }
+            RoleTokenAction::Revoke {
+                token_id,
+                hub_url,
+                token_file,
+            } => {
+                let client = HubClient::new(&hub_url, &load_token(token_file.as_deref()));
+                match client.revoke_role_token(&token_id).await {
+                    Ok(value) => println!(
+                        "{}",
+                        serde_json::to_string_pretty(&value).unwrap_or_default()
+                    ),
+                    Err(error) => {
+                        eprintln!("role-token revoke failed: {error}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+        },
 
-            // ── Hub connectivity ─────────────────────────────────────────────
-            let token = load_token(token_file.as_deref());
-            let client = HubClient::new(&hub_url, &token);
-            print!("Hub ({hub_url}):  ");
-            match client.healthz().await {
-                Ok(health) => {
-                    let version  = health["version"].as_str().unwrap_or("?");
-                    let proto    = health["protocol_version"].as_i64().unwrap_or(0);
-                    let sidecar  = health["sidecar_integrity"].as_str().unwrap_or("unknown");
-                    let rust_hub = health["rust_hub"].as_bool().unwrap_or(false);
-                    let backend  = health["backend"].as_str().unwrap_or("?");
-
-                    if !rust_hub {
-                        println!("WARN — Python hub detected (v{version}). Switch to Rust hub.");
-                        warnings += 1;
-                    } else if !backend.starts_with("rqlite") {
-                        println!("WARN — hub backend is '{backend}', expected rqlite.");
-                        warnings += 1;
-                    } else {
-                        println!("OK   (v{version}, proto={proto}, backend={backend}, runtime=rust)");
+        Commands::Settings { action } => match action {
+            SettingsAction::List {
+                hub_url,
+                token_file,
+            } => {
+                let client = HubClient::new(&hub_url, &load_token(token_file.as_deref()));
+                print_api_result("settings read", client.settings().await);
+            }
+            SettingsAction::Schema {
+                hub_url,
+                token_file,
+            } => {
+                let client = HubClient::new(&hub_url, &load_token(token_file.as_deref()));
+                print_api_result("settings schema read", client.settings_schema().await);
+            }
+            SettingsAction::Set {
+                key,
+                value,
+                expected_revision,
+                hub_url,
+                token_file,
+            } => {
+                let value: Value = serde_json::from_str(&value).unwrap_or_else(|error| {
+                    eprintln!("setting value must be JSON: {error}");
+                    std::process::exit(64);
+                });
+                let client = HubClient::new(&hub_url, &load_token(token_file.as_deref()));
+                print_api_result(
+                    "settings mutation",
+                    client.set_setting(&key, expected_revision, value).await,
+                );
+            }
+            SettingsAction::Reset {
+                key,
+                expected_revision,
+                hub_url,
+                token_file,
+            } => {
+                let client = HubClient::new(&hub_url, &load_token(token_file.as_deref()));
+                print_api_result(
+                    "settings reset",
+                    client.reset_setting(&key, expected_revision).await,
+                );
+            }
+        },
+        Commands::Auth { action } => match action {
+            AuthAction::BootstrapStatus { hub_url } => {
+                let client = HubClient::new(&hub_url, "");
+                print_api_result("bootstrap status", client.bootstrap_status().await);
+            }
+            AuthAction::Bootstrap {
+                username,
+                display_name,
+                password,
+                bootstrap_secret,
+                hub_url,
+            } => {
+                let password = password.unwrap_or_else(|| {
+                    eprintln!("password: ");
+                    let mut line = String::new();
+                    std::io::stdin().read_line(&mut line).unwrap_or_else(|e| {
+                        eprintln!("failed to read password from stdin: {e}");
+                        std::process::exit(1);
+                    });
+                    line.trim().to_owned()
+                });
+                let client = HubClient::new(&hub_url, "");
+                match client
+                    .bootstrap(
+                        &username,
+                        &display_name,
+                        &password,
+                        bootstrap_secret.as_deref(),
+                    )
+                    .await
+                {
+                    Ok(value) => {
+                        eprintln!(
+                            "bootstrap complete -- realm's first administrator created. \
+                             Sign in via POST /auth/login with this account's username \
+                             and password."
+                        );
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&value).unwrap_or_default()
+                        );
                     }
-                    if sidecar == "trusted_bearer" {
-                        println!("  WARN sidecar_integrity=trusted_bearer: out-of-band fields are bearer-gated only.");
-                        println!("       Upgrade dispatchers to protocol v3 to close this gap (M2.7.7 expiry gate).");
-                        warnings += 1;
+                    Err(error) => {
+                        eprintln!("bootstrap failed: {error}");
+                        std::process::exit(1);
                     }
                 }
-                Err(e) => {
-                    println!("FAIL — {e}");
-                    failures += 1;
+            }
+        },
+        Commands::Accounts { action } => match action {
+            AccountsAction::Export {
+                hub_url,
+                access_secret_file,
+            } => {
+                let client = HubClient::new(&hub_url, "");
+                let access_secret = load_access_secret(access_secret_file.as_deref());
+                print_api_result(
+                    "account export",
+                    client.export_accounts(&access_secret).await,
+                );
+            }
+            AccountsAction::Import {
+                file,
+                apply,
+                hub_url,
+                access_secret_file,
+            } => {
+                let text = std::fs::read_to_string(&file).unwrap_or_else(|e| {
+                    eprintln!("cannot read {}: {e}", file.display());
+                    std::process::exit(1);
+                });
+                let document: serde_json::Value = serde_json::from_str(&text).unwrap_or_else(|e| {
+                    eprintln!("invalid JSON in {}: {e}", file.display());
+                    std::process::exit(1);
+                });
+                let client = HubClient::new(&hub_url, "");
+                let access_secret = load_access_secret(access_secret_file.as_deref());
+                if !apply {
+                    eprintln!("preview only -- pass --apply to actually create accounts");
                 }
+                print_api_result(
+                    "account import",
+                    client
+                        .import_accounts(&access_secret, &document, !apply)
+                        .await,
+                );
             }
-
-            // ── Cluster registry (M2.8.10: queues, capability index, agents, hosts)
-            match client.healthz().await {
-                Ok(health) => {
-                    let fabric_q = health.pointer("/queues/fabric").and_then(|v| v.as_i64()).unwrap_or(-1);
-                    let loom_q   = health.pointer("/queues/loom").and_then(|v| v.as_i64()).unwrap_or(-1);
-                    let cap_rows = health["capability_index_rows"].as_i64().unwrap_or(-1);
-                    if fabric_q < 0 || loom_q < 0 {
-                        println!("Queues:  FAIL — healthz has no fabric/loom queue depths (pre-v4 hub?)");
-                        failures += 1;
-                    } else {
-                        println!("Queues:  OK   (fabric={fabric_q}, loom={loom_q})");
-                    }
-                    if cap_rows < 0 {
-                        println!("Capability index:  FAIL — healthz has no capability_index_rows");
-                        failures += 1;
-                    } else {
-                        println!("Capability index:  OK   ({cap_rows} row(s))");
-                    }
-                }
-                Err(_) => {} // already counted as a hub connectivity failure above
-            }
-            print!("Agents:  ");
-            match client.list_agents().await {
-                Ok(v) => {
-                    let n = v["agents"].as_array().map_or(0, |a| a.len());
-                    println!("OK   ({n} agent runner(s))");
-                }
-                Err(e) => { println!("FAIL — {e}"); failures += 1; }
-            }
-            print!("Hosts:  ");
-            match client.list_hosts().await {
-                Ok(v) => {
-                    let n = v["hosts"].as_array().map_or(0, |a| a.len());
-                    if n == 0 { println!("WARN — no hosts in registry"); warnings += 1; }
-                    else { println!("OK   ({n} host(s))"); }
-                }
-                Err(e) => { println!("FAIL — {e}"); failures += 1; }
-            }
-
-            // ── Token file ───────────────────────────────────────────────────
-            let token_path = token_file.as_deref().map(String::from).unwrap_or_else(|| {
-                if cfg!(windows) { r"C:\ProgramData\forgewire\hub.token".into() }
-                else { "/var/lib/forgewire/hub.token".into() }
-            });
-            print!("Token ({token_path}):  ");
-            match std::fs::read_to_string(&token_path) {
-                Ok(t) if t.trim().len() >= 16 => println!("OK   ({} chars)", t.trim().len()),
-                Ok(t) => { println!("WARN — only {} chars (min 16)", t.trim().len()); warnings += 1; }
-                Err(_) => { println!("FAIL — file not found"); failures += 1; }
-            }
-
-            // ── Identity files ───────────────────────────────────────────────
-            let identity_paths: Vec<PathBuf> = if cfg!(windows) {
-                vec![
-                    r"C:\ProgramData\forgewire\runner_identity.json".into(),
-                    r"C:\ProgramData\forgewire\hub_identity.json".into(),
-                ]
+        },
+        Commands::HistoryStatus {
+            hub_url,
+            token_file,
+        } => {
+            let client = HubClient::new(&hub_url, &load_token(token_file.as_deref()));
+            print_api_result("history status", client.history_status().await);
+        }
+        Commands::Doctor {
+            hub_url,
+            token_file,
+            json,
+        } => {
+            let report = doctor::run(&hub_url, token_file.as_deref()).await;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&report).expect("doctor report serializes")
+                );
             } else {
-                vec![
-                    "/var/lib/forgewire/runner_identity.json".into(),
-                    "/var/lib/forgewire/hub_identity.json".into(),
-                ]
-            };
-            for path in &identity_paths {
-                let label = path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-                print!("Identity ({label}):  ");
-                match fabric_identity::load(path) {
-                    Ok(id) => println!("OK   ({}, purpose={}, pk={}...)", id.id, id.purpose, &id.public_key_hex[..16]),
-                    Err(fabric_identity::IdentityError::NotFound(_)) => println!("not found (optional)"),
-                    Err(e) => { println!("FAIL — {e}"); failures += 1; }
-                }
+                doctor::print_human(&report);
             }
-
-            // ── Native binaries ──────────────────────────────────────────────
-            println!();
-            println!("Native binaries:");
-            let bin_dir = if cfg!(windows) { r"C:\ProgramData\forgewire\bin" } else { "/var/lib/forgewire/bin" };
-            for bin in &["forgewire-hub", "forgewire-runner", "forgewire-fabric-cli"] {
-                let path = PathBuf::from(bin_dir).join(format!("{}{}", bin, if cfg!(windows) { ".exe" } else { "" }));
-                let found = path.exists() || which(bin);
-                print!("  {bin:<26} ");
-                if found { println!("OK"); } else { println!("not found in {bin_dir}"); warnings += 1; }
-            }
-
-            // ── Summary ──────────────────────────────────────────────────────
-            println!();
-            if failures > 0 {
-                eprintln!("RESULT: {} failure(s), {} warning(s) — cluster is NOT healthy", failures, warnings);
-                std::process::exit(1);
-            } else if warnings > 0 {
-                println!("RESULT: 0 failures, {} warning(s) — cluster is degraded", warnings);
-            } else {
-                println!("RESULT: all checks passed ✓");
+            if report.exit_code != 0 {
+                std::process::exit(report.exit_code);
             }
         }
     }
+}
+
+fn print_api_result(operation: &str, result: Result<Value, fabric_client::ClientError>) {
+    match result {
+        Ok(value) => println!(
+            "{}",
+            serde_json::to_string_pretty(&value).unwrap_or_else(|_| "null".into())
+        ),
+        Err(error) => {
+            eprintln!("{operation} failed: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn order_update_nodes(
+    mut nodes: Vec<String>,
+    staging: &str,
+    single_node_only: bool,
+) -> Vec<String> {
+    nodes.sort();
+    nodes.dedup();
+    if !single_node_only {
+        nodes.retain(|node| node != staging);
+        nodes.push(staging.to_owned());
+    }
+    nodes
 }
 
 fn load_token(token_file: Option<&str>) -> String {
@@ -762,22 +1192,96 @@ fn load_token(token_file: Option<&str>) -> String {
         .map(String::from)
         .or_else(|| std::env::var("FORGEWIRE_HUB_TOKEN_FILE").ok())
         .unwrap_or_else(|| {
-            if cfg!(windows) {
-                r"C:\ProgramData\forgewire\hub.token".into()
-            } else {
-                "/var/lib/forgewire/hub.token".into()
-            }
+            doctor::default_state_dir()
+                .join("hub.token")
+                .to_string_lossy()
+                .into_owned()
         });
     std::fs::read_to_string(&path)
         .map(|t| t.trim().to_owned())
         .unwrap_or_default()
 }
 
-fn which(name: &str) -> bool {
-    std::process::Command::new(name)
-        .arg("--help")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok()
+/// Same shape as [`load_token`], but for a human session's access secret
+/// (`/accounts/export`/`/accounts/import`) rather than a role token --
+/// deliberately no default OS path fallback (unlike a role token, there is
+/// no standard deployment location for a personal, ephemeral human session
+/// secret). An empty string on failure fails the request with a clear
+/// hub-side 401 rather than panicking.
+fn load_access_secret(access_secret_file: Option<&str>) -> String {
+    let Some(path) = access_secret_file
+        .map(String::from)
+        .or_else(|| std::env::var("FORGEWIRE_ACCESS_SECRET_FILE").ok())
+    else {
+        return String::new();
+    };
+    std::fs::read_to_string(&path)
+        .map(|t| t.trim().to_owned())
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod role_token_cli_tests {
+    use super::*;
+
+    #[test]
+    fn migrate_split_is_a_native_cli_path() {
+        let cli = Cli::try_parse_from([
+            "forgewire-fabric-cli",
+            "role-tokens",
+            "migrate",
+            "--split",
+            "--label",
+            "two-machine cluster",
+        ])
+        .expect("parse role-token split");
+        match cli.command {
+            Commands::RoleTokens {
+                action:
+                    RoleTokenAction::Migrate {
+                        split,
+                        from_token_file,
+                        roles,
+                        ..
+                    },
+            } => {
+                assert!(split);
+                assert!(from_token_file.is_none());
+                assert!(roles.is_empty());
+            }
+            _ => panic!("expected role-token migrate --split"),
+        }
+    }
+
+    #[test]
+    fn update_only_does_not_append_the_staging_hub() {
+        let nodes = order_update_nodes(
+            vec!["http://remote:8765".into()],
+            "http://staging:8765",
+            true,
+        );
+        assert_eq!(nodes, vec!["http://remote:8765"]);
+    }
+
+    #[test]
+    fn cluster_update_keeps_the_staging_hub_last() {
+        let nodes = order_update_nodes(
+            vec![
+                "http://staging:8765".into(),
+                "http://peer-b:8765".into(),
+                "http://peer-a:8765".into(),
+                "http://peer-a:8765".into(),
+            ],
+            "http://staging:8765",
+            false,
+        );
+        assert_eq!(
+            nodes,
+            vec![
+                "http://peer-a:8765",
+                "http://peer-b:8765",
+                "http://staging:8765",
+            ]
+        );
+    }
 }

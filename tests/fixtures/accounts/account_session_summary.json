@@ -1,0 +1,44 @@
+{
+  "$comment": "114C.1 cross-language fixture: parsed by both crates/fabric-accounts (Rust, tests/cross_language_fixtures.rs) and packages/fabric-client-core (TypeScript, src/authContracts.test.ts). Field names are the wire/JSON shape (snake_case), matching the existing fabric-hub HTTP JSON convention -- not the TS camelCase view-model shape, which is a 114C.7 normalization concern. Every string in typed_error_codes must equal AccountsError::ALL_CODES on the Rust side and TYPED_AUTH_ERROR_CODES on the TypeScript side, in the same order, or the corresponding test fails.",
+  "account_summary": {
+    "account_id": "acct-01hxfixture0000000000000",
+    "username": "operator1",
+    "display_name": "Operator One",
+    "status": "active",
+    "roles": ["dispatcher", "reviewer"],
+    "revision": 3
+  },
+  "session_summary": {
+    "session_id": "sess-01hxfixture0000000000000",
+    "account_id": "acct-01hxfixture0000000000000",
+    "client_kind": "vsix",
+    "client_label": "VS Code on desktop-a",
+    "assurance_level": "aal1",
+    "authenticated_at": "2026-07-17T12:00:00Z",
+    "idle_expires_at": "2026-07-17T13:00:00Z",
+    "absolute_expires_at": "2026-07-18T12:00:00Z",
+    "current": true
+  },
+  "typed_error_codes": [
+    "AuthenticationRequired",
+    "InvalidCredentials",
+    "SessionExpired",
+    "SessionRevoked",
+    "RefreshReplayDetected",
+    "AccountDisabled",
+    "AccountLocked",
+    "RecoveryRequired",
+    "StepUpRequired",
+    "AssuranceTooLow",
+    "AccountPolicyViolation",
+    "LastAdministratorViolation",
+    "UsernameConflict",
+    "CredentialConflict",
+    "BootstrapClosed",
+    "BootstrapLocalOnly",
+    "AuthServiceUnavailable",
+    "RolePolicyViolation",
+    "ChallengeInvalid",
+    "CredentialReplaySuspected"
+  ]
+}

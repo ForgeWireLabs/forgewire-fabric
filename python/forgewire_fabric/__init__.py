@@ -2,16 +2,15 @@
 
 Top-level package. The two main entry points users care about are:
 
-* :mod:`forgewire_fabric.hub` — the FastAPI hub server (dispatch, claim, streams,
-  results). Run with ``forgewire-fabric hub start`` or ``python -m forgewire_fabric.hub``.
+* :mod:`forgewire_fabric.hub` — HTTP client, MCP adapters, and discovery helpers
+  for the native Rust hub. Run the installed binary with ``forgewire-fabric hub start``.
 * :mod:`forgewire_fabric.runner` — runner identity + capability discovery helpers
   consumed by an embedding application (e.g. PhrenForge) to register itself
   with a hub. Standalone runners can be started with ``forgewire-fabric runner start``.
 
 Public Python API surface is intentionally small. Everything heavy lives behind
 :class:`forgewire_fabric.hub.client.HubClient` (HTTP, formerly ``BlackboardClient``,
-which is retained as a one-cycle alias) and the FastAPI app at
-:mod:`forgewire_fabric.hub.server`. The Rust acceleration crates are loaded
+which is retained as a one-cycle alias). The Rust acceleration crates are loaded
 transparently as ``forgewire_runtime`` when available; pure-Python fallbacks
 are always present.
 
@@ -37,7 +36,7 @@ __all__ = [
 # cross-runtime schema support → 0.17.0 → 0.18.0. Never move this down to
 # "align" with Rust; the two artifacts are versioned separately. See
 # VERSIONING.md for the full scheme.
-__version__ = "0.18.0"
+__version__ = "0.19.0"
 
 # Compat envelope for the ``forgewire-runtime`` (PyO3) wheel. The hub and
 # runner check this at import time and log a loud warning if a mismatching

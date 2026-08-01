@@ -1,6 +1,6 @@
 [package]
 name = "forgewire-fabric-desktop"
-version = "0.1.0"
+version = "0.3.0"
 description = "Tauri desktop control panel for ForgeWire Fabric"
 authors = ["ForgeWire Contributors"]
 license = "Apache-2.0"
@@ -15,10 +15,41 @@ tauri-build = { version = "2.5.3", features = [] }
 [dependencies]
 fabric-client = { path = "../../crates/fabric-client" }
 fabric-identity = { path = "../../crates/fabric-identity" }
-fabric-types = { path = "../../crates/fabric-types" }
+fabric-types = { package = "forgewire-fabric-types", path = "../../crates/fabric-types" }
+# 114C.6: OS-native protected storage for human-session secrets (Windows
+# Credential Manager / macOS Keychain / Linux Secret Service). Session
+# secrets rotate on every login and every step-up, so the existing plaintext
+# `~/.forgewire/hub.token` file pattern (a static token) is the wrong
+# precedent to extend to them. keyring 3.x requires an explicit per-platform
+# backend feature; `crypto-rust` keeps the Linux Secret Service path off
+# native OpenSSL, matching this repo's rustls-everywhere convention.
+keyring = { version = "3", features = [
+  "windows-native",
+  "apple-native",
+  "sync-secret-service",
+  "crypto-rust",
+] }
+# 114C.6 Slice 5d: the state nonce for the WebAuthn bridge (see
+# webauthn_bridge.rs) needs an OS CSPRNG. `getrandom` alone, not `rand`: it is
+# already present transitively (reqwest's TLS stack pulls it in), has no
+# further dependencies of its own, and the nonce is raw bytes, not a
+# distribution sample, so `rand`'s API surface would add nothing.
+getrandom = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tauri = { version = "2.11.5", features = [] }
-tokio = { version = "1.48", features = ["rt-multi-thread"] }
+# 114C.6 Slice 5d: opens the hub-served WebAuthn bridge page in the system
+# browser. `open_url` is a free function (`::open::that_detached` underneath)
+# that needs no plugin registration or AppHandle -- called directly from the
+# bridge Tauri command, not invoked from the webview, so it adds no new IPC
+# surface.
+tauri-plugin-opener = "2.5"
+tauri-plugin-updater = "2.10.1"
+# "net"/"time"/"io-util": the WebAuthn bridge's loopback callback listener
+# (webauthn_bridge.rs) is plain async Rust over a raw TCP socket -- no hyper
+# or axum, matching fabric-hub's own webauthn_bridge.rs preference for a tiny
+# auditable parser over a general-purpose one for a single narrow endpoint.
+tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "net", "time", "io-util"] }
 toml = "0.9"
+zeroize = "1.8"

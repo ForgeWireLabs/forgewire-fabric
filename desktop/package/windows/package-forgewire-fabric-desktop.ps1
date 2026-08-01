@@ -8,6 +8,7 @@
       - ForgeWire Fabric.exe
       - install-forgewire-fabric-desktop.ps1
       - uninstall-forgewire-fabric-desktop.ps1
+      - test-forgewire-fabric-desktop.ps1
 
     The resulting package is suitable for local install, SSH install on the
     second Fabric host, and teardown/reinstall smoke tests.
@@ -50,6 +51,7 @@ New-Item -ItemType Directory -Force -Path $packageDir | Out-Null
 Copy-Item -LiteralPath $releaseExe -Destination (Join-Path $packageDir "ForgeWire Fabric.exe") -Force
 Copy-Item -LiteralPath (Join-Path $scriptDir "install-forgewire-fabric-desktop.ps1") -Destination $packageDir -Force
 Copy-Item -LiteralPath (Join-Path $scriptDir "uninstall-forgewire-fabric-desktop.ps1") -Destination $packageDir -Force
+Copy-Item -LiteralPath (Join-Path $scriptDir "test-forgewire-fabric-desktop.ps1") -Destination $packageDir -Force
 
 if (Test-Path -LiteralPath $zipPath) {
     Remove-Item -LiteralPath $zipPath -Force
@@ -62,4 +64,5 @@ Compress-Archive -Path (Join-Path $packageDir "*") -DestinationPath $zipPath -Fo
     Executable = Join-Path $packageDir "ForgeWire Fabric.exe"
     Installer = Join-Path $packageDir "install-forgewire-fabric-desktop.ps1"
     Uninstaller = Join-Path $packageDir "uninstall-forgewire-fabric-desktop.ps1"
+    Validator = Join-Path $packageDir "test-forgewire-fabric-desktop.ps1"
 } | Format-List

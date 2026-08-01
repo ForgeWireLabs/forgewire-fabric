@@ -57,3 +57,24 @@ skill available on an agent:
    `GET /capabilities/prompt/<skill-name>`.
 
 No hub-side change, no manifest editing, no tag wiring.
+
+## Packaged VS Code prompt bundle
+
+M2.5.8 packages these local prompt templates in the VSIX:
+
+| Prompt | Intended seat | Current behavior |
+| --- | --- | --- |
+| `dispatch-test-fix` | dispatcher | Routes an evidence-backed test repair through Fabric. |
+| `dispatch-docs-sync` | dispatcher | Keeps repo/ownership scopes disjoint and refreshes required audits. |
+| `bisect-regression` | dispatcher | Dispatches a non-destructive bisect with a deterministic predicate. |
+| `triage-pending-approvals` | approver | Prepares a recommendation; the VSIX performs the audited decision. |
+| `replay-with-cheaper-model` | observer | Prepares a governed replay handoff; no replay MCP tool is invented. |
+| `enroll-runner` | dispatcher | Guides installer + runner-MCP enrollment and verifies real advertisement. |
+| `dispatch-cost-aware` | dispatcher | Chooses the cheapest capable advertised route from supplied budget facts. |
+
+Run **ForgeWire: Install / Update Agent Suite in Workspace** to copy these to
+`.github/prompts/`. They are editor-side prompt templates. Merely installing
+them does **not** claim that a remote Fabric runner advertises the prompt as an
+MCP capability. To make one routable through `dispatch_skill`, expose the same
+prompt from a prompt-capable MCP server connected to that runner and verify it
+under the VSIX Agents pane or `GET /capabilities/prompt/<name>`.

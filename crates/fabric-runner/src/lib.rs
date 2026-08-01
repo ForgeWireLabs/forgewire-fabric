@@ -22,6 +22,7 @@ use std::time::Duration;
 use fabric_client::{
     ClaimPayload, ClaimResponse, HeartbeatStats, HubClient, RegisterPayload, TaskResult,
 };
+use fabric_egress::{EgressProxy, SAFE_CHILD_ENV_VARS};
 use fabric_identity::IdentityFile;
 use fabric_types::KeyPurpose;
 use serde_json::Value;
@@ -29,6 +30,26 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
+
+/// Platform-appropriate default state directory: `%PROGRAMDATA%\forgewire`
+/// on Windows, `~/Library/Application Support/forgewire` on macOS,
+/// `/var/lib/forgewire` on Linux (the FHS convention for a system-service
+/// daemon, which this runner is per its systemd unit file -- not a bug to
+/// fix here, unlike Windows/macOS). Only consulted as a fallback: every
+/// shipped installer (nssm-install-runner.ps1, the systemd unit) already
+/// passes FORGEWIRE_HUB_TOKEN_FILE/FORGEWIRE_RUNNER_IDENTITY explicitly, so
+/// this default never relocates an already-configured installation.
+pub fn default_state_dir() -> PathBuf {
+    if cfg!(windows) {
+        PathBuf::from(r"C:\ProgramData\forgewire")
+    } else if cfg!(target_os = "macos") {
+        std::env::var("HOME")
+            .map(|home| PathBuf::from(home).join("Library/Application Support/forgewire"))
+            .unwrap_or_else(|_| PathBuf::from("/var/lib/forgewire"))
+    } else {
+        PathBuf::from("/var/lib/forgewire")
+    }
+}
 
 pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 pub const POLL_INTERVAL: Duration = Duration::from_secs(5);
@@ -77,11 +98,10 @@ impl RunnerConfig {
             .and_then(|v| v.parse().ok())
             .unwrap_or(15);
         let token_file = std::env::var("FORGEWIRE_HUB_TOKEN_FILE").unwrap_or_else(|_| {
-            if cfg!(windows) {
-                r"C:\ProgramData\forgewire\hub.token".to_owned()
-            } else {
-                "/var/lib/forgewire/hub.token".to_owned()
-            }
+            default_state_dir()
+                .join("hub.token")
+                .to_string_lossy()
+                .into_owned()
         });
         let token = std::fs::read_to_string(&token_file)
             .map_err(|e| format!("cannot read token file {token_file}: {e}"))?
@@ -92,13 +112,7 @@ impl RunnerConfig {
             .map_err(|_| "FORGEWIRE_RUNNER_WORKSPACE_ROOT not set")?;
         let identity_path = std::env::var("FORGEWIRE_RUNNER_IDENTITY")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                if cfg!(windows) {
-                    PathBuf::from(r"C:\ProgramData\forgewire\runner_identity.json")
-                } else {
-                    PathBuf::from("/var/lib/forgewire/runner_identity.json")
-                }
-            });
+            .unwrap_or_else(|_| default_state_dir().join("runner_identity.json"));
         let max_concurrent = std::env::var("FORGEWIRE_RUNNER_MAX_CONCURRENT")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -168,7 +182,8 @@ fn fresh_nonce() -> String {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
+        .ok()
+        .and_then(|d| u64::try_from(d.as_nanos()).ok())
         .unwrap_or(0);
     let c = COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("{nanos:016x}{c:08x}")
@@ -238,7 +253,7 @@ pub fn spawn_presence_responder(
             port,
             "starting node presence responder (beacon v2)"
         );
-        if let Err(e) = fabric_beacon::serve_presence(advert, port, interval) {
+        if let Err(e) = fabric_beacon::serve_presence(&advert, port, interval) {
             warn!("presence responder unavailable (continuing without): {e}");
         }
     })
@@ -445,13 +460,49 @@ async fn run_one_task(
     // Channel to receive the intent outcome from pump_stream.
     let (intent_tx, mut intent_rx) = tokio::sync::mpsc::channel::<IntentOutcome>(4);
 
-    let result = match Command::new(&program)
+    let egress_proxy = match EgressProxy::start_for_task(task_id, task.get("network_egress")).await
+    {
+        Ok(proxy) => proxy,
+        Err(e) => {
+            let result = TaskResult {
+                worker_id: runner_id,
+                status: "failed".into(),
+                head_commit: None,
+                commits: vec![],
+                files_touched: vec![],
+                test_summary: None,
+                log_tail: None,
+                error: Some(format!("invalid network_egress policy: {e}")),
+                exit_code: None,
+            };
+            error!(task_id, error = %e, "task egress policy rejected; refusing spawn");
+            if let Err(submit_error) = client.submit_result(task_id, &result).await {
+                error!(task_id, error = %submit_error, "failed to submit result");
+            }
+            return;
+        }
+    };
+
+    let mut command = Command::new(&program);
+    command
         .args(&args)
         .current_dir(&config.workspace_root)
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-    {
+        .stderr(std::process::Stdio::piped());
+
+    // Never inherit service credentials into an agent task. Start from a small
+    // operational allowlist, then add only the task-local proxy variables.
+    command.env_clear();
+    for variable in SAFE_CHILD_ENV_VARS {
+        if let Ok(value) = std::env::var(variable) {
+            command.env(variable, value);
+        }
+    }
+    if let Some(proxy) = egress_proxy.as_ref() {
+        command.envs(proxy.proxy_env());
+    }
+
+    let result = match command.spawn() {
         Ok(mut child) => {
             let stdout = child.stdout.take();
             let stderr = child.stderr.take();
@@ -566,6 +617,27 @@ async fn run_one_task(
             exit_code: None,
         },
     };
+
+    if let Some(proxy) = egress_proxy {
+        let denials = proxy.shutdown().await;
+        let denial_count = denials.len();
+        for denial in denials {
+            let details = serde_json::to_value(&denial).unwrap_or(Value::Null);
+            if let Err(error) = client
+                .append_progress_event(
+                    task_id,
+                    &result.worker_id,
+                    "task egress policy denied a connection",
+                    "egress_denied",
+                    &details,
+                )
+                .await
+            {
+                error!(task_id, error = %error, "failed to audit egress denial");
+            }
+        }
+        info!(task_id, denial_count, "task egress proxy stopped");
+    }
 
     info!(task_id, status = %result.status, "task completed");
     if let Err(e) = client.submit_result(task_id, &result).await {

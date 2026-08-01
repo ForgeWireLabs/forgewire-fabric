@@ -1,8 +1,19 @@
 [package]
-name = "fabric-types"
+# Renamed for crates.io publication: "fabric-types" collides with an
+# unrelated, pre-existing crate already on the registry (confirmed via
+# GET https://crates.io/api/v1/crates/fabric-types -> 200). Every other
+# fabric-* Tier-1 crate name is free and keeps its short name per
+# docs/architecture/forge-core.md's already-recorded intent (the fabric-*
+# rename from 115 is the public naming, not merely internal); this is the
+# one deliberate exception, not a workspace-wide forgewire-fabric-* rename.
+# Internal consumers keep importing this as `fabric_types` via the
+# package-rename alias on each path dependency.
+name = "forgewire-fabric-types"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+readme = "README.md"
 description = "Shared domain types for ForgeWire Fabric — no HTTP or database coupling."
 
 [dependencies]

@@ -1,0 +1,22 @@
+[package]
+name = "fabric-secrets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "Fail-closed envelope encryption and redaction for ForgeWire Fabric secrets."
+
+[dependencies]
+aes-gcm = "0.10"
+base64.workspace = true
+rand.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+zeroize = { workspace = true, features = ["derive"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Memory"] }
+
+[lints]
+workspace = true

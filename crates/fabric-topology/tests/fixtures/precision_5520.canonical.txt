@@ -1,0 +1,119 @@
+{
+  "arch": "x86_64",
+  "captured_at": "2026-07-28T00:00:00Z",
+  "cores": [
+    {
+      "core_id": 0,
+      "efficiency_class": 0,
+      "logical_processors": [
+        {
+          "group": 0,
+          "index": 0
+        },
+        {
+          "group": 0,
+          "index": 1
+        }
+      ],
+      "package_id": 0
+    },
+    {
+      "core_id": 1,
+      "efficiency_class": 0,
+      "logical_processors": [
+        {
+          "group": 0,
+          "index": 2
+        },
+        {
+          "group": 0,
+          "index": 3
+        }
+      ],
+      "package_id": 0
+    },
+    {
+      "core_id": 2,
+      "efficiency_class": 0,
+      "logical_processors": [
+        {
+          "group": 0,
+          "index": 4
+        },
+        {
+          "group": 0,
+          "index": 5
+        }
+      ],
+      "package_id": 0
+    },
+    {
+      "core_id": 3,
+      "efficiency_class": 0,
+      "logical_processors": [
+        {
+          "group": 0,
+          "index": 6
+        },
+        {
+          "group": 0,
+          "index": 7
+        }
+      ],
+      "package_id": 0
+    }
+  ],
+  "host_id": "DESKTOP-228U8GL",
+  "logical_processors": 8,
+  "numa_nodes": [
+    {
+      "logical_processors": [
+        {
+          "group": 0,
+          "index": 0
+        },
+        {
+          "group": 0,
+          "index": 1
+        },
+        {
+          "group": 0,
+          "index": 2
+        },
+        {
+          "group": 0,
+          "index": 3
+        },
+        {
+          "group": 0,
+          "index": 4
+        },
+        {
+          "group": 0,
+          "index": 5
+        },
+        {
+          "group": 0,
+          "index": 6
+        },
+        {
+          "group": 0,
+          "index": 7
+        }
+      ],
+      "node_id": 0
+    }
+  ],
+  "os": "windows",
+  "physical_cores": 4,
+  "probe_source": "windows_logical_processor_information_ex",
+  "probe_warnings": [],
+  "processor_groups": [
+    {
+      "active_processor_count": 8,
+      "group": 0
+    }
+  ],
+  "processor_packages": 1,
+  "schema_version": 1
+}

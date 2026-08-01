@@ -1,4 +1,4 @@
-﻿//! rqlite HA backend for the ForgeWire Fabric store contract.
+//! rqlite HA backend for the ForgeWire Fabric store contract.
 //!
 //! Implements `FabricStore` over the rqlite HTTP API, matching the Python
 //! `_rqlite_db.py` adapter's behavior: single-statement writes, no cross-
@@ -17,6 +17,8 @@
 #![deny(rust_2018_idioms)]
 
 mod dates;
+mod human_accounts;
+mod human_webauthn_challenges;
 pub mod mcp_manifest;
 
 use std::time::Duration;
@@ -172,11 +174,12 @@ impl RqliteStore {
     async fn execute_one(&self, sql: &str, params: &[Value]) -> Result<i64, RqliteError> {
         let resp = self.execute(&[(sql, params)]).await?;
         if let Some(err) = resp["results"][0]["error"].as_str() {
-            return Err(RqliteError::Status { status: 200, body: err.to_owned() });
+            return Err(RqliteError::Status {
+                status: 200,
+                body: err.to_owned(),
+            });
         }
-        let rows = resp["results"][0]["rows_affected"]
-            .as_i64()
-            .unwrap_or(0);
+        let rows = resp["results"][0]["rows_affected"].as_i64().unwrap_or(0);
         Ok(rows)
     }
 
@@ -243,10 +246,7 @@ impl RqliteStore {
                 let row_vals = row_arr.as_array().cloned().unwrap_or_default();
                 let mut obj = serde_json::Map::new();
                 for (i, col) in columns.iter().enumerate() {
-                    obj.insert(
-                        col.clone(),
-                        row_vals.get(i).cloned().unwrap_or(Value::Null),
-                    );
+                    obj.insert(col.clone(), row_vals.get(i).cloned().unwrap_or(Value::Null));
                 }
                 rows.push(Value::Object(obj));
             }
@@ -289,7 +289,7 @@ impl SchemaStore for RqliteStore {
         // Schema must be initialized via individual CREATE TABLE statements.
         let creates = [
             "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, todo_id TEXT, title TEXT NOT NULL, prompt TEXT NOT NULL, scope_globs TEXT NOT NULL, base_commit TEXT NOT NULL, branch TEXT NOT NULL, timeout_minutes INTEGER NOT NULL DEFAULT 60, priority INTEGER NOT NULL DEFAULT 100, kind TEXT NOT NULL DEFAULT 'agent', status TEXT NOT NULL DEFAULT 'queued', worker_id TEXT, created_at TEXT NOT NULL, claimed_at TEXT, started_at TEXT, completed_at TEXT, cancel_requested INTEGER NOT NULL DEFAULT 0, metadata TEXT NOT NULL DEFAULT '{}')",
+            "CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, todo_id TEXT, title TEXT NOT NULL, prompt TEXT NOT NULL, scope_globs TEXT NOT NULL, base_commit TEXT NOT NULL, branch TEXT NOT NULL, timeout_minutes INTEGER NOT NULL DEFAULT 60, priority INTEGER NOT NULL DEFAULT 100, kind TEXT NOT NULL DEFAULT 'agent', status TEXT NOT NULL DEFAULT 'queued', worker_id TEXT, created_at TEXT NOT NULL, claimed_at TEXT, started_at TEXT, completed_at TEXT, cancel_requested INTEGER NOT NULL DEFAULT 0, metadata TEXT NOT NULL DEFAULT '{}', dispatched_at TEXT, dispatched_by_user TEXT, dispatched_by_host TEXT, dispatched_by_agent TEXT, dispatcher_pubkey_fingerprint TEXT, claimed_by_runner TEXT, claimed_by_host TEXT, wall_seconds REAL, runner_cpu_seconds REAL, policy_decisions TEXT NOT NULL DEFAULT '[]', approvals_required INTEGER NOT NULL DEFAULT 0, approvals_received INTEGER NOT NULL DEFAULT 0, approval_id TEXT, exit_reason TEXT)",
             "CREATE TABLE IF NOT EXISTS results (task_id INTEGER PRIMARY KEY, status TEXT NOT NULL, branch TEXT NOT NULL, head_commit TEXT, commits_json TEXT NOT NULL DEFAULT '[]', files_touched TEXT NOT NULL DEFAULT '[]', test_summary TEXT, log_tail TEXT, error TEXT, reported_at TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS progress (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, seq INTEGER NOT NULL, message TEXT NOT NULL, files_touched TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, author TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL)",
@@ -301,6 +301,10 @@ impl SchemaStore for RqliteStore {
             "CREATE TABLE IF NOT EXISTS runner_nonces (runner_id TEXT NOT NULL, nonce TEXT NOT NULL, used_at TEXT NOT NULL, PRIMARY KEY (runner_id, nonce))",
             "CREATE TABLE IF NOT EXISTS audit_event (seq INTEGER PRIMARY KEY AUTOINCREMENT, event_id_hash TEXT NOT NULL UNIQUE, prev_event_id_hash TEXT NOT NULL, kind TEXT NOT NULL, task_id INTEGER, payload_json TEXT NOT NULL, created_at TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS host_roles (hostname TEXT NOT NULL, role TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, status TEXT, metadata TEXT NOT NULL DEFAULT '{}', updated_at TEXT NOT NULL, PRIMARY KEY (hostname, role))",
+            // M2.5.6: bearer credentials are one-way SHA-256 hashes. The raw
+            // token is returned once by the hub and never reaches rqlite.
+            "CREATE TABLE IF NOT EXISTS role_tokens (token_id TEXT PRIMARY KEY, token_hash TEXT NOT NULL UNIQUE, label TEXT NOT NULL, roles_json TEXT NOT NULL, created_at TEXT NOT NULL, created_by TEXT NOT NULL, migrated INTEGER NOT NULL DEFAULT 0, revoked_at TEXT)",
+            "CREATE INDEX IF NOT EXISTS idx_role_tokens_hash ON role_tokens (token_hash)",
             "CREATE TABLE IF NOT EXISTS labels (key TEXT PRIMARY KEY, value_json TEXT NOT NULL, updated_by TEXT, updated_at TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS approvals (approval_id TEXT PRIMARY KEY, envelope_hash TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', decision_json TEXT NOT NULL DEFAULT '{}', task_label TEXT, branch TEXT, scope_globs_json TEXT NOT NULL DEFAULT '[]', dispatcher_id TEXT, approver TEXT, reason TEXT, created_at TEXT NOT NULL, resolved_at TEXT)",
             "CREATE TABLE IF NOT EXISTS secrets (name TEXT PRIMARY KEY, encrypted_value TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, last_rotated_at TEXT)",
@@ -326,6 +330,8 @@ impl SchemaStore for RqliteStore {
             // dispatch_tool / required_resources briefs.
             "CREATE TABLE IF NOT EXISTS runner_capabilities (runner_id TEXT NOT NULL, capability_kind TEXT NOT NULL, name TEXT NOT NULL, source_server TEXT NOT NULL, description TEXT, extra TEXT NOT NULL DEFAULT '{}', updated_at TEXT NOT NULL, PRIMARY KEY (runner_id, capability_kind, name))",
             "CREATE INDEX IF NOT EXISTS idx_runner_caps_by_name ON runner_capabilities (capability_kind, name)",
+            "CREATE TABLE IF NOT EXISTS settings_document (id INTEGER PRIMARY KEY CHECK (id = 1), revision INTEGER NOT NULL, value_json TEXT NOT NULL, updated_at TEXT NOT NULL, updated_by TEXT NOT NULL)",
+            "CREATE TABLE IF NOT EXISTS history_export_watermarks (stream TEXT PRIMARY KEY, sequence INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL)",
         ];
 
         for sql in &creates {
@@ -337,16 +343,19 @@ impl SchemaStore for RqliteStore {
         self.execute_one(
             "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (1, ?)",
             &[json!(now)],
-        ).await?;
+        )
+        .await?;
         self.execute_one(
             "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (2, ?)",
             &[json!(now)],
-        ).await?;
+        )
+        .await?;
         // v3: cost_ledger (+ indexes) and budget_state created in the Rust path.
         self.execute_one(
             "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (3, ?)",
             &[json!(now)],
-        ).await?;
+        )
+        .await?;
         // v4 (Phase 2.8): runner_capabilities table + runners.{kinds,
         // agent_type, mcp_manifest, mcp_manifest_version} + tasks.dispatch.
         // The new columns are added in run_additive_migrations so existing
@@ -355,7 +364,27 @@ impl SchemaStore for RqliteStore {
         self.execute_one(
             "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (4, ?)",
             &[json!(now)],
-        ).await?;
+        )
+        .await?;
+        // v5 (M2.5.6): role-separated bearer token metadata and hashes.
+        self.execute_one(
+            "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (5, ?)",
+            &[json!(now)],
+        )
+        .await?;
+        // v6 (M2.5.7): task provenance and policy-decision evidence.
+        self.execute_one(
+            "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (6, ?)",
+            &[json!(now)],
+        )
+        .await?;
+        // v7 (M2.5.9/M2.5.11): hub settings overlay and durable optional
+        // Tier-2 export watermarks. rqlite remains the only Tier-1 store.
+        self.execute_one(
+            "INSERT OR IGNORE INTO schema_version (version, applied_at) VALUES (7, ?)",
+            &[json!(now)],
+        )
+        .await?;
 
         tracing::info!("rqlite schema initialized");
         Ok(())
@@ -380,11 +409,23 @@ impl SchemaStore for RqliteStore {
             ("tasks", "network_egress", "TEXT"),
             ("tasks", "dispatcher_id", "TEXT"),
             ("runners", "capabilities", "TEXT NOT NULL DEFAULT '{}'"),
-            ("runners", "claim_failures_total", "INTEGER NOT NULL DEFAULT 0"),
-            ("runners", "claim_failures_consecutive", "INTEGER NOT NULL DEFAULT 0"),
+            (
+                "runners",
+                "claim_failures_total",
+                "INTEGER NOT NULL DEFAULT 0",
+            ),
+            (
+                "runners",
+                "claim_failures_consecutive",
+                "INTEGER NOT NULL DEFAULT 0",
+            ),
             ("runners", "last_claim_error", "TEXT"),
             ("runners", "last_claim_error_at", "TEXT"),
-            ("runners", "heartbeat_failures_total", "INTEGER NOT NULL DEFAULT 0"),
+            (
+                "runners",
+                "heartbeat_failures_total",
+                "INTEGER NOT NULL DEFAULT 0",
+            ),
             // dispatchers.last_nonce: consume_dispatcher_nonce updates it; absent
             // on older Rust-created schemas, which broke all signed dispatch.
             ("dispatchers", "last_nonce", "TEXT"),
@@ -397,7 +438,11 @@ impl SchemaStore for RqliteStore {
             ("runners", "kinds", "TEXT NOT NULL DEFAULT '[\"agent\"]'"),
             ("runners", "agent_type", "TEXT"),
             ("runners", "mcp_manifest", "TEXT"),
-            ("runners", "mcp_manifest_version", "INTEGER NOT NULL DEFAULT 0"),
+            (
+                "runners",
+                "mcp_manifest_version",
+                "INTEGER NOT NULL DEFAULT 0",
+            ),
             // Phase 2.8 — task dispatch discriminator. NULL when kind='command';
             // backfilled to 'prompt' for existing kind='agent' rows (the legacy
             // freeform behavior).
@@ -415,6 +460,28 @@ impl SchemaStore for RqliteStore {
             ("tasks", "command", "TEXT"),
             ("tasks", "cwd", "TEXT"),
             ("tasks", "loom_env", "TEXT"),
+            // M2.5.7 provenance. Additive and backfilled below so existing task
+            // history remains inspectable after an in-place upgrade.
+            ("tasks", "dispatched_at", "TEXT"),
+            ("tasks", "dispatched_by_user", "TEXT"),
+            ("tasks", "dispatched_by_host", "TEXT"),
+            ("tasks", "dispatched_by_agent", "TEXT"),
+            ("tasks", "dispatcher_pubkey_fingerprint", "TEXT"),
+            ("tasks", "claimed_by_runner", "TEXT"),
+            ("tasks", "claimed_by_host", "TEXT"),
+            ("tasks", "wall_seconds", "REAL"),
+            ("tasks", "runner_cpu_seconds", "REAL"),
+            ("tasks", "policy_decisions", "TEXT NOT NULL DEFAULT '[]'"),
+            ("tasks", "approvals_required", "INTEGER NOT NULL DEFAULT 0"),
+            ("tasks", "approvals_received", "INTEGER NOT NULL DEFAULT 0"),
+            ("tasks", "approval_id", "TEXT"),
+            ("tasks", "exit_reason", "TEXT"),
+            // 114F.7A — preserve the real Loom child process exit code. Prior
+            // to this, only the derived `exit_reason` string was persisted;
+            // the actual return code the runner reported was discarded at
+            // the Hub layer and every completed task read back exit_code:
+            // null even on a clean, successful run.
+            ("tasks", "exit_code", "INTEGER"),
         ];
 
         for (table, column, col_type) in &additive {
@@ -446,6 +513,18 @@ impl SchemaStore for RqliteStore {
             Ok(n) if n > 0 => tracing::info!("backfilled tasks.dispatch=prompt for {n} rows"),
             Ok(_) => {}
             Err(e) => warn!("tasks.dispatch backfill failed (continuing): {e}"),
+        }
+
+        match self
+            .execute_one(
+                "UPDATE tasks SET dispatched_at=created_at WHERE dispatched_at IS NULL",
+                &[],
+            )
+            .await
+        {
+            Ok(n) if n > 0 => tracing::info!("backfilled tasks.dispatched_at for {n} rows"),
+            Ok(_) => {}
+            Err(e) => warn!("tasks.dispatched_at backfill failed (continuing): {e}"),
         }
 
         // runners.kinds: any row whose tags JSON contains kind:command should
@@ -556,25 +635,35 @@ impl AuditStore for RqliteStore {
         Ok(rows.iter().map(row_to_audit_event).collect())
     }
 
-    async fn verify_audit_chain(&self, events: &[AuditEventRow]) -> StoreResult<(bool, Option<String>)> {
+    async fn verify_audit_chain(
+        &self,
+        events: &[AuditEventRow],
+    ) -> StoreResult<(bool, Option<String>)> {
         let mut prev: Option<&str> = None;
         for event in events {
             if let Some(expected) = prev {
                 if event.prev_event_id_hash != expected {
-                    return Ok((false, Some(format!(
-                        "chain break at seq={}: prev {} != expected {}",
-                        event.seq, event.prev_event_id_hash, expected
-                    ))));
+                    return Ok((
+                        false,
+                        Some(format!(
+                            "chain break at seq={}: prev {} != expected {}",
+                            event.seq, event.prev_event_id_hash, expected
+                        )),
+                    ));
                 }
             }
-            let payload: Value = serde_json::from_str(&event.payload_json)
-                .map_err(|e| StoreError::Backend(format!("invalid JSON at seq={}: {e}", event.seq)))?;
+            let payload: Value = serde_json::from_str(&event.payload_json).map_err(|e| {
+                StoreError::Backend(format!("invalid JSON at seq={}: {e}", event.seq))
+            })?;
             let recomputed = audit_event_hash(&event.prev_event_id_hash, &event.kind, &payload);
             if recomputed != event.event_id_hash {
-                return Ok((false, Some(format!(
-                    "hash mismatch at seq={}: stored {} != recomputed {}",
-                    event.seq, event.event_id_hash, recomputed
-                ))));
+                return Ok((
+                    false,
+                    Some(format!(
+                        "hash mismatch at seq={}: stored {} != recomputed {}",
+                        event.seq, event.event_id_hash, recomputed
+                    )),
+                ));
             }
             prev = Some(&event.event_id_hash);
         }
@@ -642,19 +731,54 @@ fn row_to_task(row: &Value) -> TaskRow {
         claimed_at: opt_str(row, "claimed_at"),
         started_at: opt_str(row, "started_at"),
         completed_at: opt_str(row, "completed_at"),
+        dispatched_at: opt_str(row, "dispatched_at").unwrap_or_else(|| str_val(row, "created_at")),
+        dispatched_by_user: opt_str(row, "dispatched_by_user"),
+        dispatched_by_host: opt_str(row, "dispatched_by_host"),
+        dispatched_by_agent: opt_str(row, "dispatched_by_agent"),
+        dispatcher_pubkey_fingerprint: opt_str(row, "dispatcher_pubkey_fingerprint"),
+        claimed_by_runner: opt_str(row, "claimed_by_runner"),
+        claimed_by_host: opt_str(row, "claimed_by_host"),
+        wall_seconds: row["wall_seconds"].as_f64(),
+        runner_cpu_seconds: row["runner_cpu_seconds"].as_f64(),
+        policy_decisions: json_arr(row, "policy_decisions"),
+        approvals_required: row["approvals_required"].as_i64().unwrap_or(0),
+        approvals_received: row["approvals_received"].as_i64().unwrap_or(0),
+        approval_id: opt_str(row, "approval_id"),
+        exit_reason: opt_str(row, "exit_reason"),
+        exit_code: row["exit_code"].as_i64(),
         cancel_requested: bool_val(row, "cancel_requested"),
         metadata: json_obj(row, "metadata"),
         todo_id: opt_str(row, "todo_id"),
         timeout_minutes: row["timeout_minutes"].as_i64().unwrap_or(60),
         priority: row["priority"].as_i64().unwrap_or(100),
-        required_tools: if row["required_tools"].is_null() { None } else { Some(json_arr(row, "required_tools")) },
-        required_tags: if row["required_tags"].is_null() { None } else { Some(json_arr(row, "required_tags")) },
+        required_tools: if row["required_tools"].is_null() {
+            None
+        } else {
+            Some(json_arr(row, "required_tools"))
+        },
+        required_tags: if row["required_tags"].is_null() {
+            None
+        } else {
+            Some(json_arr(row, "required_tags"))
+        },
         tenant: opt_str(row, "tenant"),
         workspace_root: opt_str(row, "workspace_root"),
         require_base_commit: bool_val(row, "require_base_commit"),
-        required_capabilities: if row["required_capabilities"].is_null() { None } else { Some(json_arr(row, "required_capabilities")) },
-        secrets_needed: if row["secrets_needed"].is_null() { None } else { Some(json_arr(row, "secrets_needed")) },
-        network_egress: if row["network_egress"].is_null() { None } else { Some(json_val(row, "network_egress")) },
+        required_capabilities: if row["required_capabilities"].is_null() {
+            None
+        } else {
+            Some(json_arr(row, "required_capabilities"))
+        },
+        secrets_needed: if row["secrets_needed"].is_null() {
+            None
+        } else {
+            Some(json_arr(row, "secrets_needed"))
+        },
+        network_egress: if row["network_egress"].is_null() {
+            None
+        } else {
+            Some(json_val(row, "network_egress"))
+        },
         dispatcher_id: opt_str(row, "dispatcher_id"),
         // Phase 2.8: agent-dispatch discriminator. NULL on legacy rows and on
         // all command-kind tasks.
@@ -825,12 +949,32 @@ fn row_to_host_role(row: &Value) -> HostRoleRow {
     }
 }
 
+fn row_to_role_token(row: &Value) -> RoleTokenRow {
+    let roles = row["roles_json"]
+        .as_str()
+        .and_then(|raw| serde_json::from_str::<Vec<String>>(raw).ok())
+        .unwrap_or_default();
+    RoleTokenRow {
+        token_id: str_val(row, "token_id"),
+        label: str_val(row, "label"),
+        roles,
+        created_at: str_val(row, "created_at"),
+        created_by: str_val(row, "created_by"),
+        migrated: bool_val(row, "migrated"),
+        revoked_at: opt_str(row, "revoked_at"),
+    }
+}
+
 /// Generate a random 32-hex-char ID.
 fn generate_id() -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut h = DefaultHasher::new();
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos().hash(&mut h);
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
+        .hash(&mut h);
     std::thread::current().id().hash(&mut h);
     let a = h.finish();
     let mut h2 = DefaultHasher::new();
@@ -847,50 +991,92 @@ impl TaskStore for RqliteStore {
     async fn create_task(&self, p: CreateTaskParams, now: &str) -> StoreResult<TaskRow> {
         let scope_json = serde_json::to_string(&p.scope_globs).unwrap_or_else(|_| "[]".into());
         let meta_json = serde_json::to_string(&p.metadata).unwrap_or_else(|_| "{}".into());
-        let tools_json = p.required_tools.as_ref().map(|v| serde_json::to_string(v).unwrap_or_else(|_| "[]".into()));
-        let tags_json = p.required_tags.as_ref().map(|v| serde_json::to_string(v).unwrap_or_else(|_| "[]".into()));
-        let caps_json = p.required_capabilities.as_ref().map(|v| serde_json::to_string(v).unwrap_or_else(|_| "[]".into()));
-        let secrets_json = p.secrets_needed.as_ref().map(|v| serde_json::to_string(v).unwrap_or_else(|_| "[]".into()));
-        let egress_json = p.network_egress.as_ref().map(|v| serde_json::to_string(v).unwrap_or_else(|_| "null".into()));
+        let tools_json = p
+            .required_tools
+            .as_ref()
+            .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "[]".into()));
+        let tags_json = p
+            .required_tags
+            .as_ref()
+            .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "[]".into()));
+        let caps_json = p
+            .required_capabilities
+            .as_ref()
+            .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "[]".into()));
+        let secrets_json = p
+            .secrets_needed
+            .as_ref()
+            .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "[]".into()));
+        let egress_json = p
+            .network_egress
+            .as_ref()
+            .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "null".into()));
         let require_bc: i64 = if p.require_base_commit { 1 } else { 0 };
         // Phase 2.8 (M2.8.10): persist the Loom executable payload so the runner
         // can read command/cwd/env off the claimed task. JSON-encode command/env.
-        let command_json = p.command.as_ref().map(|v| serde_json::to_string(v).unwrap_or_else(|_| "[]".into()));
-        let env_json = p.env.as_ref().map(|v| serde_json::to_string(v).unwrap_or_else(|_| "{}".into()));
+        let command_json = p
+            .command
+            .as_ref()
+            .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "[]".into()));
+        let env_json = p
+            .env
+            .as_ref()
+            .map(|v| serde_json::to_string(v).unwrap_or_else(|_| "{}".into()));
 
         let status = p.initial_status.as_deref().unwrap_or("queued");
+        let policy_json =
+            serde_json::to_string(&p.policy_decisions).unwrap_or_else(|_| "[]".into());
         let id = self.execute_insert(
-            "INSERT INTO tasks (todo_id,title,prompt,scope_globs,base_commit,branch,timeout_minutes,priority,metadata,required_tools,required_tags,tenant,workspace_root,require_base_commit,dispatcher_id,required_capabilities,secrets_needed,network_egress,kind,dispatch,skill,tool,command,cwd,loom_env,created_at,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            &[json!(p.todo_id), json!(p.title), json!(p.prompt), json!(scope_json), json!(p.base_commit), json!(p.branch), json!(p.timeout_minutes), json!(p.priority), json!(meta_json), json!(tools_json), json!(tags_json), json!(p.tenant), json!(p.workspace_root), json!(require_bc), json!(p.dispatcher_id), json!(caps_json), json!(secrets_json), json!(egress_json), json!(p.kind), json!(p.dispatch), json!(p.skill), json!(p.tool), json!(command_json), json!(p.cwd), json!(env_json), json!(now), json!(status)],
+            "INSERT INTO tasks (todo_id,title,prompt,scope_globs,base_commit,branch,timeout_minutes,priority,metadata,required_tools,required_tags,tenant,workspace_root,require_base_commit,dispatcher_id,required_capabilities,secrets_needed,network_egress,kind,dispatch,skill,tool,command,cwd,loom_env,created_at,status,dispatched_at,dispatched_by_user,dispatched_by_host,dispatched_by_agent,dispatcher_pubkey_fingerprint,policy_decisions,approvals_required,approvals_received,approval_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            &[json!(p.todo_id), json!(p.title), json!(p.prompt), json!(scope_json), json!(p.base_commit), json!(p.branch), json!(p.timeout_minutes), json!(p.priority), json!(meta_json), json!(tools_json), json!(tags_json), json!(p.tenant), json!(p.workspace_root), json!(require_bc), json!(p.dispatcher_id), json!(caps_json), json!(secrets_json), json!(egress_json), json!(p.kind), json!(p.dispatch), json!(p.skill), json!(p.tool), json!(command_json), json!(p.cwd), json!(env_json), json!(now), json!(status), json!(now), json!(p.dispatched_by_user), json!(p.dispatched_by_host), json!(p.dispatched_by_agent), json!(p.dispatcher_pubkey_fingerprint), json!(policy_json), json!(p.approvals_required), json!(p.approvals_received), json!(p.approval_id)],
         ).await.map_err(|e| StoreError::Backend(e.to_string()))?;
         self.get_task(id).await
     }
 
     async fn get_task(&self, id: i64) -> StoreResult<TaskRow> {
-        let rows = self.query("SELECT * FROM tasks WHERE id = ?", &[json!(id)]).await?;
-        rows.into_iter().next()
+        let rows = self
+            .query("SELECT * FROM tasks WHERE id = ?", &[json!(id)])
+            .await?;
+        rows.into_iter()
+            .next()
             .map(|r| row_to_task(&r))
             .ok_or_else(|| StoreError::NotFound(format!("task {id}")))
     }
 
     async fn list_tasks(&self, status: Option<&str>, limit: i64) -> StoreResult<Vec<TaskRow>> {
         let rows = if let Some(s) = status {
-            self.query("SELECT * FROM tasks WHERE status = ? ORDER BY id DESC LIMIT ?", &[json!(s), json!(limit)]).await?
+            self.query(
+                "SELECT * FROM tasks WHERE status = ? ORDER BY id DESC LIMIT ?",
+                &[json!(s), json!(limit)],
+            )
+            .await?
         } else {
-            self.query("SELECT * FROM tasks ORDER BY id DESC LIMIT ?", &[json!(limit)]).await?
+            self.query(
+                "SELECT * FROM tasks ORDER BY id DESC LIMIT ?",
+                &[json!(limit)],
+            )
+            .await?
         };
         Ok(rows.iter().map(row_to_task).collect())
     }
 
-    async fn claim_task(&self, task_id: i64, worker_id: &str, now: &str) -> StoreResult<ClaimResult> {
+    async fn claim_task(
+        &self,
+        task_id: i64,
+        worker_id: &str,
+        hostname: &str,
+        now: &str,
+    ) -> StoreResult<ClaimResult> {
         let rows_changed = self.execute_one(
-            "UPDATE tasks SET status='claimed', worker_id=?, claimed_at=? WHERE id=? AND status='queued' AND cancel_requested=0",
-            &[json!(worker_id), json!(now), json!(task_id)],
+            "UPDATE tasks SET status='claimed', worker_id=?, claimed_at=?, claimed_by_runner=?, claimed_by_host=? WHERE id=? AND status='queued' AND cancel_requested=0",
+            &[json!(worker_id), json!(now), json!(worker_id), json!(hostname), json!(task_id)],
         ).await?;
         if rows_changed == 0 {
             return Ok(ClaimResult::AlreadyClaimed);
         }
-        Ok(ClaimResult::Claimed(self.get_task(task_id).await?))
+        Ok(ClaimResult::Claimed(Box::new(
+            self.get_task(task_id).await?,
+        )))
     }
 
     async fn mark_running(&self, task_id: i64, now: &str) -> StoreResult<TaskRow> {
@@ -902,12 +1088,69 @@ impl TaskStore for RqliteStore {
     }
 
     async fn cancel_task(&self, task_id: i64, now: &str) -> StoreResult<TaskRow> {
-        self.execute_one("UPDATE tasks SET cancel_requested=1 WHERE id=?", &[json!(task_id)]).await?;
         self.execute_one(
-            "UPDATE tasks SET status='cancelled', completed_at=? WHERE id=? AND status='queued'",
+            "UPDATE tasks SET cancel_requested=1 WHERE id=?",
+            &[json!(task_id)],
+        )
+        .await?;
+        self.execute_one(
+            "UPDATE tasks SET status='cancelled', completed_at=?, exit_reason='cancelled_before_claim', wall_seconds=0.0, runner_cpu_seconds=0.0 WHERE id=? AND status='queued'",
             &[json!(now), json!(task_id)],
-        ).await?;
+        )
+        .await?;
         self.get_task(task_id).await
+    }
+
+    async fn append_task_policy_decision(
+        &self,
+        task_id: i64,
+        decision: Value,
+    ) -> StoreResult<TaskRow> {
+        let task = self.get_task(task_id).await?;
+        let mut decisions = task
+            .policy_decisions
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        decisions.push(decision);
+        if decisions.len() > 100 {
+            let excess = decisions.len() - 100;
+            decisions.drain(0..excess);
+        }
+        let encoded = serde_json::to_string(&decisions)
+            .map_err(|error| StoreError::Schema(format!("serialize policy decisions: {error}")))?;
+        self.execute_one(
+            "UPDATE tasks SET policy_decisions=? WHERE id=?",
+            &[json!(encoded), json!(task_id)],
+        )
+        .await?;
+        self.get_task(task_id).await
+    }
+
+    async fn record_task_approval_decision(
+        &self,
+        approval_id: &str,
+        decision: Value,
+        approved: bool,
+    ) -> StoreResult<Option<TaskRow>> {
+        let rows = self
+            .query(
+                "SELECT id FROM tasks WHERE approval_id=? ORDER BY id DESC LIMIT 1",
+                &[json!(approval_id)],
+            )
+            .await?;
+        let Some(task_id) = rows.first().and_then(|row| row["id"].as_i64()) else {
+            return Ok(None);
+        };
+        self.append_task_policy_decision(task_id, decision).await?;
+        if approved {
+            self.execute_one(
+                "UPDATE tasks SET approvals_received=approvals_received+1 WHERE id=?",
+                &[json!(task_id)],
+            )
+            .await?;
+        }
+        Ok(Some(self.get_task(task_id).await?))
     }
 
     async fn count_tasks(&self) -> StoreResult<i64> {
@@ -924,17 +1167,36 @@ impl ResultStore for RqliteStore {
         let commits_json = serde_json::to_string(&p.commits).unwrap_or_else(|_| "[]".into());
         let files_json = serde_json::to_string(&p.files_touched).unwrap_or_else(|_| "[]".into());
 
-        let rows_changed = self.execute_one(
-            "UPDATE tasks SET status=?, completed_at=? WHERE id=? AND worker_id=?",
-            &[json!(p.status), json!(now), json!(p.task_id), json!(p.worker_id)],
-        ).await?;
+        let rows_changed = self
+            .execute_one(
+                "UPDATE tasks SET status=?, completed_at=?, wall_seconds=COALESCE(?, MAX(0.0, (julianday(?) - julianday(COALESCE(started_at,claimed_at,dispatched_at,created_at))) * 86400.0)), runner_cpu_seconds=COALESCE(?,0.0), exit_reason=?, exit_code=? WHERE id=? AND worker_id=?",
+                &[
+                    json!(p.status),
+                    json!(now),
+                    json!(p.wall_seconds),
+                    json!(now),
+                    json!(p.runner_cpu_seconds),
+                    json!(p.exit_reason),
+                    json!(p.exit_code),
+                    json!(p.task_id),
+                    json!(p.worker_id),
+                ],
+            )
+            .await?;
 
         if rows_changed == 0 {
-            let rows = self.query("SELECT worker_id FROM tasks WHERE id=?", &[json!(p.task_id)]).await?;
+            let rows = self
+                .query(
+                    "SELECT worker_id FROM tasks WHERE id=?",
+                    &[json!(p.task_id)],
+                )
+                .await?;
             return match rows.first() {
                 None => Err(StoreError::NotFound(format!("task {}", p.task_id))),
                 Some(r) => Err(StoreError::PermissionDenied(format!(
-                    "worker {} cannot report result for task owned by {}", p.worker_id, str_val(r, "worker_id")
+                    "worker {} cannot report result for task owned by {}",
+                    p.worker_id,
+                    str_val(r, "worker_id")
                 ))),
             };
         }
@@ -953,7 +1215,10 @@ impl ResultStore for RqliteStore {
 #[async_trait]
 impl RunnerStore for RqliteStore {
     async fn upsert_runner(&self, data: Value) -> StoreResult<RunnerRow> {
-        let runner_id = data["runner_id"].as_str().ok_or_else(|| StoreError::Backend("missing runner_id".into()))?.to_owned();
+        let runner_id = data["runner_id"]
+            .as_str()
+            .ok_or_else(|| StoreError::Backend("missing runner_id".into()))?
+            .to_owned();
         let public_key = data["public_key"].as_str().unwrap_or("").to_owned();
         let now = utc_now();
         let (kinds, agent_type, mcp_manifest, mcp_manifest_version) = runner_capability_cols(&data);
@@ -977,16 +1242,27 @@ impl RunnerStore for RqliteStore {
         }
 
         // Check existing key binding
-        let existing_key_rows = self.query("SELECT public_key FROM runners WHERE runner_id=?", &[json!(runner_id)]).await?;
+        let existing_key_rows = self
+            .query(
+                "SELECT public_key FROM runners WHERE runner_id=?",
+                &[json!(runner_id)],
+            )
+            .await?;
         if let Some(r) = existing_key_rows.first() {
             if str_val(r, "public_key") != public_key {
-                return Err(StoreError::PermissionDenied("runner_id is already bound to a different public_key".into()));
+                return Err(StoreError::PermissionDenied(
+                    "runner_id is already bound to a different public_key".into(),
+                ));
             }
             let tools = serde_json::to_string(&data["tools"]).unwrap_or_else(|_| "[]".into());
             let tags = serde_json::to_string(&data["tags"]).unwrap_or_else(|_| "[]".into());
-            let scope_prefixes = serde_json::to_string(&data["scope_prefixes"]).unwrap_or_else(|_| "[]".into());
-            let metadata = serde_json::to_string(data.get("metadata").unwrap_or(&json!({}))).unwrap_or_else(|_| "{}".into());
-            let capabilities = serde_json::to_string(data.get("capabilities").unwrap_or(&json!({}))).unwrap_or_else(|_| "{}".into());
+            let scope_prefixes =
+                serde_json::to_string(&data["scope_prefixes"]).unwrap_or_else(|_| "[]".into());
+            let metadata = serde_json::to_string(data.get("metadata").unwrap_or(&json!({})))
+                .unwrap_or_else(|_| "{}".into());
+            let capabilities =
+                serde_json::to_string(data.get("capabilities").unwrap_or(&json!({})))
+                    .unwrap_or_else(|_| "{}".into());
             self.execute_one(
                 "UPDATE runners SET hostname=?,os=?,arch=?,cpu_model=?,cpu_count=?,ram_mb=?,gpu=?,tools=?,tags=?,scope_prefixes=?,tenant=?,workspace_root=?,runner_version=?,protocol_version=?,max_concurrent=?,state='online',drain_requested=0,metadata=?,capabilities=?,kinds=?,agent_type=?,mcp_manifest=?,mcp_manifest_version=?,last_heartbeat=?,claim_failures_consecutive=0,last_claim_error=NULL WHERE runner_id=?",
                 &[json!(data["hostname"]), json!(data["os"]), json!(data["arch"]), json!(data["cpu_model"]), json!(data["cpu_count"]), json!(data["ram_mb"]), json!(data["gpu"]), json!(tools), json!(tags), json!(scope_prefixes), json!(data["tenant"]), json!(data["workspace_root"]), json!(data["runner_version"]), json!(data["protocol_version"]), json!(data["max_concurrent"]), json!(metadata), json!(capabilities), json!(kinds), json!(agent_type), json!(mcp_manifest), json!(mcp_manifest_version), json!(now), json!(runner_id)],
@@ -994,9 +1270,13 @@ impl RunnerStore for RqliteStore {
         } else {
             let tools = serde_json::to_string(&data["tools"]).unwrap_or_else(|_| "[]".into());
             let tags = serde_json::to_string(&data["tags"]).unwrap_or_else(|_| "[]".into());
-            let scope_prefixes = serde_json::to_string(&data["scope_prefixes"]).unwrap_or_else(|_| "[]".into());
-            let metadata = serde_json::to_string(data.get("metadata").unwrap_or(&json!({}))).unwrap_or_else(|_| "{}".into());
-            let capabilities = serde_json::to_string(data.get("capabilities").unwrap_or(&json!({}))).unwrap_or_else(|_| "{}".into());
+            let scope_prefixes =
+                serde_json::to_string(&data["scope_prefixes"]).unwrap_or_else(|_| "[]".into());
+            let metadata = serde_json::to_string(data.get("metadata").unwrap_or(&json!({})))
+                .unwrap_or_else(|_| "{}".into());
+            let capabilities =
+                serde_json::to_string(data.get("capabilities").unwrap_or(&json!({})))
+                    .unwrap_or_else(|_| "{}".into());
             self.execute_one(
                 "INSERT INTO runners (runner_id,public_key,hostname,os,arch,cpu_model,cpu_count,ram_mb,gpu,tools,tags,scope_prefixes,tenant,workspace_root,runner_version,protocol_version,max_concurrent,state,drain_requested,metadata,first_seen,last_heartbeat,capabilities,kinds,agent_type,mcp_manifest,mcp_manifest_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'online',0,?,?,?,?,?,?,?,?)",
                 &[json!(runner_id), json!(public_key), json!(data["hostname"]), json!(data["os"]), json!(data["arch"]), json!(data["cpu_model"]), json!(data["cpu_count"]), json!(data["ram_mb"]), json!(data["gpu"]), json!(tools), json!(tags), json!(scope_prefixes), json!(data["tenant"]), json!(data["workspace_root"]), json!(data["runner_version"]), json!(data["protocol_version"]), json!(data["max_concurrent"]), json!(metadata), json!(now), json!(now), json!(capabilities), json!(kinds), json!(agent_type), json!(mcp_manifest), json!(mcp_manifest_version)],
@@ -1007,30 +1287,53 @@ impl RunnerStore for RqliteStore {
     }
 
     async fn get_runner(&self, runner_id: &str) -> StoreResult<RunnerRow> {
-        let rows = self.query("SELECT * FROM runners WHERE runner_id=?", &[json!(runner_id)]).await?;
-        rows.into_iter().next()
+        let rows = self
+            .query(
+                "SELECT * FROM runners WHERE runner_id=?",
+                &[json!(runner_id)],
+            )
+            .await?;
+        rows.into_iter()
+            .next()
             .map(|r| row_to_runner(&r))
             .ok_or_else(|| StoreError::NotFound(format!("runner {runner_id}")))
     }
 
     async fn list_runners(&self) -> StoreResult<Vec<RunnerRow>> {
-        let rows = self.query("SELECT * FROM runners ORDER BY hostname, runner_id", &[]).await?;
+        let rows = self
+            .query("SELECT * FROM runners ORDER BY hostname, runner_id", &[])
+            .await?;
         Ok(rows.iter().map(row_to_runner).collect())
     }
 
     async fn runner_public_key(&self, runner_id: &str) -> StoreResult<Option<String>> {
-        let key: Option<String> = self.query_scalar("SELECT public_key FROM runners WHERE runner_id=?", &[json!(runner_id)]).await?;
+        let key: Option<String> = self
+            .query_scalar(
+                "SELECT public_key FROM runners WHERE runner_id=?",
+                &[json!(runner_id)],
+            )
+            .await?;
         Ok(key)
     }
 
-    async fn heartbeat_runner(&self, runner_id: &str, data: Value, now: &str) -> StoreResult<RunnerRow> {
+    async fn heartbeat_runner(
+        &self,
+        runner_id: &str,
+        data: Value,
+        now: &str,
+    ) -> StoreResult<RunnerRow> {
         let nonce = data["nonce"].as_str().unwrap_or("").to_owned();
         let rows_changed = self.execute_one(
             "UPDATE runners SET last_heartbeat=?,cpu_load_pct=?,ram_free_mb=?,battery_pct=?,on_battery=?,last_known_commit=COALESCE(?,last_known_commit),last_nonce=?,claim_failures_total=COALESCE(?,claim_failures_total),claim_failures_consecutive=COALESCE(?,claim_failures_consecutive),last_claim_error=?,heartbeat_failures_total=COALESCE(?,heartbeat_failures_total),state=CASE WHEN drain_requested=1 THEN 'draining' ELSE 'online' END WHERE runner_id=? AND (last_nonce IS NULL OR last_nonce!=?)",
             &[json!(now), json!(data["cpu_load_pct"]), json!(data["ram_free_mb"]), json!(data["battery_pct"]), json!(data["on_battery"].as_bool().map(|b| if b { 1 } else { 0 })), json!(data["last_known_commit"]), json!(nonce), json!(data["claim_failures_total"]), json!(data["claim_failures_consecutive"]), json!(data["last_claim_error"]), json!(data["heartbeat_failures_total"]), json!(runner_id), json!(nonce)],
         ).await?;
         if rows_changed == 0 {
-            let exists = self.query("SELECT 1 FROM runners WHERE runner_id=?", &[json!(runner_id)]).await?;
+            let exists = self
+                .query(
+                    "SELECT 1 FROM runners WHERE runner_id=?",
+                    &[json!(runner_id)],
+                )
+                .await?;
             return if exists.is_empty() {
                 Err(StoreError::NotFound(format!("runner {runner_id}")))
             } else {
@@ -1041,20 +1344,30 @@ impl RunnerStore for RqliteStore {
     }
 
     async fn request_drain(&self, runner_id: &str) -> StoreResult<RunnerRow> {
-        let n = self.execute_one("UPDATE runners SET drain_requested=1,state='draining' WHERE runner_id=?", &[json!(runner_id)]).await?;
-        if n == 0 { return Err(StoreError::NotFound(format!("runner {runner_id}"))); }
+        let n = self
+            .execute_one(
+                "UPDATE runners SET drain_requested=1,state='draining' WHERE runner_id=?",
+                &[json!(runner_id)],
+            )
+            .await?;
+        if n == 0 {
+            return Err(StoreError::NotFound(format!("runner {runner_id}")));
+        }
         self.get_runner(runner_id).await
     }
 
     async fn request_undrain(&self, runner_id: &str) -> StoreResult<RunnerRow> {
         let n = self.execute_one("UPDATE runners SET drain_requested=0,state=CASE WHEN state='draining' THEN 'online' ELSE state END WHERE runner_id=?", &[json!(runner_id)]).await?;
-        if n == 0 { return Err(StoreError::NotFound(format!("runner {runner_id}"))); }
+        if n == 0 {
+            return Err(StoreError::NotFound(format!("runner {runner_id}")));
+        }
         self.get_runner(runner_id).await
     }
 
     async fn delete_runner(&self, runner_id: &str) -> StoreResult<RunnerRow> {
         let row = self.get_runner(runner_id).await?;
-        self.execute_one("DELETE FROM runners WHERE runner_id=?", &[json!(runner_id)]).await?;
+        self.execute_one("DELETE FROM runners WHERE runner_id=?", &[json!(runner_id)])
+            .await?;
         Ok(row)
     }
 }
@@ -1064,15 +1377,26 @@ impl RunnerStore for RqliteStore {
 #[async_trait]
 impl DispatcherStore for RqliteStore {
     async fn upsert_dispatcher(&self, data: Value) -> StoreResult<DispatcherRow> {
-        let dispatcher_id = data["dispatcher_id"].as_str().ok_or_else(|| StoreError::Backend("missing dispatcher_id".into()))?.to_owned();
+        let dispatcher_id = data["dispatcher_id"]
+            .as_str()
+            .ok_or_else(|| StoreError::Backend("missing dispatcher_id".into()))?
+            .to_owned();
         let public_key = data["public_key"].as_str().unwrap_or("").to_owned();
         let now = utc_now();
-        let metadata = serde_json::to_string(data.get("metadata").unwrap_or(&json!({}))).unwrap_or_else(|_| "{}".into());
+        let metadata = serde_json::to_string(data.get("metadata").unwrap_or(&json!({})))
+            .unwrap_or_else(|_| "{}".into());
 
-        let existing = self.query("SELECT public_key FROM dispatchers WHERE dispatcher_id=?", &[json!(dispatcher_id)]).await?;
+        let existing = self
+            .query(
+                "SELECT public_key FROM dispatchers WHERE dispatcher_id=?",
+                &[json!(dispatcher_id)],
+            )
+            .await?;
         if let Some(r) = existing.first() {
             if str_val(r, "public_key") != public_key {
-                return Err(StoreError::PermissionDenied("dispatcher_id is already bound to a different public_key".into()));
+                return Err(StoreError::PermissionDenied(
+                    "dispatcher_id is already bound to a different public_key".into(),
+                ));
             }
             self.execute_one(
                 "UPDATE dispatchers SET label=?,hostname=?,metadata=?,last_seen=? WHERE dispatcher_id=?",
@@ -1088,30 +1412,59 @@ impl DispatcherStore for RqliteStore {
     }
 
     async fn get_dispatcher(&self, dispatcher_id: &str) -> StoreResult<DispatcherRow> {
-        let rows = self.query("SELECT * FROM dispatchers WHERE dispatcher_id=?", &[json!(dispatcher_id)]).await?;
-        rows.into_iter().next()
+        let rows = self
+            .query(
+                "SELECT * FROM dispatchers WHERE dispatcher_id=?",
+                &[json!(dispatcher_id)],
+            )
+            .await?;
+        rows.into_iter()
+            .next()
             .map(|r| row_to_dispatcher(&r))
             .ok_or_else(|| StoreError::NotFound(format!("dispatcher {dispatcher_id}")))
     }
 
     async fn list_dispatchers(&self) -> StoreResult<Vec<DispatcherRow>> {
-        let rows = self.query("SELECT * FROM dispatchers ORDER BY label, dispatcher_id", &[]).await?;
+        let rows = self
+            .query(
+                "SELECT * FROM dispatchers ORDER BY label, dispatcher_id",
+                &[],
+            )
+            .await?;
         Ok(rows.iter().map(row_to_dispatcher).collect())
     }
 
     async fn dispatcher_public_key(&self, dispatcher_id: &str) -> StoreResult<Option<String>> {
-        let key: Option<String> = self.query_scalar("SELECT public_key FROM dispatchers WHERE dispatcher_id=?", &[json!(dispatcher_id)]).await?;
+        let key: Option<String> = self
+            .query_scalar(
+                "SELECT public_key FROM dispatchers WHERE dispatcher_id=?",
+                &[json!(dispatcher_id)],
+            )
+            .await?;
         Ok(key)
     }
 
     async fn delete_dispatcher(&self, dispatcher_id: &str) -> StoreResult<DispatcherRow> {
         let row = self.get_dispatcher(dispatcher_id).await?;
         let hostname = row.hostname.clone();
-        self.execute_one("DELETE FROM dispatchers WHERE dispatcher_id=?", &[json!(dispatcher_id)]).await?;
+        self.execute_one(
+            "DELETE FROM dispatchers WHERE dispatcher_id=?",
+            &[json!(dispatcher_id)],
+        )
+        .await?;
         if let Some(h) = hostname {
-            let n: Option<i64> = self.query_scalar("SELECT COUNT(*) FROM dispatchers WHERE hostname=?", &[json!(h)]).await?;
+            let n: Option<i64> = self
+                .query_scalar(
+                    "SELECT COUNT(*) FROM dispatchers WHERE hostname=?",
+                    &[json!(h)],
+                )
+                .await?;
             if n.unwrap_or(0) == 0 {
-                self.execute_one("DELETE FROM host_roles WHERE hostname=? AND role='dispatch'", &[json!(h)]).await?;
+                self.execute_one(
+                    "DELETE FROM host_roles WHERE hostname=? AND role='dispatch'",
+                    &[json!(h)],
+                )
+                .await?;
             }
         }
         Ok(row)
@@ -1122,13 +1475,23 @@ impl DispatcherStore for RqliteStore {
 
 #[async_trait]
 impl NonceStore for RqliteStore {
-    async fn consume_dispatcher_nonce(&self, dispatcher_id: &str, nonce: &str, now: &str) -> StoreResult<()> {
+    async fn consume_dispatcher_nonce(
+        &self,
+        dispatcher_id: &str,
+        nonce: &str,
+        now: &str,
+    ) -> StoreResult<()> {
         let n = self.execute_one(
             "UPDATE dispatchers SET last_nonce=?,last_seen=? WHERE dispatcher_id=? AND (last_nonce IS NULL OR last_nonce!=?)",
             &[json!(nonce), json!(now), json!(dispatcher_id), json!(nonce)],
         ).await?;
         if n == 0 {
-            let exists = self.query("SELECT 1 FROM dispatchers WHERE dispatcher_id=?", &[json!(dispatcher_id)]).await?;
+            let exists = self
+                .query(
+                    "SELECT 1 FROM dispatchers WHERE dispatcher_id=?",
+                    &[json!(dispatcher_id)],
+                )
+                .await?;
             return if exists.is_empty() {
                 Err(StoreError::NotFound(format!("dispatcher {dispatcher_id}")))
             } else {
@@ -1138,13 +1501,23 @@ impl NonceStore for RqliteStore {
         Ok(())
     }
 
-    async fn consume_runner_nonce(&self, runner_id: &str, nonce: &str, now: &str) -> StoreResult<()> {
+    async fn consume_runner_nonce(
+        &self,
+        runner_id: &str,
+        nonce: &str,
+        now: &str,
+    ) -> StoreResult<()> {
         let n = self.execute_one(
             "UPDATE runners SET last_nonce=?,last_heartbeat=? WHERE runner_id=? AND (last_nonce IS NULL OR last_nonce!=?)",
             &[json!(nonce), json!(now), json!(runner_id), json!(nonce)],
         ).await?;
         if n == 0 {
-            let exists = self.query("SELECT 1 FROM runners WHERE runner_id=?", &[json!(runner_id)]).await?;
+            let exists = self
+                .query(
+                    "SELECT 1 FROM runners WHERE runner_id=?",
+                    &[json!(runner_id)],
+                )
+                .await?;
             return if exists.is_empty() {
                 Err(StoreError::NotFound(format!("runner {runner_id}")))
             } else {
@@ -1159,29 +1532,82 @@ impl NonceStore for RqliteStore {
 
 #[async_trait]
 impl StreamStore for RqliteStore {
-    async fn append_stream(&self, task_id: i64, worker_id: &str, channel: &str, line: &str, now: &str) -> StoreResult<StreamLine> {
-        let owner_rows = self.query("SELECT worker_id FROM tasks WHERE id=?", &[json!(task_id)]).await?;
-        let owner = owner_rows.first().ok_or_else(|| StoreError::NotFound(format!("task {task_id}")))?;
+    async fn append_stream(
+        &self,
+        task_id: i64,
+        worker_id: &str,
+        channel: &str,
+        line: &str,
+        now: &str,
+    ) -> StoreResult<StreamLine> {
+        let owner_rows = self
+            .query("SELECT worker_id FROM tasks WHERE id=?", &[json!(task_id)])
+            .await?;
+        let owner = owner_rows
+            .first()
+            .ok_or_else(|| StoreError::NotFound(format!("task {task_id}")))?;
         if opt_str(owner, "worker_id").as_deref() != Some(worker_id) {
-            return Err(StoreError::PermissionDenied("worker mismatch on stream append".into()));
+            return Err(StoreError::PermissionDenied(
+                "worker mismatch on stream append".into(),
+            ));
         }
-        let max_seq: Option<i64> = self.query_scalar("SELECT COALESCE(MAX(seq),0) FROM task_streams WHERE task_id=?", &[json!(task_id)]).await?;
+        let max_seq: Option<i64> = self
+            .query_scalar(
+                "SELECT COALESCE(MAX(seq),0) FROM task_streams WHERE task_id=?",
+                &[json!(task_id)],
+            )
+            .await?;
         let next_seq = max_seq.unwrap_or(0) + 1;
-        let id = self.execute_insert(
-            "INSERT INTO task_streams (task_id,seq,channel,line,created_at) VALUES (?,?,?,?,?)",
-            &[json!(task_id), json!(next_seq), json!(channel), json!(line), json!(now)],
-        ).await.map_err(|e| StoreError::Backend(e.to_string()))?;
-        Ok(StreamLine { id, task_id, seq: next_seq, channel: channel.to_owned(), line: line.to_owned(), created_at: now.to_owned() })
+        let id = self
+            .execute_insert(
+                "INSERT INTO task_streams (task_id,seq,channel,line,created_at) VALUES (?,?,?,?,?)",
+                &[
+                    json!(task_id),
+                    json!(next_seq),
+                    json!(channel),
+                    json!(line),
+                    json!(now),
+                ],
+            )
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+        Ok(StreamLine {
+            id,
+            task_id,
+            seq: next_seq,
+            channel: channel.to_owned(),
+            line: line.to_owned(),
+            created_at: now.to_owned(),
+        })
     }
 
-    async fn append_stream_bulk(&self, task_id: i64, worker_id: &str, entries: &[(String, String)], now: &str) -> StoreResult<Vec<StreamLine>> {
-        if entries.is_empty() { return Ok(vec![]); }
-        let owner_rows = self.query("SELECT worker_id FROM tasks WHERE id=?", &[json!(task_id)]).await?;
-        let owner = owner_rows.first().ok_or_else(|| StoreError::NotFound(format!("task {task_id}")))?;
-        if opt_str(owner, "worker_id").as_deref() != Some(worker_id) {
-            return Err(StoreError::PermissionDenied("worker mismatch on stream bulk append".into()));
+    async fn append_stream_bulk(
+        &self,
+        task_id: i64,
+        worker_id: &str,
+        entries: &[(String, String)],
+        now: &str,
+    ) -> StoreResult<Vec<StreamLine>> {
+        if entries.is_empty() {
+            return Ok(vec![]);
         }
-        let max_seq: Option<i64> = self.query_scalar("SELECT COALESCE(MAX(seq),0) FROM task_streams WHERE task_id=?", &[json!(task_id)]).await?;
+        let owner_rows = self
+            .query("SELECT worker_id FROM tasks WHERE id=?", &[json!(task_id)])
+            .await?;
+        let owner = owner_rows
+            .first()
+            .ok_or_else(|| StoreError::NotFound(format!("task {task_id}")))?;
+        if opt_str(owner, "worker_id").as_deref() != Some(worker_id) {
+            return Err(StoreError::PermissionDenied(
+                "worker mismatch on stream bulk append".into(),
+            ));
+        }
+        let max_seq: Option<i64> = self
+            .query_scalar(
+                "SELECT COALESCE(MAX(seq),0) FROM task_streams WHERE task_id=?",
+                &[json!(task_id)],
+            )
+            .await?;
         let mut seq = max_seq.unwrap_or(0);
         let mut result = Vec::with_capacity(entries.len());
         for (channel, line) in entries {
@@ -1190,12 +1616,24 @@ impl StreamStore for RqliteStore {
                 "INSERT INTO task_streams (task_id,seq,channel,line,created_at) VALUES (?,?,?,?,?)",
                 &[json!(task_id), json!(seq), json!(channel), json!(line), json!(now)],
             ).await.map_err(|e| StoreError::Backend(e.to_string()))?;
-            result.push(StreamLine { id, task_id, seq, channel: channel.clone(), line: line.clone(), created_at: now.to_owned() });
+            result.push(StreamLine {
+                id,
+                task_id,
+                seq,
+                channel: channel.clone(),
+                line: line.clone(),
+                created_at: now.to_owned(),
+            });
         }
         Ok(result)
     }
 
-    async fn streams_since(&self, task_id: i64, after_seq: i64, limit: i64) -> StoreResult<Vec<StreamLine>> {
+    async fn streams_since(
+        &self,
+        task_id: i64,
+        after_seq: i64,
+        limit: i64,
+    ) -> StoreResult<Vec<StreamLine>> {
         let rows = self.query("SELECT id,task_id,seq,channel,line,created_at FROM task_streams WHERE task_id=? AND seq>? ORDER BY seq ASC LIMIT ?", &[json!(task_id), json!(after_seq), json!(limit)]).await?;
         Ok(rows.iter().map(row_to_stream_line).collect())
     }
@@ -1205,23 +1643,53 @@ impl StreamStore for RqliteStore {
 
 #[async_trait]
 impl ProgressStore for RqliteStore {
-    async fn append_progress(&self, task_id: i64, worker_id: &str, message: &str, files: Option<Vec<String>>, now: &str) -> StoreResult<ProgressEntry> {
-        let files_json = serde_json::to_string(&files.unwrap_or_default()).unwrap_or_else(|_| "[]".into());
-        let owner_rows = self.query("SELECT worker_id FROM tasks WHERE id=?", &[json!(task_id)]).await?;
-        let owner = owner_rows.first().ok_or_else(|| StoreError::NotFound(format!("task {task_id}")))?;
+    async fn append_progress(
+        &self,
+        task_id: i64,
+        worker_id: &str,
+        message: &str,
+        files: Option<Vec<String>>,
+        now: &str,
+    ) -> StoreResult<ProgressEntry> {
+        let files_json =
+            serde_json::to_string(&files.unwrap_or_default()).unwrap_or_else(|_| "[]".into());
+        let owner_rows = self
+            .query("SELECT worker_id FROM tasks WHERE id=?", &[json!(task_id)])
+            .await?;
+        let owner = owner_rows
+            .first()
+            .ok_or_else(|| StoreError::NotFound(format!("task {task_id}")))?;
         if opt_str(owner, "worker_id").as_deref() != Some(worker_id) {
-            return Err(StoreError::PermissionDenied("worker mismatch on progress".into()));
+            return Err(StoreError::PermissionDenied(
+                "worker mismatch on progress".into(),
+            ));
         }
-        let max_seq: Option<i64> = self.query_scalar("SELECT COALESCE(MAX(seq),0) FROM progress WHERE task_id=?", &[json!(task_id)]).await?;
+        let max_seq: Option<i64> = self
+            .query_scalar(
+                "SELECT COALESCE(MAX(seq),0) FROM progress WHERE task_id=?",
+                &[json!(task_id)],
+            )
+            .await?;
         let next_seq = max_seq.unwrap_or(0) + 1;
         let id = self.execute_insert(
             "INSERT INTO progress (task_id,seq,message,files_touched,created_at) VALUES (?,?,?,?,?)",
             &[json!(task_id), json!(next_seq), json!(message), json!(files_json), json!(now)],
         ).await.map_err(|e| StoreError::Backend(e.to_string()))?;
-        Ok(ProgressEntry { id, task_id, seq: next_seq, message: message.to_owned(), files_touched: json!([]), created_at: now.to_owned() })
+        Ok(ProgressEntry {
+            id,
+            task_id,
+            seq: next_seq,
+            message: message.to_owned(),
+            files_touched: json!([]),
+            created_at: now.to_owned(),
+        })
     }
 
-    async fn progress_since(&self, task_id: i64, after_seq: i64) -> StoreResult<Vec<ProgressEntry>> {
+    async fn progress_since(
+        &self,
+        task_id: i64,
+        after_seq: i64,
+    ) -> StoreResult<Vec<ProgressEntry>> {
         let rows = self.query("SELECT id,task_id,seq,message,files_touched,created_at FROM progress WHERE task_id=? AND seq>? ORDER BY seq ASC", &[json!(task_id), json!(after_seq)]).await?;
         Ok(rows.iter().map(row_to_progress).collect())
     }
@@ -1231,7 +1699,16 @@ impl ProgressStore for RqliteStore {
 
 #[async_trait]
 impl ApprovalStore for RqliteStore {
-    async fn create_or_get_pending_approval(&self, envelope_hash: &str, decision: Value, task_label: &str, branch: Option<&str>, scope_globs: Vec<String>, dispatcher_id: Option<&str>, now: &str) -> StoreResult<(String, bool)> {
+    async fn create_or_get_pending_approval(
+        &self,
+        envelope_hash: &str,
+        decision: Value,
+        task_label: &str,
+        branch: Option<&str>,
+        scope_globs: Vec<String>,
+        dispatcher_id: Option<&str>,
+        now: &str,
+    ) -> StoreResult<(String, bool)> {
         let rows = self.query("SELECT approval_id FROM approvals WHERE envelope_hash=? AND status='pending' LIMIT 1", &[json!(envelope_hash)]).await?;
         if let Some(r) = rows.first() {
             return Ok((str_val(r, "approval_id"), false));
@@ -1254,35 +1731,73 @@ impl ApprovalStore for RqliteStore {
         Ok(n > 0)
     }
 
-    async fn resolve_approval(&self, approval_id: &str, status: &str, approver: Option<&str>, reason: Option<&str>, now: &str) -> StoreResult<ApprovalRow> {
+    async fn resolve_approval(
+        &self,
+        approval_id: &str,
+        status: &str,
+        approver: Option<&str>,
+        reason: Option<&str>,
+        now: &str,
+    ) -> StoreResult<ApprovalRow> {
         let n = self.execute_one(
             "UPDATE approvals SET status=?,approver=?,reason=?,resolved_at=? WHERE approval_id=? AND status='pending'",
             &[json!(status), json!(approver), json!(reason), json!(now), json!(approval_id)],
         ).await?;
         if n == 0 {
-            let rows = self.query("SELECT * FROM approvals WHERE approval_id=?", &[json!(approval_id)]).await?;
+            let rows = self
+                .query(
+                    "SELECT * FROM approvals WHERE approval_id=?",
+                    &[json!(approval_id)],
+                )
+                .await?;
             return match rows.first() {
                 None => Err(StoreError::NotFound(format!("approval {approval_id}"))),
-                Some(r) => Err(StoreError::Conflict(format!("approval already resolved: status={}", str_val(r, "status")))),
+                Some(r) => Err(StoreError::Conflict(format!(
+                    "approval already resolved: status={}",
+                    str_val(r, "status")
+                ))),
             };
         }
-        let rows = self.query("SELECT * FROM approvals WHERE approval_id=?", &[json!(approval_id)]).await?;
-        rows.into_iter().next()
+        let rows = self
+            .query(
+                "SELECT * FROM approvals WHERE approval_id=?",
+                &[json!(approval_id)],
+            )
+            .await?;
+        rows.into_iter()
+            .next()
             .map(|r| row_to_approval(&r))
             .ok_or_else(|| StoreError::NotFound(format!("approval {approval_id}")))
     }
 
-    async fn list_approvals(&self, status: Option<&str>, limit: i64) -> StoreResult<Vec<ApprovalRow>> {
+    async fn list_approvals(
+        &self,
+        status: Option<&str>,
+        limit: i64,
+    ) -> StoreResult<Vec<ApprovalRow>> {
         let rows = if let Some(s) = status {
-            self.query("SELECT * FROM approvals WHERE status=? ORDER BY created_at DESC LIMIT ?", &[json!(s), json!(limit)]).await?
+            self.query(
+                "SELECT * FROM approvals WHERE status=? ORDER BY created_at DESC LIMIT ?",
+                &[json!(s), json!(limit)],
+            )
+            .await?
         } else {
-            self.query("SELECT * FROM approvals ORDER BY created_at DESC LIMIT ?", &[json!(limit)]).await?
+            self.query(
+                "SELECT * FROM approvals ORDER BY created_at DESC LIMIT ?",
+                &[json!(limit)],
+            )
+            .await?
         };
         Ok(rows.iter().map(row_to_approval).collect())
     }
 
     async fn get_approval(&self, approval_id: &str) -> StoreResult<Option<ApprovalRow>> {
-        let rows = self.query("SELECT * FROM approvals WHERE approval_id=?", &[json!(approval_id)]).await?;
+        let rows = self
+            .query(
+                "SELECT * FROM approvals WHERE approval_id=?",
+                &[json!(approval_id)],
+            )
+            .await?;
         Ok(rows.first().map(row_to_approval))
     }
 }
@@ -1291,43 +1806,108 @@ impl ApprovalStore for RqliteStore {
 
 #[async_trait]
 impl SecretStore for RqliteStore {
-    async fn put_secret(&self, name: &str, encrypted_value: &str, now: &str) -> StoreResult<SecretMetadata> {
+    async fn put_secret(
+        &self,
+        name: &str,
+        encrypted_value: &str,
+        now: &str,
+    ) -> StoreResult<SecretMetadata> {
         self.execute_one(
             "INSERT INTO secrets (name,encrypted_value,version,created_at) VALUES (?,?,1,?) ON CONFLICT(name) DO UPDATE SET encrypted_value=?,created_at=?",
             &[json!(name), json!(encrypted_value), json!(now), json!(encrypted_value), json!(now)],
         ).await?;
-        let rows = self.query("SELECT name,version,created_at,last_rotated_at FROM secrets WHERE name=?", &[json!(name)]).await?;
-        rows.into_iter().next().map(|r| row_to_secret_metadata(&r)).ok_or_else(|| StoreError::Backend("secret not found after insert".into()))
+        let rows = self
+            .query(
+                "SELECT name,version,created_at,last_rotated_at FROM secrets WHERE name=?",
+                &[json!(name)],
+            )
+            .await?;
+        rows.into_iter()
+            .next()
+            .map(|r| row_to_secret_metadata(&r))
+            .ok_or_else(|| StoreError::Backend("secret not found after insert".into()))
     }
 
-    async fn rotate_secret(&self, name: &str, encrypted_value: &str, now: &str) -> StoreResult<SecretMetadata> {
+    async fn rotate_secret(
+        &self,
+        name: &str,
+        encrypted_value: &str,
+        now: &str,
+    ) -> StoreResult<SecretMetadata> {
         let n = self.execute_one(
             "UPDATE secrets SET encrypted_value=?,version=version+1,last_rotated_at=? WHERE name=?",
             &[json!(encrypted_value), json!(now), json!(name)],
         ).await?;
-        if n == 0 { return Err(StoreError::NotFound(format!("secret {name}"))); }
-        let rows = self.query("SELECT name,version,created_at,last_rotated_at FROM secrets WHERE name=?", &[json!(name)]).await?;
-        rows.into_iter().next().map(|r| row_to_secret_metadata(&r)).ok_or_else(|| StoreError::Backend("secret not found after update".into()))
+        if n == 0 {
+            return Err(StoreError::NotFound(format!("secret {name}")));
+        }
+        let rows = self
+            .query(
+                "SELECT name,version,created_at,last_rotated_at FROM secrets WHERE name=?",
+                &[json!(name)],
+            )
+            .await?;
+        rows.into_iter()
+            .next()
+            .map(|r| row_to_secret_metadata(&r))
+            .ok_or_else(|| StoreError::Backend("secret not found after update".into()))
     }
 
     async fn list_secrets(&self) -> StoreResult<Vec<SecretMetadata>> {
-        let rows = self.query("SELECT name,version,created_at,last_rotated_at FROM secrets ORDER BY name", &[]).await?;
+        let rows = self
+            .query(
+                "SELECT name,version,created_at,last_rotated_at FROM secrets ORDER BY name",
+                &[],
+            )
+            .await?;
         Ok(rows.iter().map(row_to_secret_metadata).collect())
     }
 
-    async fn resolve_secrets(&self, names: &[String]) -> StoreResult<std::collections::HashMap<String, String>> {
-        if names.is_empty() { return Ok(std::collections::HashMap::new()); }
+    async fn secret_envelopes(
+        &self,
+        names: &[String],
+    ) -> StoreResult<std::collections::HashMap<String, String>> {
+        if names.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
         let mut out = std::collections::HashMap::new();
         for name in names {
-            if let Some(val) = self.query_scalar::<String>("SELECT encrypted_value FROM secrets WHERE name=?", &[json!(name)]).await? {
+            if let Some(val) = self
+                .query_scalar::<String>(
+                    "SELECT encrypted_value FROM secrets WHERE name=?",
+                    &[json!(name)],
+                )
+                .await?
+            {
                 out.insert(name.clone(), val);
             }
         }
         Ok(out)
     }
 
+    async fn all_secret_envelopes(&self) -> StoreResult<std::collections::HashMap<String, String>> {
+        let rows = self
+            .query(
+                "SELECT name,encrypted_value FROM secrets ORDER BY name",
+                &[],
+            )
+            .await?;
+        let mut out = std::collections::HashMap::new();
+        for row in rows {
+            if let (Some(name), Some(envelope)) = (
+                row.get("name").and_then(Value::as_str),
+                row.get("encrypted_value").and_then(Value::as_str),
+            ) {
+                out.insert(name.to_owned(), envelope.to_owned());
+            }
+        }
+        Ok(out)
+    }
+
     async fn delete_secret(&self, name: &str) -> StoreResult<bool> {
-        let n = self.execute_one("DELETE FROM secrets WHERE name=?", &[json!(name)]).await?;
+        let n = self
+            .execute_one("DELETE FROM secrets WHERE name=?", &[json!(name)])
+            .await?;
         Ok(n > 0)
     }
 }
@@ -1337,7 +1917,9 @@ impl SecretStore for RqliteStore {
 #[async_trait]
 impl LabelStore for RqliteStore {
     async fn get_labels(&self) -> StoreResult<Value> {
-        let rows = self.query("SELECT key, value_json FROM labels", &[]).await?;
+        let rows = self
+            .query("SELECT key, value_json FROM labels", &[])
+            .await?;
         let mut hub_name = String::new();
         let mut runner_aliases = serde_json::Map::new();
         let mut host_aliases = serde_json::Map::new();
@@ -1356,25 +1938,49 @@ impl LabelStore for RqliteStore {
                 host_aliases.insert(h.to_owned(), json!(s));
             }
         }
-        Ok(json!({"hub_name": hub_name, "runner_aliases": runner_aliases, "host_aliases": host_aliases}))
+        Ok(
+            json!({"hub_name": hub_name, "runner_aliases": runner_aliases, "host_aliases": host_aliases}),
+        )
     }
 
     async fn set_hub_name(&self, name: &str, by: Option<&str>, now: &str) -> StoreResult<()> {
         self.upsert_label("hub_name", name, by, now).await
     }
-    async fn set_runner_alias(&self, runner_id: &str, alias: &str, by: Option<&str>, now: &str) -> StoreResult<()> {
-        self.upsert_label(&format!("runner_alias:{runner_id}"), alias, by, now).await
+    async fn set_runner_alias(
+        &self,
+        runner_id: &str,
+        alias: &str,
+        by: Option<&str>,
+        now: &str,
+    ) -> StoreResult<()> {
+        self.upsert_label(&format!("runner_alias:{runner_id}"), alias, by, now)
+            .await
     }
-    async fn set_host_alias(&self, hostname: &str, alias: &str, by: Option<&str>, now: &str) -> StoreResult<()> {
-        self.upsert_label(&format!("host_alias:{hostname}"), alias, by, now).await
+    async fn set_host_alias(
+        &self,
+        hostname: &str,
+        alias: &str,
+        by: Option<&str>,
+        now: &str,
+    ) -> StoreResult<()> {
+        self.upsert_label(&format!("host_alias:{hostname}"), alias, by, now)
+            .await
     }
 }
 
 impl RqliteStore {
-    async fn upsert_label(&self, key: &str, value: &str, updated_by: Option<&str>, now: &str) -> StoreResult<()> {
-        let value_json = serde_json::to_string(&Value::String(value.to_owned())).unwrap_or_else(|_| format!("\"{}\"", value));
+    async fn upsert_label(
+        &self,
+        key: &str,
+        value: &str,
+        updated_by: Option<&str>,
+        now: &str,
+    ) -> StoreResult<()> {
+        let value_json = serde_json::to_string(&Value::String(value.to_owned()))
+            .unwrap_or_else(|_| format!("\"{value}\""));
         if value.is_empty() {
-            self.execute_one("DELETE FROM labels WHERE key=?", &[json!(key)]).await?;
+            self.execute_one("DELETE FROM labels WHERE key=?", &[json!(key)])
+                .await?;
         } else {
             self.execute_one(
                 "INSERT INTO labels (key,value_json,updated_by,updated_at) VALUES (?,?,?,?) ON CONFLICT(key) DO UPDATE SET value_json=?,updated_by=?,updated_at=?",
@@ -1389,27 +1995,139 @@ impl RqliteStore {
 
 #[async_trait]
 impl HostRoleStore for RqliteStore {
-    async fn set_host_role(&self, hostname: &str, role: &str, enabled: bool, status: Option<&str>, metadata: Value, now: &str) -> StoreResult<HostRoleRow> {
+    async fn set_host_role(
+        &self,
+        hostname: &str,
+        role: &str,
+        enabled: bool,
+        status: Option<&str>,
+        metadata: Value,
+        now: &str,
+    ) -> StoreResult<HostRoleRow> {
         let meta_json = serde_json::to_string(&metadata).unwrap_or_else(|_| "{}".into());
         let enabled_int: i64 = if enabled { 1 } else { 0 };
         self.execute_one(
             "INSERT INTO host_roles (hostname,role,enabled,status,metadata,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(hostname,role) DO UPDATE SET enabled=?,status=?,metadata=?,updated_at=?",
             &[json!(hostname), json!(role), json!(enabled_int), json!(status), json!(meta_json), json!(now), json!(enabled_int), json!(status), json!(meta_json), json!(now)],
         ).await?;
-        let rows = self.query("SELECT * FROM host_roles WHERE hostname=? AND role=?", &[json!(hostname), json!(role)]).await?;
-        rows.into_iter().next()
+        let rows = self
+            .query(
+                "SELECT * FROM host_roles WHERE hostname=? AND role=?",
+                &[json!(hostname), json!(role)],
+            )
+            .await?;
+        rows.into_iter()
+            .next()
             .map(|r| row_to_host_role(&r))
             .ok_or_else(|| StoreError::Backend("host_role not found after upsert".into()))
     }
 
     async fn get_host_role(&self, hostname: &str, role: &str) -> StoreResult<Option<HostRoleRow>> {
-        let rows = self.query("SELECT * FROM host_roles WHERE hostname=? AND role=?", &[json!(hostname), json!(role)]).await?;
+        let rows = self
+            .query(
+                "SELECT * FROM host_roles WHERE hostname=? AND role=?",
+                &[json!(hostname), json!(role)],
+            )
+            .await?;
         Ok(rows.first().map(row_to_host_role))
     }
 
     async fn list_host_roles(&self) -> StoreResult<Vec<HostRoleRow>> {
-        let rows = self.query("SELECT * FROM host_roles ORDER BY hostname, role", &[]).await?;
+        let rows = self
+            .query("SELECT * FROM host_roles ORDER BY hostname, role", &[])
+            .await?;
         Ok(rows.iter().map(row_to_host_role).collect())
+    }
+}
+
+// -- Role-separated bearer tokens ------------------------------------------
+
+#[async_trait]
+impl RoleTokenStore for RqliteStore {
+    async fn create_role_token(
+        &self,
+        token_id: &str,
+        token_hash: &str,
+        label: &str,
+        roles: &[String],
+        created_by: &str,
+        migrated: bool,
+        now: &str,
+    ) -> StoreResult<RoleTokenRow> {
+        let roles_json = serde_json::to_string(roles)
+            .map_err(|error| StoreError::Schema(format!("serialize role token roles: {error}")))?;
+        let migrated = if migrated { 1 } else { 0 };
+        self.execute_one(
+            "INSERT INTO role_tokens (token_id,token_hash,label,roles_json,created_at,created_by,migrated,revoked_at) VALUES (?,?,?,?,?,?,?,NULL)",
+            &[
+                json!(token_id),
+                json!(token_hash),
+                json!(label),
+                json!(roles_json),
+                json!(now),
+                json!(created_by),
+                json!(migrated),
+            ],
+        )
+        .await
+        .map_err(|error| match error {
+            RqliteError::Status { body, .. } if body.contains("UNIQUE constraint") => {
+                StoreError::Conflict("role token id or credential already exists".into())
+            }
+            other => other.into(),
+        })?;
+        let rows = self
+            .query(
+                "SELECT token_id,label,roles_json,created_at,created_by,migrated,revoked_at FROM role_tokens WHERE token_id=?",
+                &[json!(token_id)],
+            )
+            .await?;
+        rows.first()
+            .map(row_to_role_token)
+            .ok_or_else(|| StoreError::Backend("role token missing after insert".into()))
+    }
+
+    async fn role_token_by_hash(&self, token_hash: &str) -> StoreResult<Option<RoleTokenRow>> {
+        let rows = self
+            .query(
+                "SELECT token_id,label,roles_json,created_at,created_by,migrated,revoked_at FROM role_tokens WHERE token_hash=? AND revoked_at IS NULL",
+                &[json!(token_hash)],
+            )
+            .await?;
+        Ok(rows.first().map(row_to_role_token))
+    }
+
+    async fn list_role_tokens(&self, include_revoked: bool) -> StoreResult<Vec<RoleTokenRow>> {
+        let sql = if include_revoked {
+            "SELECT token_id,label,roles_json,created_at,created_by,migrated,revoked_at FROM role_tokens ORDER BY created_at,token_id"
+        } else {
+            "SELECT token_id,label,roles_json,created_at,created_by,migrated,revoked_at FROM role_tokens WHERE revoked_at IS NULL ORDER BY created_at,token_id"
+        };
+        let rows = self.query(sql, &[]).await?;
+        Ok(rows.iter().map(row_to_role_token).collect())
+    }
+
+    async fn revoke_role_token(
+        &self,
+        token_id: &str,
+        now: &str,
+    ) -> StoreResult<Option<RoleTokenRow>> {
+        let changed = self
+            .execute_one(
+                "UPDATE role_tokens SET revoked_at=? WHERE token_id=? AND revoked_at IS NULL",
+                &[json!(now), json!(token_id)],
+            )
+            .await?;
+        if changed == 0 {
+            return Ok(None);
+        }
+        let rows = self
+            .query(
+                "SELECT token_id,label,roles_json,created_at,created_by,migrated,revoked_at FROM role_tokens WHERE token_id=?",
+                &[json!(token_id)],
+            )
+            .await?;
+        Ok(rows.first().map(row_to_role_token))
     }
 }
 
@@ -1417,18 +2135,35 @@ impl HostRoleStore for RqliteStore {
 
 #[async_trait]
 impl NoteStore for RqliteStore {
-    async fn post_note(&self, task_id: i64, author: &str, body: &str, now: &str) -> StoreResult<NoteRow> {
+    async fn post_note(
+        &self,
+        task_id: i64,
+        author: &str,
+        body: &str,
+        now: &str,
+    ) -> StoreResult<NoteRow> {
         // rqlite doesn't support INSERT...SELECT...RETURNING in the same way;
         // check task exists first, then insert.
-        let exists = self.query("SELECT id FROM tasks WHERE id=?", &[json!(task_id)]).await?;
+        let exists = self
+            .query("SELECT id FROM tasks WHERE id=?", &[json!(task_id)])
+            .await?;
         if exists.is_empty() {
             return Err(StoreError::NotFound(format!("task {task_id}")));
         }
-        let id = self.execute_insert(
-            "INSERT INTO notes (task_id, author, body, created_at) VALUES (?,?,?,?)",
-            &[json!(task_id), json!(author), json!(body), json!(now)],
-        ).await.map_err(|e| StoreError::Backend(e.to_string()))?;
-        Ok(NoteRow { id, task_id, author: author.to_owned(), body: body.to_owned(), created_at: now.to_owned() })
+        let id = self
+            .execute_insert(
+                "INSERT INTO notes (task_id, author, body, created_at) VALUES (?,?,?,?)",
+                &[json!(task_id), json!(author), json!(body), json!(now)],
+            )
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+        Ok(NoteRow {
+            id,
+            task_id,
+            author: author.to_owned(),
+            body: body.to_owned(),
+            created_at: now.to_owned(),
+        })
     }
 
     async fn read_notes(&self, task_id: i64, after_id: i64) -> StoreResult<Vec<NoteRow>> {
@@ -1436,13 +2171,16 @@ impl NoteStore for RqliteStore {
             "SELECT id,task_id,author,body,created_at FROM notes WHERE task_id=? AND id>? ORDER BY id ASC",
             &[json!(task_id), json!(after_id)],
         ).await?;
-        Ok(rows.iter().map(|r| NoteRow {
-            id: r["id"].as_i64().unwrap_or(0),
-            task_id: r["task_id"].as_i64().unwrap_or(0),
-            author: str_val(r, "author"),
-            body: str_val(r, "body"),
-            created_at: str_val(r, "created_at"),
-        }).collect())
+        Ok(rows
+            .iter()
+            .map(|r| NoteRow {
+                id: r["id"].as_i64().unwrap_or(0),
+                task_id: r["task_id"].as_i64().unwrap_or(0),
+                author: str_val(r, "author"),
+                body: str_val(r, "body"),
+                created_at: str_val(r, "created_at"),
+            })
+            .collect())
     }
 }
 
@@ -1470,8 +2208,12 @@ impl CostStore for RqliteStore {
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
         let insert_params = [
             serde_json::Value::String(task_id.to_owned()),
-            dispatcher_id.map_or(serde_json::Value::Null, |v| serde_json::Value::String(v.to_owned())),
-            runner_id.map_or(serde_json::Value::Null, |v| serde_json::Value::String(v.to_owned())),
+            dispatcher_id.map_or(serde_json::Value::Null, |v| {
+                serde_json::Value::String(v.to_owned())
+            }),
+            runner_id.map_or(serde_json::Value::Null, |v| {
+                serde_json::Value::String(v.to_owned())
+            }),
             serde_json::Value::String(model_id.to_owned()),
             serde_json::json!(prompt_tokens),
             serde_json::json!(completion_tokens),
@@ -1527,13 +2269,12 @@ impl CostStore for RqliteStore {
         })
     }
 
-    async fn query_cost(
-        &self,
-        since_iso: Option<&str>,
-        limit: i64,
-    ) -> StoreResult<Vec<CostRow>> {
+    async fn query_cost(&self, since_iso: Option<&str>, limit: i64) -> StoreResult<Vec<CostRow>> {
         let rows = if let Some(since) = since_iso {
-            let params = [serde_json::Value::String(since.to_owned()), serde_json::json!(limit)];
+            let params = [
+                serde_json::Value::String(since.to_owned()),
+                serde_json::json!(limit),
+            ];
             self.query(
                 "SELECT id, task_id, dispatcher_id, runner_id, model_id, \
                  prompt_tokens, completion_tokens, cost_usd, wall_seconds, \
@@ -1541,7 +2282,8 @@ impl CostStore for RqliteStore {
                  FROM cost_ledger WHERE created_at >= ? \
                  ORDER BY created_at DESC LIMIT ?",
                 &params,
-            ).await?
+            )
+            .await?
         } else {
             let params = [serde_json::json!(limit)];
             self.query(
@@ -1550,24 +2292,50 @@ impl CostStore for RqliteStore {
                  runner_cpu_seconds, created_at \
                  FROM cost_ledger ORDER BY created_at DESC LIMIT ?",
                 &params,
-            ).await?
+            )
+            .await?
         };
         Ok(rows
             .iter()
-            .filter_map(|r| {
-                Some(CostRow {
-                    id: r.get("id").and_then(|v| v.as_i64()).unwrap_or(0),
-                    task_id: r.get("task_id").and_then(|v| v.as_str()).unwrap_or("").to_owned(),
-                    dispatcher_id: r.get("dispatcher_id").and_then(|v| v.as_str()).map(str::to_owned),
-                    runner_id: r.get("runner_id").and_then(|v| v.as_str()).map(str::to_owned),
-                    model_id: r.get("model_id").and_then(|v| v.as_str()).unwrap_or("").to_owned(),
-                    prompt_tokens: r.get("prompt_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
-                    completion_tokens: r.get("completion_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
-                    cost_usd: r.get("cost_usd").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                    wall_seconds: r.get("wall_seconds").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                    runner_cpu_seconds: r.get("runner_cpu_seconds").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                    created_at: r.get("created_at").and_then(|v| v.as_str()).unwrap_or("").to_owned(),
-                })
+            .map(|r| CostRow {
+                id: r.get("id").and_then(|v| v.as_i64()).unwrap_or(0),
+                task_id: r
+                    .get("task_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_owned(),
+                dispatcher_id: r
+                    .get("dispatcher_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned),
+                runner_id: r
+                    .get("runner_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_owned),
+                model_id: r
+                    .get("model_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_owned(),
+                prompt_tokens: r.get("prompt_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
+                completion_tokens: r
+                    .get("completion_tokens")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+                cost_usd: r.get("cost_usd").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                wall_seconds: r
+                    .get("wall_seconds")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
+                runner_cpu_seconds: r
+                    .get("runner_cpu_seconds")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0),
+                created_at: r
+                    .get("created_at")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_owned(),
             })
             .collect())
     }
@@ -1622,10 +2390,22 @@ impl BudgetStore for RqliteStore {
         Ok(rows
             .iter()
             .map(|r| BudgetStateRow {
-                scope: r.get("scope").and_then(|v| v.as_str()).unwrap_or("").to_owned(),
-                period_key: r.get("period_key").and_then(|v| v.as_str()).unwrap_or("").to_owned(),
+                scope: r
+                    .get("scope")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_owned(),
+                period_key: r
+                    .get("period_key")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_owned(),
                 spend_usd: r.get("spend_usd").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                updated_at: r.get("updated_at").and_then(|v| v.as_str()).unwrap_or("").to_owned(),
+                updated_at: r
+                    .get("updated_at")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_owned(),
             })
             .collect())
     }
@@ -1664,8 +2444,7 @@ impl RunnerCapabilityStore for RqliteStore {
         ));
         let insert_sql = "INSERT INTO runner_capabilities (runner_id, capability_kind, name, source_server, description, extra, updated_at) VALUES (?,?,?,?,?,?,?)";
         for row in rows {
-            let extra =
-                serde_json::to_string(&row.extra).unwrap_or_else(|_| "{}".to_owned());
+            let extra = serde_json::to_string(&row.extra).unwrap_or_else(|_| "{}".to_owned());
             stmts.push((
                 insert_sql,
                 vec![
@@ -1679,16 +2458,12 @@ impl RunnerCapabilityStore for RqliteStore {
                 ],
             ));
         }
-        let refs: Vec<(&str, &[Value])> =
-            stmts.iter().map(|(s, p)| (*s, p.as_slice())).collect();
+        let refs: Vec<(&str, &[Value])> = stmts.iter().map(|(s, p)| (*s, p.as_slice())).collect();
         self.execute_tx(&refs).await?;
         Ok(())
     }
 
-    async fn runner_capabilities(
-        &self,
-        runner_id: &str,
-    ) -> StoreResult<Vec<RunnerCapabilityRow>> {
+    async fn runner_capabilities(&self, runner_id: &str) -> StoreResult<Vec<RunnerCapabilityRow>> {
         let rows = self
             .query(
                 "SELECT runner_id, capability_kind, name, source_server, description, extra FROM runner_capabilities WHERE runner_id=? ORDER BY capability_kind, name",
@@ -1711,7 +2486,11 @@ impl RunnerCapabilityStore for RqliteStore {
             .await?;
         Ok(rows
             .iter()
-            .filter_map(|r| r.get("runner_id").and_then(|v| v.as_str()).map(|s| s.to_owned()))
+            .filter_map(|r| {
+                r.get("runner_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_owned())
+            })
             .collect())
     }
 
@@ -1726,12 +2505,8 @@ impl RunnerCapabilityStore for RqliteStore {
 }
 
 fn row_to_runner_capability(row: &Value) -> RunnerCapabilityRow {
-    let extra_text = row
-        .get("extra")
-        .and_then(|v| v.as_str())
-        .unwrap_or("{}");
-    let extra: Value =
-        serde_json::from_str(extra_text).unwrap_or_else(|_| json!({}));
+    let extra_text = row.get("extra").and_then(|v| v.as_str()).unwrap_or("{}");
+    let extra: Value = serde_json::from_str(extra_text).unwrap_or_else(|_| json!({}));
     RunnerCapabilityRow {
         runner_id: str_val(row, "runner_id"),
         capability_kind: str_val(row, "capability_kind"),
@@ -1742,7 +2517,230 @@ fn row_to_runner_capability(row: &Value) -> RunnerCapabilityRow {
     }
 }
 
+// -- Unified settings -------------------------------------------------------
+
+#[async_trait]
+impl SettingsStore for RqliteStore {
+    async fn get_settings_document(&self) -> StoreResult<SettingsDocument> {
+        let rows = self
+            .query(
+                "SELECT revision, value_json, updated_at, updated_by FROM settings_document WHERE id=1",
+                &[],
+            )
+            .await?;
+        let Some(row) = rows.first() else {
+            return Ok(SettingsDocument {
+                revision: 0,
+                value: json!({}),
+                updated_at: None,
+                updated_by: None,
+            });
+        };
+        let value = serde_json::from_str(row["value_json"].as_str().unwrap_or("{}"))
+            .map_err(|error| StoreError::Schema(format!("stored settings JSON: {error}")))?;
+        Ok(SettingsDocument {
+            revision: row["revision"].as_i64().unwrap_or(0),
+            value,
+            updated_at: opt_str(row, "updated_at"),
+            updated_by: opt_str(row, "updated_by"),
+        })
+    }
+
+    async fn put_settings_document(
+        &self,
+        expected_revision: i64,
+        value: &Value,
+        updated_by: &str,
+        now: &str,
+    ) -> StoreResult<SettingsDocument> {
+        let encoded = serde_json::to_string(value)
+            .map_err(|error| StoreError::Schema(format!("settings serialization: {error}")))?;
+        let next_revision = expected_revision + 1;
+        let affected = if expected_revision == 0 {
+            self.execute_one(
+                "INSERT OR IGNORE INTO settings_document(id,revision,value_json,updated_at,updated_by) VALUES(1,?,?,?,?)",
+                &[json!(next_revision), json!(encoded), json!(now), json!(updated_by)],
+            )
+            .await?
+        } else {
+            self.execute_one(
+                "UPDATE settings_document SET revision=?,value_json=?,updated_at=?,updated_by=? WHERE id=1 AND revision=?",
+                &[json!(next_revision), json!(encoded), json!(now), json!(updated_by), json!(expected_revision)],
+            )
+            .await?
+        };
+        if affected != 1 {
+            return Err(StoreError::Conflict(
+                "settings revision changed; refresh and retry".into(),
+            ));
+        }
+        Ok(SettingsDocument {
+            revision: next_revision,
+            value: value.clone(),
+            updated_at: Some(now.to_owned()),
+            updated_by: Some(updated_by.to_owned()),
+        })
+    }
+}
+
+// -- Optional Tier-2 history export ----------------------------------------
+
+#[async_trait]
+impl HistoryExportStore for RqliteStore {
+    async fn history_streams(&self) -> StoreResult<Vec<String>> {
+        Ok(vec!["tasks".into(), "cost".into(), "audit".into()])
+    }
+
+    async fn fetch_history_rows(
+        &self,
+        stream: &str,
+        after_sequence: i64,
+        limit: usize,
+    ) -> StoreResult<Vec<HistoryExportRow>> {
+        let sql = match stream {
+            "tasks" => "SELECT id AS sequence, ('task:' || id) AS record_id, (CAST(strftime('%s', COALESCE(completed_at, created_at)) AS INTEGER) * 1000) AS occurred_at_ms, id, title, status, kind, branch, created_at, claimed_at, started_at, completed_at, dispatched_at, dispatched_by_user, dispatched_by_host, dispatched_by_agent, claimed_by_runner, claimed_by_host, wall_seconds, runner_cpu_seconds, policy_decisions, approvals_required, approvals_received, approval_id, exit_reason FROM tasks WHERE id>? ORDER BY id LIMIT ?",
+            "cost" => "SELECT id AS sequence, ('cost:' || id) AS record_id, (CAST(strftime('%s', created_at) AS INTEGER) * 1000) AS occurred_at_ms, id, task_id, dispatcher_id, runner_id, model_id, prompt_tokens, completion_tokens, cost_usd, wall_seconds, runner_cpu_seconds, created_at FROM cost_ledger WHERE id>? ORDER BY id LIMIT ?",
+            "audit" => "SELECT seq AS sequence, event_id_hash AS record_id, (CAST(strftime('%s', created_at) AS INTEGER) * 1000) AS occurred_at_ms, seq, event_id_hash, prev_event_id_hash, kind, task_id, payload_json, created_at FROM audit_event WHERE seq>? ORDER BY seq LIMIT ?",
+            other => return Err(StoreError::Schema(format!("unknown history stream: {other}"))),
+        };
+        let rows = self
+            .query(
+                sql,
+                &[json!(after_sequence), json!(limit.clamp(1, 5000) as i64)],
+            )
+            .await?;
+        rows.into_iter()
+            .map(|row| {
+                let sequence = row["sequence"].as_i64().unwrap_or(0);
+                let record_id = str_val(&row, "record_id");
+                let occurred_at_ms = row["occurred_at_ms"].as_i64().unwrap_or(0);
+                let mut payload = row;
+                if let Some(object) = payload.as_object_mut() {
+                    object.remove("sequence");
+                    object.remove("record_id");
+                    object.remove("occurred_at_ms");
+                    if stream == "audit" {
+                        if let Some(Value::String(encoded)) = object.get("payload_json") {
+                            if let Ok(decoded) = serde_json::from_str(encoded) {
+                                object.insert("payload_json".into(), decoded);
+                            }
+                        }
+                    }
+                }
+                Ok(HistoryExportRow {
+                    stream: stream.to_owned(),
+                    sequence,
+                    record_id,
+                    occurred_at_ms,
+                    payload,
+                })
+            })
+            .collect()
+    }
+
+    async fn history_watermark(&self, stream: &str) -> StoreResult<i64> {
+        Ok(self
+            .query_scalar(
+                "SELECT sequence FROM history_export_watermarks WHERE stream=?",
+                &[json!(stream)],
+            )
+            .await?
+            .unwrap_or(0))
+    }
+
+    async fn commit_history_watermark(
+        &self,
+        stream: &str,
+        sequence: i64,
+        now: &str,
+    ) -> StoreResult<()> {
+        self.execute_one(
+            "INSERT INTO history_export_watermarks(stream,sequence,updated_at) VALUES(?,?,?) ON CONFLICT(stream) DO UPDATE SET sequence=MAX(history_export_watermarks.sequence,excluded.sequence),updated_at=excluded.updated_at",
+            &[json!(stream), json!(sequence), json!(now)],
+        )
+        .await?;
+        Ok(())
+    }
+}
+
 impl FabricStore for RqliteStore {}
+
+fn utc_offset(offset_secs: i64) -> String {
+    let d = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    epoch_secs_to_iso(d.as_secs() as i64 + offset_secs)
+}
+
+/// The current UTC timestamp in this crate's house format
+/// (`%Y-%m-%d %H:%M:%S`). Exposed (rather than crate-private, like
+/// `utc_offset`) specifically so integration tests can construct a `now`
+/// value consistent with what internal time-window checks (e.g. the login
+/// throttle's rolling window, which compares against real wall-clock time
+/// via `utc_offset`) actually compare against -- a test using an arbitrary
+/// fixed timestamp string for `now` while the throttle window is computed
+/// from real time would silently never trigger, since the two clocks would
+/// disagree about what "recent" means.
+pub fn utc_now() -> String {
+    let d = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    epoch_secs_to_iso(d.as_secs() as i64)
+}
+
+fn epoch_secs_to_iso(total_secs: i64) -> String {
+    // `total_secs` is "now" plus a small offset (see `utc_offset`, whose
+    // offsets are on the order of minutes/hours, never anywhere near the
+    // ~1970-epoch magnitude of "now") -- it is never actually negative in
+    // practice, but `try_from` fails closed to the epoch instead of
+    // silently wrapping to a huge value if that assumption is ever wrong.
+    let total_secs = u64::try_from(total_secs).unwrap_or(0);
+    let secs = total_secs % 60;
+    let mins = (total_secs / 60) % 60;
+    let hours = (total_secs / 3600) % 24;
+    let mut days = (total_secs / 86400) as i64;
+    let mut year = 1970i64;
+    loop {
+        let diy = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
+            366
+        } else {
+            365
+        };
+        if days < diy {
+            break;
+        }
+        days -= diy;
+        year += 1;
+    }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let md = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut month = 0usize;
+    for (i, &m) in md.iter().enumerate() {
+        if days < m as i64 {
+            month = i;
+            break;
+        }
+        days -= m as i64;
+    }
+    format!(
+        "{year:04}-{:02}-{:02} {hours:02}:{mins:02}:{secs:02}",
+        month + 1,
+        days + 1
+    )
+}
 
 // ---------------------------------------------------------------------------
 // M2.5.3 — budget_state restart-persistence integration test
@@ -1756,7 +2754,10 @@ impl FabricStore for RqliteStore {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fabric_store::{BudgetStore, CostStore};
+    use fabric_store::{
+        BudgetStore, ClaimResult, CostStore, CreateTaskParams, HistoryExportStore, ResultStore,
+        RoleTokenStore, SettingsStore, SubmitResultParams, TaskStore,
+    };
 
     fn test_store() -> Option<RqliteStore> {
         let host = std::env::var("RQLITE_HOST").unwrap_or_else(|_| "127.0.0.1".into());
@@ -1774,12 +2775,9 @@ mod tests {
 
     #[tokio::test]
     async fn budget_state_persists_across_store_reconstruction() {
-        let store = match test_store() {
-            Some(s) => s,
-            None => {
-                eprintln!("SKIP budget_state restart test — rqlite not reachable");
-                return;
-            }
+        let Some(store) = test_store() else {
+            eprintln!("SKIP budget_state restart test — rqlite not reachable");
+            return;
         };
 
         // Ensure schema exists (idempotent). Skip if quorum lost.
@@ -1798,20 +2796,31 @@ mod tests {
 
         // Fetch baseline so the test is additive (safe against a shared cluster).
         let baseline_day = store.get_spend("daily", &day).await.expect("baseline_day");
-        let baseline_week = store.get_spend("weekly", &week).await.expect("baseline_week");
+        let baseline_week = store
+            .get_spend("weekly", &week)
+            .await
+            .expect("baseline_week");
 
         // Insert 3 cost rows atomically — each bumps daily + weekly accumulators.
-        let tid = format!("test-restart-{}", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
+        let tid = format!(
+            "test-restart-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
         for i in 0u32..3 {
             store
                 .record_cost(
                     &format!("{tid}-{i}"),
-                    None, None,
+                    None,
+                    None,
                     "test-model",
-                    0, 0,
-                    1.0,   // $1.00 each → $3.00 total
-                    0.0, 0.0,
+                    0,
+                    0,
+                    1.0, // $1.00 each → $3.00 total
+                    0.0,
+                    0.0,
                     &now,
                 )
                 .await
@@ -1821,7 +2830,9 @@ mod tests {
         // Reconstruct the store — this simulates a hub restart (no in-memory state).
         let host = std::env::var("RQLITE_HOST").unwrap_or_else(|_| "127.0.0.1".into());
         let port: u16 = std::env::var("RQLITE_PORT")
-            .ok().and_then(|v| v.parse().ok()).unwrap_or(4001);
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(4001);
         let fresh = RqliteStore::new(&host, port, "strong");
 
         // budget_state point lookups must reflect all 3 inserts — not zero.
@@ -1841,6 +2852,474 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn settings_cas_and_history_watermark_round_trip_on_real_rqlite() {
+        let Some(store) = test_store() else {
+            eprintln!("SKIP settings/history lifecycle — rqlite not reachable");
+            return;
+        };
+        store.init_schema().await.expect("init_schema");
+
+        let baseline = store
+            .get_settings_document()
+            .await
+            .expect("settings baseline");
+        let now = utc_now();
+        let probe = json!({"runner": {"heartbeat_seconds": 11}});
+        let written = store
+            .put_settings_document(baseline.revision, &probe, "test-settings-cas", &now)
+            .await
+            .expect("settings CAS write");
+        assert_eq!(written.revision, baseline.revision + 1);
+        assert_eq!(
+            store
+                .get_settings_document()
+                .await
+                .expect("settings read")
+                .value,
+            probe
+        );
+        assert!(matches!(
+            store
+                .put_settings_document(baseline.revision, &json!({}), "stale-writer", &now)
+                .await,
+            Err(StoreError::Conflict(_))
+        ));
+        store
+            .put_settings_document(
+                written.revision,
+                &baseline.value,
+                "test-settings-restore",
+                &now,
+            )
+            .await
+            .expect("restore settings value");
+
+        let stream = format!(
+            "test-watermark-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        );
+        store
+            .commit_history_watermark(&stream, 12, &now)
+            .await
+            .expect("watermark 12");
+        store
+            .commit_history_watermark(&stream, 7, &now)
+            .await
+            .expect("non-regressing watermark");
+        assert_eq!(
+            store
+                .history_watermark(&stream)
+                .await
+                .expect("watermark read"),
+            12
+        );
+        let streams = store.history_streams().await.expect("history streams");
+        assert_eq!(streams, vec!["tasks", "cost", "audit"]);
+        store
+            .execute_one(
+                "DELETE FROM history_export_watermarks WHERE stream=?",
+                &[json!(stream)],
+            )
+            .await
+            .expect("watermark cleanup");
+    }
+
+    /// M2.5.6: exercise the complete role-token lifecycle against a real
+    /// rqlite node. The revoked probe row is removed before returning so a
+    /// developer cluster does not accumulate test credentials.
+    #[tokio::test]
+    async fn role_token_hash_lifecycle_round_trips_without_raw_credentials() {
+        use sha2::{Digest, Sha256};
+
+        let Some(store) = test_store() else {
+            eprintln!("SKIP role-token lifecycle — rqlite not reachable");
+            return;
+        };
+        match store.init_schema().await {
+            Ok(()) => {}
+            Err(StoreError::Backend(message)) if message.contains("quorum loss") => {
+                eprintln!("SKIP role-token lifecycle — rqlite quorum loss");
+                return;
+            }
+            Err(error) => panic!("init_schema: {error}"),
+        }
+
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let token_id = format!("rt_test_{stamp}");
+        let raw = format!("raw-role-token-probe-{stamp}");
+        let hash = hex::encode(Sha256::digest(raw.as_bytes()));
+        let roles = vec!["observer".to_owned(), "reviewer".to_owned()];
+        let now = utc_now();
+
+        let created = store
+            .create_role_token(
+                &token_id,
+                &hash,
+                "rqlite lifecycle probe",
+                &roles,
+                "test-suite",
+                true,
+                &now,
+            )
+            .await
+            .expect("create role token");
+        assert_eq!(created.roles, roles);
+        assert!(created.migrated);
+
+        let active = store
+            .list_role_tokens(false)
+            .await
+            .expect("list active role tokens");
+        assert!(active.iter().any(|row| row.token_id == token_id));
+
+        let persisted = store
+            .query(
+                "SELECT token_hash FROM role_tokens WHERE token_id=?",
+                &[json!(token_id)],
+            )
+            .await
+            .expect("read persisted hash");
+        assert_eq!(persisted[0]["token_hash"], json!(hash));
+        assert_ne!(persisted[0]["token_hash"], json!(raw));
+
+        let resolved = store
+            .role_token_by_hash(&hash)
+            .await
+            .expect("lookup role token")
+            .expect("active token");
+        assert_eq!(resolved.token_id, token_id);
+
+        let revoked = store
+            .revoke_role_token(&token_id, &now)
+            .await
+            .expect("revoke role token")
+            .expect("revoked row");
+        assert!(revoked.revoked_at.is_some());
+        assert!(store
+            .role_token_by_hash(&hash)
+            .await
+            .expect("lookup revoked token")
+            .is_none());
+
+        store
+            .execute_one(
+                "DELETE FROM role_tokens WHERE token_id=?",
+                &[json!(token_id)],
+            )
+            .await
+            .expect("clean role-token probe");
+    }
+
+    /// M2.5.7: provenance must survive each real rqlite lifecycle transition.
+    #[tokio::test]
+    async fn task_provenance_round_trips_through_claim_policy_and_result() {
+        let Some(store) = test_store() else {
+            eprintln!("SKIP task provenance round-trip - rqlite not reachable");
+            return;
+        };
+        match store.init_schema().await {
+            Ok(()) => {}
+            Err(StoreError::Backend(message)) if message.contains("quorum loss") => {
+                eprintln!("SKIP task provenance round-trip - rqlite quorum loss");
+                return;
+            }
+            Err(error) => panic!("init_schema: {error}"),
+        }
+        store
+            .run_additive_migrations()
+            .await
+            .expect("provenance migrations");
+        assert!(store.schema_version().await.expect("schema version") >= 6);
+
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let approval_id = format!("provenance-approval-{stamp}");
+        let now = utc_now();
+        let created = store
+            .create_task(
+                CreateTaskParams {
+                    title: format!("provenance probe {stamp}"),
+                    prompt: "exercise provenance".into(),
+                    scope_globs: vec!["crates/fabric-store-rqlite/**".into()],
+                    base_commit: "probe".into(),
+                    branch: "agent/provenance-probe".into(),
+                    todo_id: Some("M2.5.7".into()),
+                    timeout_minutes: 5,
+                    priority: 0,
+                    kind: "agent".into(),
+                    metadata: json!({"source": "real-rqlite-test"}),
+                    required_tools: None,
+                    required_tags: None,
+                    tenant: None,
+                    workspace_root: None,
+                    require_base_commit: false,
+                    required_capabilities: None,
+                    secrets_needed: None,
+                    network_egress: None,
+                    dispatcher_id: Some("dispatcher-probe".into()),
+                    dispatch: Some("prompt".into()),
+                    skill: None,
+                    tool: None,
+                    command: None,
+                    cwd: None,
+                    env: None,
+                    initial_status: None,
+                    dispatched_by_user: Some("operator-probe".into()),
+                    dispatched_by_host: Some("dispatcher-host".into()),
+                    dispatched_by_agent: Some("fabric-client".into()),
+                    dispatcher_pubkey_fingerprint: Some("sha256:probe".into()),
+                    approval_id: Some(approval_id.clone()),
+                    policy_decisions: json!([{"stage": "dispatch", "at": now, "allowed": true}]),
+                    approvals_required: 1,
+                    approvals_received: 0,
+                },
+                &now,
+            )
+            .await
+            .expect("create provenance task");
+
+        let claimed = store
+            .claim_task(created.id, "runner-probe", "runner-host", &now)
+            .await
+            .expect("claim provenance task");
+        assert!(matches!(claimed, ClaimResult::Claimed(_)));
+        store
+            .append_task_policy_decision(
+                created.id,
+                json!({"stage": "intent", "at": now, "allowed": true}),
+            )
+            .await
+            .expect("append intent decision");
+        store
+            .record_task_approval_decision(
+                &approval_id,
+                json!({"stage": "approval", "at": now, "allowed": true}),
+                true,
+            )
+            .await
+            .expect("record approval decision");
+        store
+            .mark_running(created.id, &now)
+            .await
+            .expect("start provenance task");
+        let terminal = store
+            .submit_result(
+                SubmitResultParams {
+                    task_id: created.id,
+                    worker_id: "runner-probe".into(),
+                    status: "done".into(),
+                    head_commit: None,
+                    commits: vec![],
+                    files_touched: vec![],
+                    test_summary: Some("provenance passed".into()),
+                    log_tail: None,
+                    error: None,
+                    wall_seconds: Some(2.25),
+                    runner_cpu_seconds: Some(1.25),
+                    exit_reason: "completed".into(),
+                    exit_code: Some(0),
+                },
+                &now,
+            )
+            .await
+            .expect("submit provenance result");
+
+        assert_eq!(
+            terminal.dispatched_by_user.as_deref(),
+            Some("operator-probe")
+        );
+        assert_eq!(terminal.exit_code, Some(0));
+        assert_eq!(
+            terminal.dispatched_by_host.as_deref(),
+            Some("dispatcher-host")
+        );
+        assert_eq!(
+            terminal.dispatched_by_agent.as_deref(),
+            Some("fabric-client")
+        );
+        assert_eq!(terminal.claimed_by_runner.as_deref(), Some("runner-probe"));
+        assert_eq!(terminal.claimed_by_host.as_deref(), Some("runner-host"));
+        assert_eq!(terminal.approvals_required, 1);
+        assert_eq!(terminal.approvals_received, 1);
+        assert_eq!(terminal.policy_decisions.as_array().map(Vec::len), Some(3));
+        assert_eq!(terminal.wall_seconds, Some(2.25));
+        assert_eq!(terminal.runner_cpu_seconds, Some(1.25));
+        assert_eq!(terminal.exit_reason.as_deref(), Some("completed"));
+
+        store
+            .execute_one("DELETE FROM results WHERE task_id=?", &[json!(created.id)])
+            .await
+            .expect("clean provenance result");
+        store
+            .execute_one("DELETE FROM tasks WHERE id=?", &[json!(created.id)])
+            .await
+            .expect("clean provenance task");
+    }
+
+    // -----------------------------------------------------------------------
+    // 114F.7A — real Loom exit codes must survive result persistence and task
+    // projection. Before this slice, `SubmitResultParams`/`TaskRow` had no
+    // `exit_code` field at all, so every completed task read back
+    // `exit_code: null` regardless of what the runner actually returned. See
+    // work/active/114-forgewire-fabric/114F-0-contract-inventory.md §9/§13.
+    //
+    // Covers the validation plan's persistence cases: a queued task has no
+    // exit code yet; a clean success persists 0; an ordinary failure persists
+    // its nonzero code; a negative Windows process status survives unchanged
+    // (no truncation/reinterpretation as unsigned); and a terminal state with
+    // no process code (e.g. a runner/spawn failure or a timeout) persists
+    // `None` rather than defaulting to 0. Skipped silently when rqlite is
+    // unreachable, matching every other live-store test in this module.
+    // -----------------------------------------------------------------------
+    fn exit_code_probe_params(title: String) -> CreateTaskParams {
+        CreateTaskParams {
+            title,
+            prompt: "exercise exit code persistence".into(),
+            scope_globs: vec!["crates/fabric-store-rqlite/**".into()],
+            base_commit: "probe".into(),
+            branch: "agent/exit-code-probe".into(),
+            todo_id: Some("114F.7A".into()),
+            timeout_minutes: 5,
+            priority: 0,
+            kind: "command".into(),
+            metadata: json!({"source": "114f-7a-exit-code-test"}),
+            required_tools: None,
+            required_tags: None,
+            tenant: None,
+            workspace_root: None,
+            require_base_commit: false,
+            required_capabilities: None,
+            secrets_needed: None,
+            network_egress: None,
+            dispatcher_id: None,
+            dispatch: None,
+            skill: None,
+            tool: None,
+            command: None,
+            cwd: None,
+            env: None,
+            initial_status: None,
+            dispatched_by_user: None,
+            dispatched_by_host: None,
+            dispatched_by_agent: None,
+            dispatcher_pubkey_fingerprint: None,
+            approval_id: None,
+            policy_decisions: json!([]),
+            approvals_required: 0,
+            approvals_received: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn submit_result_preserves_real_exit_codes() {
+        let Some(store) = test_store() else {
+            eprintln!("SKIP exit code persistence - rqlite not reachable");
+            return;
+        };
+        match store.init_schema().await {
+            Ok(()) => {}
+            Err(StoreError::Backend(message)) if message.contains("quorum loss") => {
+                eprintln!("SKIP exit code persistence - rqlite quorum loss");
+                return;
+            }
+            Err(error) => panic!("init_schema: {error}"),
+        }
+        store
+            .run_additive_migrations()
+            .await
+            .expect("exit_code migration");
+
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let now = utc_now();
+
+        // (status, exit_reason, exit_code) — mirrors what streams.rs's
+        // terminal_exit_reason() would have already computed for each case.
+        let cases: &[(&str, &str, Option<i64>)] = &[
+            ("done", "completed", Some(0)),
+            ("failed", "process_exit:1", Some(1)),
+            // STATUS_STACK_BUFFER_OVERRUN — must round-trip unreinterpreted.
+            ("failed", "process_exit:-1073740791", Some(-1073740791)),
+            ("failed", "runner_error", None),
+            ("timed_out", "timeout", None),
+        ];
+
+        for (i, (status, exit_reason, exit_code)) in cases.iter().enumerate() {
+            let title = format!("exit-code-probe-{stamp}-{i}");
+            let created = store
+                .create_task(exit_code_probe_params(title), &now)
+                .await
+                .expect("create exit-code probe task");
+
+            // Queued tasks must not carry a stale/defaulted exit code.
+            assert_eq!(created.exit_code, None);
+
+            let claimed = store
+                .claim_task(created.id, "exit-code-probe-runner", "probe-host", &now)
+                .await
+                .expect("claim exit-code probe task");
+            assert!(matches!(claimed, ClaimResult::Claimed(_)));
+            store
+                .mark_running(created.id, &now)
+                .await
+                .expect("start exit-code probe task");
+
+            let terminal = store
+                .submit_result(
+                    SubmitResultParams {
+                        task_id: created.id,
+                        worker_id: "exit-code-probe-runner".into(),
+                        status: (*status).into(),
+                        head_commit: None,
+                        commits: vec![],
+                        files_touched: vec![],
+                        test_summary: None,
+                        log_tail: None,
+                        error: None,
+                        wall_seconds: Some(0.5),
+                        runner_cpu_seconds: Some(0.25),
+                        exit_reason: (*exit_reason).into(),
+                        exit_code: *exit_code,
+                    },
+                    &now,
+                )
+                .await
+                .expect("submit exit-code probe result");
+
+            assert_eq!(
+                terminal.exit_code, *exit_code,
+                "case {i} ({status}) did not round-trip its exit code"
+            );
+            assert_eq!(terminal.exit_reason.as_deref(), Some(*exit_reason));
+
+            // Re-fetch independently of the submit_result return value to
+            // confirm the column actually persisted, not just the in-memory
+            // TaskRow built from the UPDATE's own parameters.
+            let refetched = store.get_task(created.id).await.expect("refetch task");
+            assert_eq!(refetched.exit_code, *exit_code, "case {i} did not persist");
+
+            store
+                .execute_one("DELETE FROM results WHERE task_id=?", &[json!(created.id)])
+                .await
+                .expect("clean exit-code probe result");
+            store
+                .execute_one("DELETE FROM tasks WHERE id=?", &[json!(created.id)])
+                .await
+                .expect("clean exit-code probe task");
+        }
+    }
+
     // -----------------------------------------------------------------------
     // Phase 2.8 (M2.8.1) — schema v4 + runner_capabilities round-trip.
     //
@@ -1854,12 +3333,9 @@ mod tests {
     async fn phase_2_8_schema_and_capability_index_round_trip() {
         use fabric_store::{RunnerCapabilityRow, RunnerCapabilityStore, SchemaStore};
 
-        let store = match test_store() {
-            Some(s) => s,
-            None => {
-                eprintln!("SKIP phase_2_8 round-trip — rqlite not reachable");
-                return;
-            }
+        let Some(store) = test_store() else {
+            eprintln!("SKIP phase_2_8 round-trip — rqlite not reachable");
+            return;
         };
 
         // Cluster may be split-brain (this node a non-voting follower,
@@ -1935,7 +3411,12 @@ mod tests {
             .runner_capabilities(&runner)
             .await
             .expect("runner_capabilities");
-        assert_eq!(back.len(), 3, "expected 3 rows, got {}: {back:?}", back.len());
+        assert_eq!(
+            back.len(),
+            3,
+            "expected 3 rows, got {}: {back:?}",
+            back.len()
+        );
 
         // Query by capability picks our runner.
         let hits = store
@@ -1961,10 +3442,7 @@ mod tests {
             .replace_runner_capabilities(&runner, &smaller, &now)
             .await
             .expect("replace smaller");
-        let back2 = store
-            .runner_capabilities(&runner)
-            .await
-            .expect("re-read");
+        let back2 = store.runner_capabilities(&runner).await.expect("re-read");
         assert_eq!(back2.len(), 1);
         assert_eq!(back2[0].name, "test_tool_delta");
 
@@ -1997,12 +3475,9 @@ mod tests {
     /// Loom dispatch was impossible on a freshly-registered runner.
     #[tokio::test]
     async fn upsert_runner_persists_kinds_command() {
-        let store = match test_store() {
-            Some(s) => s,
-            None => {
-                eprintln!("SKIP upsert_runner_persists_kinds — rqlite not reachable");
-                return;
-            }
+        let Some(store) = test_store() else {
+            eprintln!("SKIP upsert_runner_persists_kinds — rqlite not reachable");
+            return;
         };
         match store.init_schema().await {
             Ok(_) => {}
@@ -2050,12 +3525,23 @@ mod tests {
             }))
             .await
             .expect("upsert loom runner");
-        assert_eq!(rec.kinds, json!(["command"]), "kinds must round-trip as ['command']");
+        assert_eq!(
+            rec.kinds,
+            json!(["command"]),
+            "kinds must round-trip as ['command']"
+        );
 
         // Re-read to confirm it persisted (not just echoed).
         let back = store.get_runner(&runner).await.expect("get_runner");
-        assert_eq!(back.kinds, json!(["command"]), "kinds must persist across reads");
-        assert!(back.agent_type.is_none(), "agent_type should be null for a Loom runner");
+        assert_eq!(
+            back.kinds,
+            json!(["command"]),
+            "kinds must persist across reads"
+        );
+        assert!(
+            back.agent_type.is_none(),
+            "agent_type should be null for a Loom runner"
+        );
 
         // A missing kinds field keeps the historical default for compatibility.
         let agent = format!("{runner}-agent");
@@ -2072,7 +3558,11 @@ mod tests {
             }))
             .await
             .expect("upsert agent runner");
-        assert_eq!(arec.kinds, json!(["agent"]), "absent kinds must default to ['agent']");
+        assert_eq!(
+            arec.kinds,
+            json!(["agent"]),
+            "absent kinds must default to ['agent']"
+        );
 
         store.delete_runner(&runner).await.ok();
         store.delete_runner(&agent).await.ok();
@@ -2088,12 +3578,9 @@ mod tests {
     /// (b) still reap a superseded *same-role* identity (e.g. a reinstall).
     #[tokio::test]
     async fn ghost_prune_is_scoped_to_kinds() {
-        let store = match test_store() {
-            Some(s) => s,
-            None => {
-                eprintln!("SKIP ghost_prune_is_scoped_to_kinds — rqlite not reachable");
-                return;
-            }
+        let Some(store) = test_store() else {
+            eprintln!("SKIP ghost_prune_is_scoped_to_kinds — rqlite not reachable");
+            return;
         };
         match store.init_schema().await {
             Ok(_) => {}
@@ -2138,8 +3625,14 @@ mod tests {
         };
 
         // Both roles register on the same host.
-        store.upsert_runner(base(&loom_id, json!(["command"]))).await.expect("register loom");
-        store.upsert_runner(base(&agent_id, json!(["agent"]))).await.expect("register agent");
+        store
+            .upsert_runner(base(&loom_id, json!(["command"])))
+            .await
+            .expect("register loom");
+        store
+            .upsert_runner(base(&agent_id, json!(["agent"])))
+            .await
+            .expect("register agent");
 
         // Simulate a hub-restart window: the Loom runner's heartbeat lapsed and its
         // last_heartbeat is now well past the 120s offline cutoff.
@@ -2153,7 +3646,10 @@ mod tests {
 
         // The Fabric runner re-registers (a routine heartbeat re-attach). This runs
         // the prune. The stale Loom sibling has a *different* role, so it must survive.
-        store.upsert_runner(base(&agent_id, json!(["agent"]))).await.expect("re-register agent");
+        store
+            .upsert_runner(base(&agent_id, json!(["agent"])))
+            .await
+            .expect("re-register agent");
         let survived = store.get_runner(&loom_id).await;
         assert!(
             survived.is_ok(),
@@ -2163,7 +3659,10 @@ mod tests {
         // Positive control: a *same-role* stale ghost (a superseded Loom identity)
         // on the same host MUST be reaped when a fresh Loom runner registers.
         let loom_ghost = format!("{host}-loom-old");
-        store.upsert_runner(base(&loom_ghost, json!(["command"]))).await.expect("register loom ghost");
+        store
+            .upsert_runner(base(&loom_ghost, json!(["command"])))
+            .await
+            .expect("register loom ghost");
         store
             .execute_one(
                 "UPDATE runners SET last_heartbeat=? WHERE runner_id=?",
@@ -2173,7 +3672,10 @@ mod tests {
             .expect("backdate loom ghost heartbeat");
         // A new Loom identity re-attaches on the same host.
         let loom_new = format!("{host}-loom-new");
-        store.upsert_runner(base(&loom_new, json!(["command"]))).await.expect("register new loom");
+        store
+            .upsert_runner(base(&loom_new, json!(["command"])))
+            .await
+            .expect("register new loom");
         assert!(
             store.get_runner(&loom_ghost).await.is_err(),
             "a stale same-role (command) ghost must be pruned by a new command runner"
@@ -2184,41 +3686,4 @@ mod tests {
         store.delete_runner(&loom_ghost).await.ok();
         store.delete_runner(&loom_new).await.ok();
     }
-}
-
-fn utc_offset(offset_secs: i64) -> String {
-    let d = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    epoch_secs_to_iso(d.as_secs() as i64 + offset_secs)
-}
-
-fn utc_now() -> String {
-    let d = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    epoch_secs_to_iso(d.as_secs() as i64)
-}
-
-fn epoch_secs_to_iso(total_secs: i64) -> String {
-    let total_secs = total_secs as u64;
-    let secs = total_secs % 60;
-    let mins = (total_secs / 60) % 60;
-    let hours = (total_secs / 3600) % 24;
-    let mut days = (total_secs / 86400) as i64;
-    let mut year = 1970i64;
-    loop {
-        let diy = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) { 366 } else { 365 };
-        if days < diy { break; }
-        days -= diy;
-        year += 1;
-    }
-    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-    let md = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let mut month = 0usize;
-    for (i, &m) in md.iter().enumerate() {
-        if days < m as i64 { month = i; break; }
-        days -= m as i64;
-    }
-    format!("{year:04}-{:02}-{:02} {hours:02}:{mins:02}:{secs:02}", month + 1, days + 1)
 }

@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "suite": "forgewire-vscode-agent-suite",
+  "mcp_topology": {
+    "dispatcher": ["forgewire-fabric", "forgewire-loom"],
+    "runner": ["forgewire-fabric-runner"]
+  },
+  "install": {
+    "command": "forgewire.installAgentSuite",
+    "chatmode_target": ".github/chatmodes",
+    "skill_target": ".github/prompts",
+    "conflict_policy": "preserve-unless-operator-confirms-replace"
+  },
+  "roles": [
+    {
+      "id": "dispatcher",
+      "artifact": "chatmodes/forgewire-dispatcher.chatmode.md",
+      "servers": ["forgewire-fabric", "forgewire-loom"],
+      "authority": "fabric-dispatch-and-explicit-loom-host-control"
+    },
+    {
+      "id": "runner",
+      "artifact": "chatmodes/forgewire-runner.chatmode.md",
+      "servers": ["forgewire-fabric-runner"],
+      "authority": "execute-one-sealed-task-within-scope"
+    },
+    {
+      "id": "approver",
+      "artifact": "chatmodes/forgewire-approver.chatmode.md",
+      "servers": ["forgewire-fabric"],
+      "authority": "read-only-risk-recommendation-vsix-decision"
+    },
+    {
+      "id": "observer",
+      "artifact": "chatmodes/forgewire-observer.chatmode.md",
+      "servers": ["forgewire-fabric", "forgewire-loom"],
+      "authority": "read-only-evidence-review"
+    }
+  ],
+  "skills": [
+    "dispatch-test-fix",
+    "dispatch-docs-sync",
+    "bisect-regression",
+    "triage-pending-approvals",
+    "replay-with-cheaper-model",
+    "enroll-runner",
+    "dispatch-cost-aware"
+  ],
+  "limitations": [
+    "The dispatcher MCP pair does not expose approval-decision tools; decisions use the VSIX Approvals surface.",
+    "The dispatcher MCP pair does not expose replay; the replay skill prepares an audited client or CLI handoff.",
+    "Bundled VS Code prompt files are not automatically advertised as remote runner MCP capabilities."
+  ]
+}

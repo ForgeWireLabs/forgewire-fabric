@@ -1,19 +1,25 @@
 {
   "name": "@forgewire/fabric-desktop",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Tauri 2 desktop control panel for ForgeWire Fabric.",
   "scripts": {
+    "predev": "npm run build --workspace @forgewire/fabric-client-core",
     "dev": "vite --host 127.0.0.1",
+    "prebuild": "npm run build --workspace @forgewire/fabric-client-core",
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
     "preview": "vite preview --host 127.0.0.1",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "tauri build"
+    "tauri:build": "tauri build",
+    "release:plan": "node ./package/release/desktop-release.mjs plan",
+    "release:preflight": "node ./package/release/desktop-release.mjs preflight --mode release",
+    "release:build": "node ./package/release/desktop-release.mjs build --mode release"
   },
   "dependencies": {
+    "@forgewire/fabric-client-core": "0.2.0",
     "@tauri-apps/api": "^2.11.1",
     "lucide-react": "^1.24.0",
     "react": "^19.2.7",
@@ -21,10 +27,14 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
+    "axe-core": "^4.12.1",
     "esbuild": "^0.28.1",
+    "jsdom": "^29.1.1",
     "typescript": "^5.9.3",
     "vite": "^8.1.4",
     "vitest": "^4.1.10"

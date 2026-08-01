@@ -5,6 +5,9 @@ name = "fabric-streams"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "Per-task stream sequence counters for ForgeWire Fabric: ordered, gap-free sequence numbers for task output/progress lines."
 
 [dependencies]
 parking_lot = "0.12"

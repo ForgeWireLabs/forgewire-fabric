@@ -1,0 +1,18 @@
+[package]
+name = "fabric-egress"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "Per-task userspace egress enforcement for ForgeWire runners."
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync"] }
+tracing = "0.1"
+
+[lints]
+workspace = true

@@ -12,6 +12,13 @@ use serde_json::{json, Value};
 
 use crate::state::HubState;
 
+owned_router! {
+    pub fn router, ROUTES {
+        "GET" get "/agents" => list_agents;
+        "GET" get "/capabilities/{kind}/{name}" => get_capability;
+    }
+}
+
 // ── GET /agents ───────────────────────────────────────────────────────────────
 //
 // Returns every runner whose `kinds` array contains "agent", with its full
@@ -21,8 +28,14 @@ pub async fn list_agents(
     State(state): State<Arc<HubState>>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let labels = state.store.get_labels().await.unwrap_or(json!({}));
-    let runner_aliases = labels["runner_aliases"].as_object().cloned().unwrap_or_default();
-    let host_aliases = labels["host_aliases"].as_object().cloned().unwrap_or_default();
+    let runner_aliases = labels["runner_aliases"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let host_aliases = labels["host_aliases"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
 
     let runners = state
         .store

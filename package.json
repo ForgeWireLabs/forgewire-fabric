@@ -1,0 +1,22 @@
+{
+  "name": "@forgewire/fabric-clients-workspace",
+  "version": "0.2.0",
+  "private": true,
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
+  "workspaces": [
+    "packages/*",
+    "vscode",
+    "desktop"
+  ],
+  "scripts": {
+    "build:core": "npm run build --workspace @forgewire/fabric-client-core",
+    "test:core": "npm run test --workspace @forgewire/fabric-client-core",
+    "build:vsix": "npm run compile --workspace forgewire",
+    "package:vsix": "npm run package --workspace forgewire",
+    "build:desktop": "npm run build --workspace @forgewire/fabric-desktop",
+    "test:desktop": "npm run test --workspace @forgewire/fabric-desktop",
+    "validate:clients": "npm run test:core && npm run build:vsix && npm run test:desktop && npm run build:desktop"
+  }
+}

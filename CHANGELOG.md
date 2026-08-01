@@ -7,6 +7,74 @@ package. The VSIX (`vscode/`) is versioned independently.
 
 ## [Unreleased]
 
+### Changed
+
+- **Rust-authoritative hub consolidation (WI-128)**: `fabric-hub` 0.11.0 now
+  owns the last parity routes: capability waiting diagnostics, true task SSE,
+  operator-audited rqlite snapshot/import, and the explicitly degraded legacy
+  claim quarantine. The duplicate FastAPI/rqlite/policy implementation and
+  its closed-app re-export shims are removed; Python 0.19.0 is now strictly
+  the HTTP client, MCP, CLI, discovery, and runner-side integration layer.
+  `forgewire-fabric hub start` launches the installed native binary.
+
+### Added
+
+- **Proof-of-possession client (114E Slice 2)** (`fabric-client`, `desktop`):
+  the client half of key-bound human sessions, coexisting with bearer.
+  - `fabric-client`: a `SessionCredential` enum (`Bearer` | `Pop { session_id,
+    secret_key_hex }`); `request_auth` signs the canonical `session-request`
+    envelope with the bound Ed25519 key and sends `X-Forgewire-*` headers (body
+    serialized once and hashed over the exact bytes sent; path signed without
+    query, byte-identical to the hub's `resolve_signed_session`). `login` gains
+    `session_public_key`; `me_signed`/`logout_signed`/`list_auth_sessions_signed`
+    /`revoke_auth_session_signed` PoP variants; a sign→verify round-trip unit
+    test mirrors `fabric-hub::human_pop_session`.
+  - Desktop: a new **password sign-in** on the Account page establishes a human
+    session (the first-session on-ramp a passkey-only client lacked) and, because
+    the hub binds a per-session Ed25519 keypair at login, a proof-of-possession
+    session — the private key is stored in the OS keyring
+    (`SessionSecrets.sessionSigningKey`) and the renderer signs its self-service
+    requests (`authMe`/`authLogout`/`listAuthSessions`/`revokeAuthSession`) with
+    it instead of replaying the bearer. Bearer-only sessions are unaffected
+    (the key is optional throughout). Verified end-to-end live against both
+    cluster hubs (login → key-bound session → signed `/auth/me` → 200; wrong key
+    rejected). Passkey-login PoP binding remains a follow-up.
+
+### Fixed
+
+- **Windows runner identity compatibility** (`installer`, `fabric-runner`,
+  `loom-runner`): NSSM runner installation and the Python-to-Rust migration
+  path now export both `FORGEWIRE_RUNNER_IDENTITY` and
+  `FORGEWIRE_RUNNER_IDENTITY_PATH` to the same machine-scoped identity file.
+  This preserves Python-runner compatibility while preventing native Rust
+  runners from silently falling back to the shared default identity. Also
+  corrects the Loom discovery-port documentation to the compiled default
+  `48765`.
+
+
+- **First-admin self-service lockout** (`fabric-hub`): the self-service routes
+  (`/auth/me`, `/auth/sessions*`, `/auth/logout`, `/auth/logout-all`,
+  `/auth/step-up/*`, `/auth/passkeys/*`, `/auth-policy`) were gated on
+  `OBSERVE = [observer, reviewer]`, which excludes `admin`. Because bootstrap
+  grants the first administrator only `admin`, a fresh first admin was `403`'d
+  out of viewing itself, managing its sessions, logging out, stepping up, and
+  — most damaging — **registering a passkey** (an `approver`- or
+  `dispatcher`-only human was equally locked out). These are now gated on a
+  `SELF_SERVICE` set of every human-assignable role; per-caller ownership is
+  still enforced in the handler via `AuthContext.human_principal`. Completes the
+  114D first-admin deadlock fix (which covered settings reads) for the
+  session/credential surface. Found during the 114C.8 live closeout drills.
+
+- **Host-role self-report authorization** (`fabric-hub`): `POST /hosts/roles` was
+  gated at `reviewer`, so a node reporting its own infrastructure roles at
+  install/enrolment time on the legacy cluster bearer (a `dispatcher/runner/observer`
+  bundle) failed closed with `403`. It is now gated at the cluster-participant tier
+  (`runner`, `dispatcher`, `reviewer`) — the same tier under which runner and
+  dispatcher enrolment already write `host_roles` (`POST /runners/register`,
+  `POST /dispatchers/register`), so it grants no new capability. Read-only
+  `observer` still cannot write; the reviewer-gated `/labels/*` rename/relabel
+  operations are unchanged. Baseline fixture and endpoint-auth matrix updated.
+
 ### Added
 
 - **ForgeLink HITL routing** (`fabric-hub`): when ForgeLink is configured and
@@ -32,6 +100,54 @@ package. The VSIX (`vscode/`) is versioned independently.
     `forgelink_decision_synced`.
   - 6 new `fabric-hub` unit tests (config/opt-out/reconcile gating, kind→authority
     mapping, the agent-governance-v1 request body, and decision classification).
+
+- **Human accounts, sessions, and passkey sign-in** (114C): a Rust/rqlite human-principal,
+  session, and administration authority, exposed through a matching self-service and admin
+  UI on both clients (`vscode/` and `desktop/`).
+  - **Self-service** (both clients): passkey sign-in/registration via a hub-served WebAuthn
+    bridge page opened in the system browser; profile + active-session list; per-session
+    revoke; sign-out (best-effort hub revoke, then an unconditional local credential clear);
+    and an in-place step-up ceremony (`POST /auth/step-up/options` + `/verify`) that elevates
+    a session to `aal2` and rotates its access secret — the WebAuthn assertion is the only
+    thing that ever crosses into the browser, never the session's own bearer.
+  - **Administration** (`admin` role only, both clients): account list, Create Account (role
+    choices read from the hub's own `auth-policy`, never hardcoded), Disable/Enable
+    (compare-and-set on account revision), Grant/Revoke Role, and two-step account deletion
+    (`delete` → `deletion_pending` → `tombstone`) — deletion additionally requires a fresh
+    step-up first on both clients, even though the hub does not yet enforce that itself
+    (tracked in #1900).
+  - Human-account roles gate client UI through a `requiresHumanRole` command descriptor,
+    distinct from the pre-existing dispatcher/automation `fabric.*.write` authority set — an
+    automation credential can never satisfy it.
+  - `114B-parity-ledger.json`'s auth/account rows are all `"parity"`; see
+    `work/active/114-forgewire-fabric/114C-human-accounts-sessions-operator-identity.md`.
+  - Passkey credentials now capture WebAuthn backup eligibility/state (BE/BS
+    flags) at registration and refresh them on every login/step-up —
+    recorded metadata only, not a trust decision.
+  - New `GET /accounts/export` / `POST /accounts/import` routes (`admin`/
+    `reviewer`, step-up gated): a redacted profile-only account export, and
+    a preview-by-default ForgeWire account-interchange import (`dry_run`
+    defaults to `true`; imported accounts start `Invited` with no
+    credential and a fresh batch of recovery codes, never `admin`/`runner`).
+    Operator interface: `fabric-cli accounts export` / `accounts import
+    --file <path> [--apply]`.
+  - Authentication policy is now admin territory: a human `admin` can read
+    hub settings and write the `auth.*` subtree (`auth.passkeys`,
+    `auth.sessions`, `auth.bootstrap`) without first holding `reviewer`.
+    This resolves the first-admin passkey-setup deadlock (a freshly
+    bootstrapped admin previously could not enable passkeys because that
+    required `reviewer`, which required a passkey — 114D groundwork). Every
+    other settings key stays `reviewer`-only.
+  - **Proof-of-possession human sessions** (114E Slice 1, server-side): a
+    login may now bind a client-generated Ed25519 `session_public_key`, after
+    which the client can authenticate requests by **signature** — four
+    `X-Forgewire-*` headers over a canonical `{op,session_id,method,path,
+    body_sha256,timestamp,nonce}` envelope verified against the session's
+    bound key — instead of presenting the opaque bearer secret. No reusable
+    secret crosses the wire. Fully **additive/coexisting**: bearer sessions
+    (114C) still work unchanged, and the signed path only buffers the body
+    when its header is present, so dispatch/stream routes are untouched.
+    Clients keep using bearer until later slices flip them over.
 
 ## [0.5.0] - 2026-06-02  *(Rust workspace — see version note)*
 

@@ -3,6 +3,8 @@ name = "fabric-policy"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+readme = "README.md"
 description = "Deterministic dispatch and completion policy evaluation for ForgeWire Fabric."
 
 [dependencies]

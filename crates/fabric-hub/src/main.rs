@@ -29,12 +29,16 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use axum::middleware;
-use axum::routing::{delete, get, post, put};
 use axum::Router;
 use fabric_hub::auth::require_bearer;
-use fabric_hub::routes::{admin, agents, approvals, audit, cluster, cost, dispatchers, health, labels, runners, secrets, streams, tasks};
+use fabric_hub::routes::{
+    accounts, admin, agents, approvals, audit, authn, cluster, cost, dispatchers, health, history,
+    labels, policy, runners, secrets, settings, state, streams, tasks, webauthn_bridge,
+    webauthn_doctor, whoami,
+};
 use fabric_hub::state::HubState;
 use fabric_policy::{BudgetPolicy, DispatchGate, FabricPolicy};
+use fabric_secrets::SecretBroker;
 use fabric_store::{FabricStore, SchemaStore};
 use fabric_streams::{DurabilityProfile, StreamBuffer};
 use reqwest::Client as ReqwestClient;
@@ -57,12 +61,20 @@ fn probe_rqlite_cluster(rqlite_url: &str) -> (u16, u16) {
         return (1, 1);
     };
     let nodes = map.as_object().map(|o| o.len()).unwrap_or(1);
-    let voters = map.as_object()
-        .map(|o| o.values()
-            .filter(|v| v.get("voter").and_then(|b| b.as_bool()).unwrap_or(false))
-            .count())
+    let voters = map
+        .as_object()
+        .map(|o| {
+            o.values()
+                .filter(|v| v.get("voter").and_then(|b| b.as_bool()).unwrap_or(false))
+                .count()
+        })
         .unwrap_or(1);
-    (voters as u16, nodes as u16)
+    // A real rqlite cluster never has anywhere near u16::MAX nodes; saturate
+    // rather than blindly truncate on the pathological case.
+    (
+        u16::try_from(voters).unwrap_or(u16::MAX),
+        u16::try_from(nodes).unwrap_or(u16::MAX),
+    )
 }
 
 /// Ensure rqlite is reachable, starting the OS service if needed.
@@ -102,7 +114,10 @@ async fn is_rqlite_reachable(url: &str) -> bool {
     else {
         return false;
     };
-    client.get(url).send().await
+    client
+        .get(url)
+        .send()
+        .await
         .map(|r| r.status().as_u16() < 500)
         .unwrap_or(false)
 }
@@ -111,7 +126,11 @@ fn start_rqlite_service() {
     #[cfg(target_os = "windows")]
     {
         // Try ForgeWireRqlite first (primary node), then numbered nodes.
-        for svc in &["ForgeWireRqlite", "ForgeWireRqliteNode1", "ForgeWireRqliteNode2"] {
+        for svc in &[
+            "ForgeWireRqlite",
+            "ForgeWireRqliteNode1",
+            "ForgeWireRqliteNode2",
+        ] {
             let status = std::process::Command::new("nssm")
                 .args(["start", svc])
                 .stdout(std::process::Stdio::null())
@@ -144,8 +163,7 @@ fn start_rqlite_service() {
 async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -155,8 +173,16 @@ async fn main() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(8765);
     let token_file = std::env::var("FORGEWIRE_HUB_TOKEN_FILE").unwrap_or_else(|_| {
+        // Platform-appropriate fallback, only consulted when the installer
+        // (nssm-install-hub.ps1 / the systemd unit) hasn't already passed
+        // FORGEWIRE_HUB_TOKEN_FILE explicitly, which every shipped installer
+        // does -- so this never relocates an already-configured install.
         if cfg!(windows) {
             r"C:\ProgramData\forgewire\hub.token".into()
+        } else if cfg!(target_os = "macos") {
+            std::env::var("HOME")
+                .map(|home| format!("{home}/Library/Application Support/forgewire/hub.token"))
+                .unwrap_or_else(|_| "/var/lib/forgewire/hub.token".into())
         } else {
             "/var/lib/forgewire/hub.token".into()
         }
@@ -173,6 +199,9 @@ async fn main() {
         eprintln!("hub token must be >= 16 characters");
         std::process::exit(1);
     }
+    tracing::warn!(
+        "legacy cluster bearer enabled as the explicit dispatcher+runner+observer compatibility bundle; split into role-separated tokens before migrating approver/reviewer clients"
+    );
 
     // ── LAN discovery beacon ──────────────────────────────────────────────
     // Broadcast our presence so runners and the VS Code extension find this hub
@@ -189,12 +218,16 @@ async fn main() {
 
         // Capture rqlite connection details for the beacon (so joining nodes can
         // auto-discover the cluster without a pre-configured join address).
-        let b_rqlite_host = std::env::var("FORGEWIRE_HUB_RQLITE_HOST")
-            .unwrap_or_else(|_| "127.0.0.1".into());
+        let b_rqlite_host =
+            std::env::var("FORGEWIRE_HUB_RQLITE_HOST").unwrap_or_else(|_| "127.0.0.1".into());
         let b_rqlite_http: u16 = std::env::var("FORGEWIRE_HUB_RQLITE_PORT")
-            .ok().and_then(|v| v.parse().ok()).unwrap_or(4001);
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(4001);
         let b_rqlite_raft: u16 = std::env::var("FORGEWIRE_HUB_RQLITE_RAFT_PORT")
-            .ok().and_then(|v| v.parse().ok()).unwrap_or(4002);
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(4002);
         let b_token_hash = fabric_beacon::token_hash(&token);
         let b_hostname = hostname.clone();
         let b_hub_port = port;
@@ -216,24 +249,26 @@ async fn main() {
                     rqlite_voters: voters,
                     rqlite_nodes: nodes,
                 };
-                if let Err(e) = fabric_beacon::serve_once(advert, beacon_port) {
+                if let Err(e) = fabric_beacon::serve_once(&advert, beacon_port) {
                     tracing::warn!("beacon cycle failed: {e}");
                 }
                 std::thread::sleep(std::time::Duration::from_secs(5));
             }
         });
-        tracing::info!("discovery beacon broadcasting on udp/{beacon_port} (includes rqlite cluster info)");
+        tracing::info!(
+            "discovery beacon broadcasting on udp/{beacon_port} (includes rqlite cluster info)"
+        );
     }
 
     // ── rqlite backend (only option) ──────────────────────────────────────
-    let rqlite_host = std::env::var("FORGEWIRE_HUB_RQLITE_HOST")
-        .unwrap_or_else(|_| "127.0.0.1".into());
+    let rqlite_host =
+        std::env::var("FORGEWIRE_HUB_RQLITE_HOST").unwrap_or_else(|_| "127.0.0.1".into());
     let rqlite_port: u16 = std::env::var("FORGEWIRE_HUB_RQLITE_PORT")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(4001);
-    let consistency = std::env::var("FORGEWIRE_HUB_RQLITE_CONSISTENCY")
-        .unwrap_or_else(|_| "strong".into());
+    let consistency =
+        std::env::var("FORGEWIRE_HUB_RQLITE_CONSISTENCY").unwrap_or_else(|_| "strong".into());
 
     let rqlite = fabric_store_rqlite::RqliteStore::new(&rqlite_host, rqlite_port, &consistency);
 
@@ -252,6 +287,18 @@ async fn main() {
         eprintln!("rqlite migration failed: {e}");
         std::process::exit(1);
     });
+    // 114C human-account tables (additive, idempotent -- see
+    // `init_human_accounts_schema`'s own doc comment). Without this call the
+    // human_* tables never exist on a real deployment and every account
+    // route fails closed as AuthServiceUnavailable; only the ephemeral-rqlite
+    // test harnesses were calling it directly until now.
+    rqlite
+        .init_human_accounts_schema()
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("rqlite human-accounts schema init failed: {e}");
+            std::process::exit(1);
+        });
     info!("backend=rqlite host={rqlite_host} port={rqlite_port} consistency={consistency}");
 
     // ── Cluster topology manager ──────────────────────────────────────────────
@@ -270,9 +317,11 @@ async fn main() {
         let local_node_id = std::env::var("COMPUTERNAME")
             .or_else(|_| std::env::var("HOSTNAME"))
             .unwrap_or_else(|_| "unknown".into())
-            .to_lowercase() + "-rqlite";
+            .to_lowercase()
+            + "-rqlite";
         // Detect bootstrap: this node is a voter AND the only node in the cluster.
-        let (voters, total_nodes) = probe_rqlite_cluster(&format!("http://{rqlite_host}:{rqlite_port}"));
+        let (voters, total_nodes) =
+            probe_rqlite_cluster(&format!("http://{rqlite_host}:{rqlite_port}"));
         let is_bootstrap = voters == 1 && total_nodes == 1;
         if is_bootstrap {
             info!(node = %local_node_id, "bootstrap node detected — will record as preferred leader");
@@ -284,8 +333,26 @@ async fn main() {
 
     let store: Arc<dyn FabricStore> = Arc::new(rqlite);
 
-    let stream_profile = DurabilityProfile::from_str(
-        &std::env::var("FORGEWIRE_HUB_STREAM_PROFILE").unwrap_or_default()
+    // Secret-key readiness is deliberately not a startup requirement: health,
+    // topology, task inspection, and other unrelated control-plane flows stay
+    // available. Secret mutation/claim and potentially secret-bearing telemetry
+    // fail closed with structured errors until the provider is usable.
+    let secret_broker = SecretBroker::from_env().unwrap_or_else(|error| {
+        warn!(error = %error, "secret provider configuration unavailable; secret operations will fail closed");
+        SecretBroker::new(Arc::new(fabric_secrets::UnavailableKeyProvider::new(error.to_string())))
+    });
+    match secret_broker.check_key() {
+        Ok(()) => info!(
+            provider = secret_broker.provider_name(),
+            "secret broker ready"
+        ),
+        Err(error) => {
+            warn!(provider = secret_broker.provider_name(), error = %error, "secret broker unavailable; secret operations will fail closed");
+        }
+    }
+
+    let stream_profile = DurabilityProfile::from_profile_str(
+        &std::env::var("FORGEWIRE_HUB_STREAM_PROFILE").unwrap_or_default(),
     );
     info!("stream_profile={}", stream_profile.as_str());
 
@@ -309,35 +376,91 @@ async fn main() {
         );
     }
 
+    // Preserve one authoritative startup snapshot for both enforcement and the
+    // authenticated read-only /policy surface.
+    let policy = if let Ok(path) = std::env::var("FORGEWIRE_HUB_POLICY_FILE") {
+        match FabricPolicy::load_or_create(&path) {
+            Ok(policy) => {
+                info!(path = %path, "policy loaded");
+                policy
+            }
+            Err(error) => {
+                tracing::warn!(path = %path, error = %error, "policy load failed - using permissive default");
+                FabricPolicy::default()
+            }
+        }
+    } else {
+        tracing::info!(
+            "FORGEWIRE_HUB_POLICY_FILE not set - using permissive default (no file written)"
+        );
+        FabricPolicy::default()
+    };
+    let effective_policy = serde_json::to_value(&policy).unwrap_or_else(|_| serde_json::json!({}));
+
+    // Bootstrap secret (optional): if set, `POST /auth/bootstrap` requires
+    // both a loopback source address AND this shared secret in the
+    // `X-Forgewire-Bootstrap-Secret` header. If unset, loopback alone is
+    // sufficient -- the plan's "protected by a one-time bootstrap secret or
+    // local console proof" alternative. Read from a file, matching the hub
+    // token's own file-based distribution pattern (never an env var literal,
+    // which would linger in shell history/process listings).
+    // WebAuthn relying-party instance (114C.6): built once at startup from
+    // the effective `auth.passkeys` settings, never a startup failure --
+    // `None` on any misconfiguration, matching `bootstrap_secret`/`token`'s
+    // own fail-closed-per-feature (not fail-closed-whole-hub) pattern above.
+    // Read the effective settings snapshot once, then derive both the
+    // WebAuthn instance and the step-up freshness window from it (both are
+    // `auth.*` settings). A missing/invalid document degrades each to its
+    // own safe default, never a startup failure.
+    let effective_auth = match store.get_settings_document().await {
+        Ok(document) => fabric_settings::SettingsSnapshot::new(
+            document.revision,
+            document.value,
+            serde_json::json!({}),
+        )
+        .map(|snapshot| snapshot.effective)
+        .unwrap_or_else(|error| {
+            warn!(error = %error, "settings document invalid; auth features use defaults");
+            serde_json::json!({})
+        }),
+        Err(error) => {
+            warn!(error = %error, "settings document unreadable at startup; auth features use defaults");
+            serde_json::json!({})
+        }
+    };
+    let webauthn = fabric_hub::webauthn::build_from_settings(&effective_auth);
+    if webauthn.is_some() {
+        info!("passkeys enabled (WebAuthn relying party configured)");
+    } else {
+        info!("passkeys disabled or unconfigured (auth.passkeys)");
+    }
+    // Default 10, schema-capped at 10 -- "permit policy to shorten but not
+    // silently lengthen security limits beyond the reviewed maximum."
+    let step_up_freshness_minutes = effective_auth
+        .pointer("/auth/sessions/step_up_freshness_minutes")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(10);
+
+    let bootstrap_secret = std::env::var("FORGEWIRE_HUB_BOOTSTRAP_SECRET_FILE")
+        .ok()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty());
+
     let state = Arc::new(HubState {
         store,
+        secrets: secret_broker,
         token,
+        bootstrap_secret,
+        webauthn,
+        step_up_freshness_minutes,
         started_at: Instant::now(),
         started_at_unix: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs_f64(),
-        gate: {
-            // Load policy from FORGEWIRE_HUB_POLICY_FILE if set.
-            // If the file does not exist, a safe annotated default is written
-            // automatically so operators can tune from the first dispatch.
-            let policy = if let Ok(path) = std::env::var("FORGEWIRE_HUB_POLICY_FILE") {
-                match FabricPolicy::load_or_create(&path) {
-                    Ok(p) => {
-                        info!(path = %path, "policy loaded");
-                        p
-                    }
-                    Err(e) => {
-                        tracing::warn!(path = %path, error = %e, "policy load failed — using permissive default");
-                        FabricPolicy::default()
-                    }
-                }
-            } else {
-                tracing::info!("FORGEWIRE_HUB_POLICY_FILE not set — using permissive default (no file written)");
-                FabricPolicy::default()
-            };
-            DispatchGate::new(policy)
-        },
+        gate: DispatchGate::new(policy),
+        effective_policy,
         budget_caps,
         host: host.clone(),
         port,
@@ -352,89 +475,67 @@ async fn main() {
             if cfg.enabled() {
                 info!(channel = %cfg.channel_id, "ForgeLink HITL routing enabled (AGH-028)");
             } else {
-                tracing::info!("ForgeLink HITL routing disabled — using Fabric's built-in approval pane");
+                tracing::info!(
+                    "ForgeLink HITL routing disabled — using Fabric's built-in approval pane"
+                );
             }
             cfg
         },
+        history_status: Arc::new(tokio::sync::Mutex::new(serde_json::json!({
+            "health": "disabled",
+            "mode": "thin",
+            "exported": 0,
+        }))),
     });
 
-    // Public routes (no auth)
+    history::spawn_export_loop(Arc::clone(&state));
+
+    // Public routes (no auth). `authn::public_router()` covers bootstrap/
+    // login/refresh -- a caller with no credential yet (or a possibly-
+    // expired one, for refresh) cannot reach an authenticated-tier route to
+    // obtain one, so these cannot sit behind `require_bearer` below.
     let public = Router::new()
-        .route("/healthz", get(health::healthz));
+        .merge(health::router())
+        .merge(authn::public_router())
+        // The WebAuthn bridge page is public by construction: it is opened in
+        // the system browser with no credential, and performs its own
+        // authentication inside the page (114C.6 Slice 5b).
+        .merge(webauthn_bridge::public_router())
+        // Deployment diagnostic, not account data -- see webauthn_doctor.rs's
+        // own doc comment for why this is safe to leave unauthenticated
+        // (114C.6 Slice 7).
+        .merge(webauthn_doctor::public_router());
 
     // Authenticated routes
     let authed = Router::new()
-        // --- Tasks ---
-        .route("/tasks", get(tasks::list_tasks))
-        .route("/tasks", post(tasks::dispatch_task))
-        .route("/tasks/v2", post(tasks::dispatch_task_signed))
-        .route("/tasks/claim-loom", post(tasks::claim_task_loom))
-        .route("/tasks/claim-fabric", post(tasks::claim_task_fabric))
-        .route("/tasks/{task_id}", get(tasks::get_task))
-        // --- Task state & streams ---
-        .route("/tasks/{task_id}/start", post(streams::mark_running))
-        .route("/tasks/{task_id}/cancel", post(streams::cancel_task))
-        .route("/tasks/{task_id}/progress", post(streams::append_progress))
-        .route("/tasks/{task_id}/stream", post(streams::append_stream))
-        .route("/tasks/{task_id}/stream", get(streams::read_stream))
-        .route("/tasks/{task_id}/stream/bulk", post(streams::append_stream_bulk))
-        .route("/tasks/{task_id}/result", post(streams::submit_result))
-        .route("/tasks/{task_id}/notes", post(streams::post_note))
-        .route("/tasks/{task_id}/notes", get(streams::read_notes))
-        .route("/tasks/{task_id}/intent", post(tasks::evaluate_intent))
-        .route("/tasks/{task_id}/input", post(streams::post_task_input))
-        .route("/tasks/{task_id}/input", get(streams::get_task_input))
-        // --- Runners ---
-        .route("/runners", get(runners::list_runners))
-        .route("/runners/register", post(runners::register_runner))
-        .route("/runners/{runner_id}/heartbeat", post(runners::heartbeat_runner))
-        .route("/runners/{runner_id}/drain", post(runners::drain_runner))
-        .route("/runners/{runner_id}/drain-by-dispatcher", post(runners::drain_runner_by_dispatcher))
-        .route("/runners/{runner_id}/undrain-by-dispatcher", post(runners::undrain_runner_by_dispatcher))
-        .route("/runners/{runner_id}", delete(runners::deregister_runner))
-        // --- Dispatchers ---
-        .route("/dispatchers/register", post(dispatchers::register_dispatcher))
-        .route("/dispatchers", get(dispatchers::list_dispatchers))
-        .route("/dispatchers/{dispatcher_id}", delete(dispatchers::deregister_dispatcher))
-        // --- Approvals ---
-        .route("/approvals", get(approvals::list_approvals))
-        .route("/approvals/{approval_id}", get(approvals::get_approval))
-        .route("/approvals/{approval_id}/approve", post(approvals::approve_approval))
-        .route("/approvals/{approval_id}/deny", post(approvals::deny_approval))
-        // --- Agents + capabilities (Phase 2.8 M2.8.2) ---
-        .route("/agents", get(agents::list_agents))
-        .route("/capabilities/{kind}/{name}", get(agents::get_capability))
-        // --- Cluster / hosts ---
-        .route("/cluster/health", get(cluster::cluster_health))
-        .route("/hosts", get(cluster::list_hosts))
-        // --- Audit ---
-        .route("/audit/tasks/{task_id}", get(audit::audit_for_task))
-        .route("/audit/tail", get(audit::audit_tail))
-        .route("/audit/day/{day}", get(cluster::audit_day))
-        // --- Self-update (M2.5.10) ---
-        .route("/admin/binaries/manifest", get(admin::binaries_manifest))
-        .route("/admin/binaries/{name}", get(admin::binary_download))
-        .route("/admin/update", post(admin::trigger_update))
-        // --- Cost (M2.5.2 — rqlite only) ---
-        .route("/cost/summary", get(cost::cost_summary))
-        .route("/cost/records", get(cost::cost_records))
-        .route("/cost/budget", get(cost::cost_budget))
-        // --- Secrets ---
-        .route("/secrets", post(secrets::put_or_rotate_secret))
-        .route("/secrets", get(secrets::list_secrets))
-        .route("/secrets/{name}", delete(secrets::delete_secret))
-        // --- Labels ---
-        .route("/labels", get(labels::get_labels))
-        .route("/labels/hub", put(labels::set_hub_label))
-        .route("/labels/runners/{runner_id}", put(labels::set_runner_label))
-        .route("/labels/hosts/{hostname}", put(labels::set_host_label))
-        .route("/hosts/roles", post(labels::set_host_role))
-        .layer(middleware::from_fn_with_state(state.clone(), require_bearer));
+        .merge(tasks::router())
+        .merge(streams::router())
+        .merge(tasks::intent_router())
+        .merge(streams::input_router())
+        .merge(state::router())
+        .merge(runners::router())
+        .merge(dispatchers::router())
+        .merge(approvals::router())
+        .merge(agents::router())
+        .merge(cluster::router())
+        .merge(audit::router())
+        .merge(cluster::audit_router())
+        .merge(admin::router())
+        .merge(cost::router())
+        .merge(policy::router())
+        .merge(history::router())
+        .merge(secrets::router())
+        .merge(settings::router())
+        .merge(labels::router())
+        .merge(accounts::router())
+        .merge(authn::router())
+        .merge(whoami::router())
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_bearer,
+        ));
 
-    let app = Router::new()
-        .merge(public)
-        .merge(authed)
-        .with_state(state);
+    let app = Router::new().merge(public).merge(authed).with_state(state);
 
     let addr: SocketAddr = format!("{host}:{port}").parse().unwrap_or_else(|e| {
         eprintln!("invalid bind address {host}:{port}: {e}");
@@ -444,17 +545,25 @@ async fn main() {
     info!("forgewire-hub (Rust) v{PACKAGE_VERSION} listening on {addr}");
     info!("backend=rqlite protocol_version={PROTOCOL_VERSION} sidecar_integrity=trusted_bearer");
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap_or_else(|e| {
-        eprintln!("bind failed on {addr}: {e}");
-        std::process::exit(1);
-    });
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+    let listener = tokio::net::TcpListener::bind(addr)
         .await
         .unwrap_or_else(|e| {
-            eprintln!("server error: {e}");
+            eprintln!("bind failed on {addr}: {e}");
             std::process::exit(1);
         });
+    // `into_make_service_with_connect_info` (rather than plain `app`) so
+    // `POST /auth/bootstrap` can extract the real peer address via
+    // `ConnectInfo<SocketAddr>` and enforce its loopback-only guard.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .unwrap_or_else(|e| {
+        eprintln!("server error: {e}");
+        std::process::exit(1);
+    });
 
     info!("forgewire-hub shutdown complete");
 }
@@ -463,4 +572,3 @@ async fn shutdown_signal() {
     tokio::signal::ctrl_c().await.ok();
     info!("received shutdown signal");
 }
-

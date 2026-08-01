@@ -6,7 +6,7 @@ license.workspace = true
 description = "Hash-chained audit log for ForgeWire Fabric — byte-compatible with the Python oracle."
 
 [dependencies]
-fabric-types = { path = "../fabric-types" }
+fabric-types = { package = "forgewire-fabric-types", path = "../fabric-types", version = "0.10.0" }
 serde.workspace = true
 serde_json.workspace = true
 hex.workspace = true

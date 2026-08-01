@@ -11,19 +11,13 @@ from forgewire_fabric import __version__, runtime_version
 
 def _version_triple() -> str:
     """Render the full compatibility triple shown by ``--version``."""
-    from forgewire_fabric.hub.server import (
-        DEFAULT_MIN_RUNNER_VERSION,
-        PROTOCOL_VERSION,
-        SCHEMA_VERSION,
-    )
-
     rt = runtime_version() or "(pure-python)"
     return (
         f"forgewire-fabric {__version__}\n"
         f"  runtime    = {rt}\n"
-        f"  protocol   = {PROTOCOL_VERSION}\n"
-        f"  schema     = {SCHEMA_VERSION}\n"
-        f"  min_runner = {DEFAULT_MIN_RUNNER_VERSION}"
+        "  protocol   = 4\n"
+        "  schema     = 4\n"
+        "  min_runner = 0.4.0"
     )
 
 

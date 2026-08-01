@@ -31,9 +31,19 @@ pub struct ForgeLinkConfig {
 
 impl ForgeLinkConfig {
     pub fn from_env() -> Self {
-        let opt = std::env::var("FORGELINK_HITL").ok().map(|v| v.trim().to_lowercase());
-        let opted_out = matches!(opt.as_deref(), Some("off") | Some("0") | Some("false") | Some("disabled"));
-        let clean = |k: &str| std::env::var(k).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let opt = std::env::var("FORGELINK_HITL")
+            .ok()
+            .map(|v| v.trim().to_lowercase());
+        let opted_out = matches!(
+            opt.as_deref(),
+            Some("off") | Some("0") | Some("false") | Some("disabled")
+        );
+        let clean = |k: &str| {
+            std::env::var(k)
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        };
         Self {
             base_url: clean("FORGELINK_BASE_URL").map(|s| s.trim_end_matches('/').to_string()),
             channel_id: clean("FORGELINK_CHANNEL_ID").unwrap_or_else(|| "forgewire".into()),
@@ -83,7 +93,9 @@ pub fn build_approval_request(
     source: &str,
 ) -> Value {
     let resources: Vec<String> = scope_globs.to_vec();
-    let branch_note = branch.map(|b| format!(" on branch {b}")).unwrap_or_default();
+    let branch_note = branch
+        .map(|b| format!(" on branch {b}"))
+        .unwrap_or_default();
     json!({
         "id": format!("fabric-{approval_id}"),
         "kind": "approval_request",
@@ -123,8 +135,14 @@ pub fn build_approval_request(
 /// success. Errors (unreachable, non-2xx, misconfigured) are returned to the caller
 /// so it can fall back to Fabric's built-in pane.
 pub async fn route_approval(cfg: &ForgeLinkConfig, body: &Value) -> Result<String, String> {
-    let base = cfg.base_url.as_deref().ok_or("forgelink base_url not configured")?;
-    let token = cfg.channel_token.as_deref().ok_or("forgelink channel_token not configured")?;
+    let base = cfg
+        .base_url
+        .as_deref()
+        .ok_or("forgelink base_url not configured")?;
+    let token = cfg
+        .channel_token
+        .as_deref()
+        .ok_or("forgelink channel_token not configured")?;
     let url = format!("{base}/api/agent-channels/{}/messages", cfg.channel_id);
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
@@ -138,7 +156,10 @@ pub async fn route_approval(cfg: &ForgeLinkConfig, body: &Value) -> Result<Strin
         .await
         .map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
-        return Err(format!("forgelink returned HTTP {}", resp.status().as_u16()));
+        return Err(format!(
+            "forgelink returned HTTP {}",
+            resp.status().as_u16()
+        ));
     }
     let v: Value = resp.json().await.map_err(|e| e.to_string())?;
     Ok(v.get("message")
@@ -169,9 +190,18 @@ pub fn decision_from_status(v: &Value) -> Option<ForgeLinkDecision> {
 /// AGH-028). The ForgeLink request id is deterministic: `fabric-<approval_id>`.
 /// Returns `Ok(None)` while undecided or when ForgeLink has no such request (404),
 /// so the caller simply leaves the approval pending.
-pub async fn fetch_decision(cfg: &ForgeLinkConfig, approval_id: &str) -> Result<Option<ForgeLinkDecision>, String> {
-    let base = cfg.base_url.as_deref().ok_or("forgelink base_url not configured")?;
-    let token = cfg.mcp_token.as_deref().ok_or("forgelink mcp_token not configured")?;
+pub async fn fetch_decision(
+    cfg: &ForgeLinkConfig,
+    approval_id: &str,
+) -> Result<Option<ForgeLinkDecision>, String> {
+    let base = cfg
+        .base_url
+        .as_deref()
+        .ok_or("forgelink base_url not configured")?;
+    let token = cfg
+        .mcp_token
+        .as_deref()
+        .ok_or("forgelink mcp_token not configured")?;
     let url = format!("{base}/api/agent-messages/fabric-{approval_id}/status");
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(3))
@@ -187,7 +217,10 @@ pub async fn fetch_decision(cfg: &ForgeLinkConfig, approval_id: &str) -> Result<
         return Ok(None);
     }
     if !resp.status().is_success() {
-        return Err(format!("forgelink returned HTTP {}", resp.status().as_u16()));
+        return Err(format!(
+            "forgelink returned HTTP {}",
+            resp.status().as_u16()
+        ));
     }
     let v: Value = resp.json().await.map_err(|e| e.to_string())?;
     Ok(decision_from_status(&v))
@@ -215,7 +248,10 @@ mod tests {
         assert!(cfg.enabled());
         // Reconcile (decision write-back) needs the MCP token too.
         assert!(!cfg.reconcile_enabled());
-        let cfg2 = ForgeLinkConfig { mcp_token: Some("flmcp_x".into()), ..cfg };
+        let cfg2 = ForgeLinkConfig {
+            mcp_token: Some("flmcp_x".into()),
+            ..cfg
+        };
         assert!(cfg2.reconcile_enabled());
     }
 
@@ -239,7 +275,9 @@ mod tests {
         assert_eq!(decision_from_status(&json!({ "decided": false })), None);
         // Decided approve -> Approved.
         assert_eq!(
-            decision_from_status(&json!({ "decided": true, "decision": "approve", "authority_granted": true })),
+            decision_from_status(
+                &json!({ "decided": true, "decision": "approve", "authority_granted": true })
+            ),
             Some(ForgeLinkDecision::Approved)
         );
         // Decided deny/dismiss -> Denied.
@@ -277,9 +315,15 @@ mod tests {
         assert_eq!(body["source_kind"], "forgewire_fabric");
         // Evidence pack carries the required, non-empty contract fields.
         let ev = &body["evidence_pack"];
-        assert!(ev["summary"].as_str().unwrap().contains("Merge release branch"));
+        assert!(ev["summary"]
+            .as_str()
+            .unwrap()
+            .contains("Merge release branch"));
         assert_eq!(ev["redaction_profile"], "desktop_full");
-        assert!(ev["proposed_operation"].as_str().unwrap().contains("branch main"));
+        assert!(ev["proposed_operation"]
+            .as_str()
+            .unwrap()
+            .contains("branch main"));
         // Decision options are approve/deny.
         assert_eq!(body["decision_options"][0]["id"], "approve");
         assert_eq!(body["decision_options"][1]["id"], "deny");

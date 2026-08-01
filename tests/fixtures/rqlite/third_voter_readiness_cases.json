@@ -1,0 +1,110 @@
+{
+  "ready_three_hosts": {
+    "expected_exit": 0,
+    "nodes": {
+      "node-a": {
+        "id": "node-a",
+        "api_addr": "http://HOST-A:4001",
+        "addr": "HOST-A:4002",
+        "voter": true,
+        "reachable": true,
+        "leader": true
+      },
+      "node-b": {
+        "id": "node-b",
+        "api_addr": "http://HOST-B:4001",
+        "addr": "HOST-B:4002",
+        "voter": true,
+        "reachable": true,
+        "leader": false
+      },
+      "node-c": {
+        "id": "node-c",
+        "api_addr": "http://HOST-C:4001",
+        "addr": "HOST-C:4002",
+        "voter": true,
+        "reachable": true,
+        "leader": false
+      }
+    }
+  },
+  "healthy_two_hosts": {
+    "expected_exit": 2,
+    "nodes": {
+      "node-a": {
+        "id": "node-a",
+        "api_addr": "http://HOST-A:4001",
+        "addr": "HOST-A:4002",
+        "voter": true,
+        "reachable": true,
+        "leader": true
+      },
+      "node-b": {
+        "id": "node-b",
+        "api_addr": "http://HOST-B:4001",
+        "addr": "HOST-B:4002",
+        "voter": false,
+        "reachable": true,
+        "leader": false
+      }
+    }
+  },
+  "duplicate_processes": {
+    "expected_exit": 2,
+    "nodes": {
+      "node-a-4002": {
+        "id": "node-a-4002",
+        "api_addr": "http://HOST-A:4001",
+        "addr": "HOST-A:4002",
+        "voter": true,
+        "reachable": true,
+        "leader": true
+      },
+      "node-a-4102": {
+        "id": "node-a-4102",
+        "api_addr": "http://HOST-A:4101",
+        "addr": "HOST-A:4102",
+        "voter": true,
+        "reachable": true,
+        "leader": false
+      },
+      "node-b": {
+        "id": "node-b",
+        "api_addr": "http://HOST-B:4001",
+        "addr": "HOST-B:4002",
+        "voter": true,
+        "reachable": true,
+        "leader": false
+      }
+    }
+  },
+  "unreachable_voter": {
+    "expected_exit": 1,
+    "nodes": {
+      "node-a": {
+        "id": "node-a",
+        "api_addr": "http://HOST-A:4001",
+        "addr": "HOST-A:4002",
+        "voter": true,
+        "reachable": true,
+        "leader": true
+      },
+      "node-b": {
+        "id": "node-b",
+        "api_addr": "http://HOST-B:4001",
+        "addr": "HOST-B:4002",
+        "voter": true,
+        "reachable": true,
+        "leader": false
+      },
+      "node-c": {
+        "id": "node-c",
+        "api_addr": "http://HOST-C:4001",
+        "addr": "HOST-C:4002",
+        "voter": true,
+        "reachable": false,
+        "leader": false
+      }
+    }
+  }
+}

@@ -58,3 +58,27 @@ Every template uses these placeholders — replace them for your environment:
 The `forgewire-fabric mcp install` CLI wires the VS Code user-scope `mcp.json`
 for you; these templates are the canonical reference and the source for the
 Claude Code configs.
+
+## VS Code agent suite
+
+The VSIX packages four workspace chatmodes and seven prompt templates. Run
+**ForgeWire: Install / Update Agent Suite in Workspace** after installing or
+upgrading the extension. The command copies chatmodes to
+`.github/chatmodes/` and prompts to `.github/prompts/`. It preserves any
+locally changed ForgeWire file unless the operator explicitly selects
+**Replace ForgeWire files**.
+
+The deterministic inventory and topology contract live in
+[`vscode/agent-suite.manifest.json`](vscode/agent-suite.manifest.json):
+
+| Role | MCP surface | Authority |
+| --- | --- | --- |
+| Dispatcher | `forgewire-fabric` + `forgewire-loom` | Fabric agent dispatch; explicit Loom host/process control. |
+| Runner | `forgewire-fabric-runner` | Execute and report one sealed, scope-bound task. |
+| Approver | read-only `forgewire-fabric` evidence | Risk recommendation; the operator decides in the VSIX Approvals pane. |
+| Observer/reviewer | read-only Fabric + Loom evidence | Review only; no dispatch, process, drain, or approval mutation. |
+
+This division is deliberately honest about the current servers. The
+dispatcher MCP pair has no approval-decision or replay tool. The suite never
+simulates those operations with Loom or raw HTTP, and it does not create a new
+auth path. Hub tokens remain in the configured token file/SecretStorage.

@@ -37,8 +37,8 @@
 
 pub mod presence;
 pub use presence::{
-    collect_presence, collect_presence_addrs, presence_tick, serve_presence,
-    canonical_presence_bytes, NodeAdvert, ObservedPresence, PresenceError, PresenceRecord,
+    canonical_presence_bytes, collect_presence, collect_presence_addrs, presence_tick,
+    serve_presence, NodeAdvert, ObservedPresence, PresenceError, PresenceRecord,
     DEFAULT_PRESENCE_PORT, PRESENCE_FRESH_SECS, PRESENCE_VERSION, ROLE_NODE, ROLE_NODE_QUERY,
 };
 
@@ -177,7 +177,9 @@ pub(crate) fn broadcast_targets(port: u16) -> Vec<SocketAddr> {
 }
 
 pub(crate) fn parse(buf: &[u8]) -> Option<Beacon> {
-    serde_json::from_slice::<Beacon>(buf).ok().filter(Beacon::is_valid)
+    serde_json::from_slice::<Beacon>(buf)
+        .ok()
+        .filter(Beacon::is_valid)
 }
 
 // ---------------------------------------------------------------------------
@@ -229,7 +231,7 @@ impl HubAdvert {
 /// Returns `Err` only if the port cannot be bound (caller logs and continues
 /// without discovery — it is never fatal to the hub). The loop itself never
 /// returns; spawn it on a dedicated thread.
-pub fn serve(advert: HubAdvert, udp_port: u16, announce_interval: Duration) -> io::Result<()> {
+pub fn serve(advert: &HubAdvert, udp_port: u16, announce_interval: Duration) -> io::Result<()> {
     let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, udp_port)))?;
     socket.set_broadcast(true)?;
     // Drives periodic announce even when no queries arrive.
@@ -243,7 +245,7 @@ pub fn serve(advert: HubAdvert, udp_port: u16, announce_interval: Duration) -> i
 
     loop {
         if last_announce.elapsed() >= announce_interval {
-            announce(&socket, &advert, &targets);
+            announce(&socket, advert, &targets);
             last_announce = Instant::now();
         }
         match socket.recv_from(&mut buf) {
@@ -257,7 +259,9 @@ pub fn serve(advert: HubAdvert, udp_port: u16, announce_interval: Duration) -> i
                     }
                 }
             }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => {
+            Err(e)
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
+            {
                 // read timeout — loop to re-check the announce clock
             }
             Err(_) => {
@@ -272,13 +276,13 @@ pub fn serve(advert: HubAdvert, udp_port: u16, announce_interval: Duration) -> i
 ///
 /// Used by the hub's beacon thread to refresh the cluster-state payload each
 /// cycle without blocking forever on a single socket binding.
-pub fn serve_once(advert: HubAdvert, udp_port: u16) -> io::Result<()> {
+pub fn serve_once(advert: &HubAdvert, udp_port: u16) -> io::Result<()> {
     let socket = UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, udp_port)))?;
     socket.set_broadcast(true)?;
     socket.set_read_timeout(Some(Duration::from_millis(900)))?;
 
     let targets = broadcast_targets(udp_port);
-    announce(&socket, &advert, &targets);
+    announce(&socket, advert, &targets);
 
     let mut buf = [0u8; MAX_DATAGRAM];
     let deadline = Instant::now() + Duration::from_millis(1000);
@@ -296,7 +300,11 @@ pub fn serve_once(advert: HubAdvert, udp_port: u16) -> io::Result<()> {
                     }
                 }
             }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => break,
+            Err(e)
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
+            {
+                break
+            }
             Err(_) => break,
         }
     }
@@ -385,7 +393,9 @@ pub fn discover_addrs(
                     }
                 }
             }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => {}
+            Err(e)
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => {
+            }
             Err(e) => return Err(e),
         }
     }
@@ -493,7 +503,7 @@ mod tests {
             rqlite_nodes: 1,
         };
         std::thread::spawn(move || {
-            let _ = serve(advert, port, Duration::from_millis(200));
+            let _ = serve(&advert, port, Duration::from_millis(200));
         });
         std::thread::sleep(Duration::from_millis(150));
 
@@ -506,13 +516,21 @@ mod tests {
         )
         .expect("discover ok");
         assert!(
-            hubs.iter().any(|h| h.hub_id == "loopback-hub" && h.url.ends_with(":8765")),
+            hubs.iter()
+                .any(|h| h.hub_id == "loopback-hub" && h.url.ends_with(":8765")),
             "expected to discover the loopback responder, got {hubs:?}"
         );
 
         // Wrong token hash filters it out.
-        let none = discover_addrs(&[loopback], Duration::from_millis(800), Some("0000000000000000"))
-            .expect("discover ok");
-        assert!(none.is_empty(), "wrong-cluster filter should hide it, got {none:?}");
+        let none = discover_addrs(
+            &[loopback],
+            Duration::from_millis(800),
+            Some("0000000000000000"),
+        )
+        .expect("discover ok");
+        assert!(
+            none.is_empty(),
+            "wrong-cluster filter should hide it, got {none:?}"
+        );
     }
 }

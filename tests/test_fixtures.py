@@ -283,8 +283,7 @@ class TestAuditChainFixtures:
         assert computed == sn["event_id_hash"]
 
     def test_full_chain_verification(self, data: dict[str, Any]) -> None:
-        """Reproduce the Blackboard.verify_audit_chain logic."""
-        from forgewire_fabric.hub.server import Blackboard
+        """Reproduce the canonical Rust audit-chain contract."""
         events = data["valid_chain"]["events"]
         # Build event dicts in the shape verify_audit_chain expects
         rows = [
@@ -296,9 +295,11 @@ class TestAuditChainFixtures:
             }
             for e in events
         ]
-        ok, err = Blackboard.verify_audit_chain(rows)
-        assert ok is True, f"verify_audit_chain failed: {err}"
-        assert err is None
+        expected = "0" * 64
+        for row in rows:
+            assert row["prev_event_id_hash"] == expected
+            expected = _audit_event_hash(expected, row["kind"], row["payload"])
+            assert row["event_id_hash"] == expected
 
 
 # ---------------------------------------------------------------------------
@@ -329,92 +330,6 @@ class TestRoutingFixtures:
     def test_routing_gates_documented(self, data: dict[str, Any]) -> None:
         gates = data["routing_gates_in_order"]
         assert len(gates) >= 6, "all 6 routing gates must be documented"
-
-    def test_claim_router_accept_cases(self, data: dict[str, Any]) -> None:
-        """Run accept cases through the live Python claim router."""
-        from forgewire_fabric.hub._router import pick_task
-
-        for case in data["cases"]:
-            if case["verdict"] != "accept":
-                continue
-            if "task_kind" in case:
-                # Kind-routing cases — skip (hub-level, not router-level)
-                continue
-            if "runner_max_concurrent" in case:
-                # Concurrency-cap cases — skip (hub-level pre-check)
-                continue
-            if case.get("gate", "").startswith("pre-router"):
-                continue
-
-            task = case.get("task")
-            runner = case.get("runner")
-            if task is None or runner is None:
-                continue
-
-            # Build CandidateTask and RunnerView for pick_task
-            candidate = {
-                "scope_globs": task.get("scope_globs", []),
-                "required_tools": task.get("required_tools", []),
-                "required_tags": task.get("required_tags", []),
-                "tenant": task.get("tenant"),
-                "workspace_root": task.get("workspace_root"),
-                "require_base_commit": task.get("require_base_commit", False),
-                "base_commit": task.get("base_commit", ""),
-            }
-            runner_view = {
-                "scope_prefixes": runner.get("scope_prefixes", []),
-                "tools": runner.get("tools", []),
-                "tags": runner.get("tags", []),
-                "tenant": runner.get("tenant"),
-                "workspace_root": runner.get("workspace_root"),
-                "last_known_commit": runner.get("last_known_commit"),
-            }
-            idx, _ = pick_task([candidate], runner_view)
-            assert idx == 0, (
-                f"case {case['id']}: expected accept (pick_task idx=0) but got idx={idx}"
-            )
-
-    def test_claim_router_reject_cases(self, data: dict[str, Any]) -> None:
-        """Run reject cases through the live Python claim router."""
-        from forgewire_fabric.hub._router import pick_task
-
-        for case in data["cases"]:
-            if case["verdict"] != "reject":
-                continue
-            if "task_kind" in case:
-                continue
-            if "runner_max_concurrent" in case:
-                continue
-            if case.get("gate", "").startswith("pre-router"):
-                continue
-
-            task = case.get("task")
-            runner = case.get("runner")
-            if task is None or runner is None:
-                continue
-
-            candidate = {
-                "scope_globs": task.get("scope_globs", []),
-                "required_tools": task.get("required_tools", []),
-                "required_tags": task.get("required_tags", []),
-                "tenant": task.get("tenant"),
-                "workspace_root": task.get("workspace_root"),
-                "require_base_commit": task.get("require_base_commit", False),
-                "base_commit": task.get("base_commit", ""),
-            }
-            runner_view = {
-                "scope_prefixes": runner.get("scope_prefixes", []),
-                "tools": runner.get("tools", []),
-                "tags": runner.get("tags", []),
-                "tenant": runner.get("tenant"),
-                "workspace_root": runner.get("workspace_root"),
-                "last_known_commit": runner.get("last_known_commit"),
-            }
-            idx, _ = pick_task([candidate], runner_view)
-            assert idx is None, (
-                f"case {case['id']}: expected reject (pick_task idx=None) but got idx={idx}"
-            )
-
 
 # ---------------------------------------------------------------------------
 # Store fixtures (structural)

@@ -19,6 +19,7 @@ POST /dispatchers/register.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -30,6 +31,9 @@ import pytest
 _REAL_RUNNERS = {"DESKTOP-38GVF8D-runner", "DESKTOP-228U8GL-runner"}
 _REAL_HOSTNAMES = {"DESKTOP-38GVF8D", "DESKTOP-228U8GL",
                    "desktop-38gvf8d", "desktop-228u8gl"}
+
+LIVE_CLUSTER_ENV = "FORGEWIRE_TEST_ALLOW_LIVE_CLUSTER"
+LIVE_CLUSTER_ALLOWED = os.environ.get(LIVE_CLUSTER_ENV) == "1"
 
 
 def _reachable(host: str = "127.0.0.1", port: int = 4001) -> bool:
@@ -59,7 +63,10 @@ def _start_rqlite_service() -> None:
 
 
 def pytest_sessionstart(session: pytest.Session) -> None:
-    """Ensure rqlite is running and the cluster is clean before any hub test."""
+    """Start or clean shared rqlite only after explicit authorization."""
+    if not LIVE_CLUSTER_ALLOWED:
+        return
+
     if _reachable():
         _enforce_cluster_invariant()
         return
@@ -83,11 +90,11 @@ def pytest_sessionstart(session: pytest.Session) -> None:
 
 @pytest.fixture(autouse=True)
 def _cluster_guard():
-    """Enforce cluster invariant before AND after every test.
+    """Clean shared cluster state only during explicitly authorized live runs."""
+    if not LIVE_CLUSTER_ALLOWED:
+        yield
+        return
 
-    Before: cancel queued tasks so competitive claims don't pick up stale work.
-    After: remove any ghost runners/dispatchers/workers the test created.
-    """
     _enforce_cluster_invariant()
     yield
     _enforce_cluster_invariant()

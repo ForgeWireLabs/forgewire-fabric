@@ -1,12 +1,19 @@
 //! Health endpoints — no authentication required.
 
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::extract::State;
 use axum::Json;
 use serde_json::{json, Value};
 
 use crate::state::HubState;
+
+owned_router! {
+    pub fn router, ROUTES {
+        "GET" get "/healthz" => healthz;
+    }
+}
 
 pub async fn healthz(State(state): State<Arc<HubState>>) -> Json<Value> {
     let uptime = state.started_at.elapsed().as_secs_f64();
@@ -15,7 +22,11 @@ pub async fn healthz(State(state): State<Arc<HubState>>) -> Json<Value> {
     // Phase 2.8 (M2.8.2): queue depth counters for loom and fabric queues.
     // Non-fatal — healthz must never fail even if the store is degraded.
     let (loom_depth, fabric_depth, capability_index_rows) = {
-        let queued = state.store.list_tasks(Some("queued"), 500).await.unwrap_or_default();
+        let queued = state
+            .store
+            .list_tasks(Some("queued"), 500)
+            .await
+            .unwrap_or_default();
         let loom = queued.iter().filter(|t| t.kind == "command").count();
         let fabric = queued.iter().filter(|t| t.kind == "agent").count();
         // Count capability index rows across all runners.
@@ -38,6 +49,7 @@ pub async fn healthz(State(state): State<Arc<HubState>>) -> Json<Value> {
         "backend": state.backend,
         "sidecar_integrity": state.sidecar_integrity,
         "started_at": state.started_at_unix,
+        "server_time": SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs_f64(),
         "uptime_seconds": uptime,
         "host": state.host,
         "port": state.port,

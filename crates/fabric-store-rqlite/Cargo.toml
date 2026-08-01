@@ -6,9 +6,10 @@ license.workspace = true
 description = "rqlite HA backend for the ForgeWire Fabric store contract."
 
 [dependencies]
-fabric-store = { path = "../fabric-store" }
-fabric-types = { path = "../fabric-types" }
-fabric-audit = { path = "../fabric-audit" }
+fabric-store = { path = "../fabric-store", version = "0.10.0" }
+fabric-types = { package = "forgewire-fabric-types", path = "../fabric-types", version = "0.10.0" }
+fabric-audit = { path = "../fabric-audit", version = "0.10.0" }
+fabric-accounts = { path = "../fabric-accounts", version = "0.10.0" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -19,6 +20,11 @@ async-trait = "0.1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
+sha2.workspace = true
+hex.workspace = true
+rand.workspace = true
+argon2 = "0.5"
+password-hash = "0.5"
 
 [lints]
 workspace = true

@@ -1,4 +1,4 @@
-﻿//! Capability-aware claim routing for ForgeWire.
+//! Capability-aware claim routing for ForgeWire.
 //!
 //! Mirrors the Python `Blackboard.claim_next_task_v2` per-task match loop in
 //! `scripts/remote/hub/server.py`. The pre-checks (drain, concurrency cap,
@@ -97,9 +97,7 @@ pub fn glob_static_prefix(glob: &str) -> String {
     } else {
         std::borrow::Cow::Borrowed(glob)
     };
-    let cut = norm
-        .find(|c: char| c == '*' || c == '?' || c == '[')
-        .unwrap_or(norm.len());
+    let cut = norm.find(['*', '?', '[']).unwrap_or(norm.len());
     let head = &norm[..cut];
     match head.rfind('/') {
         Some(i) => format!("{}/", &head[..i]),
@@ -159,17 +157,18 @@ pub fn matches(task: &CandidateTask, runner: &RunnerView) -> bool {
     if !scopes_within(&task.scope_globs, &runner.scope_prefixes) {
         return false;
     }
-    if !task.required_tools.iter().all(|t| {
-        runner
-            .tools
-            .iter()
-            .any(|rt| rt.eq_ignore_ascii_case(t))
-    }) {
+    if !task
+        .required_tools
+        .iter()
+        .all(|t| runner.tools.iter().any(|rt| rt.eq_ignore_ascii_case(t)))
+    {
         return false;
     }
-    if !task.required_tags.iter().all(|t| {
-        runner.tags.iter().any(|rt| rt.eq_ignore_ascii_case(t))
-    }) {
+    if !task
+        .required_tags
+        .iter()
+        .all(|t| runner.tags.iter().any(|rt| rt.eq_ignore_ascii_case(t)))
+    {
         return false;
     }
     if task.require_base_commit {
@@ -237,24 +236,24 @@ mod tests {
     fn scopes_within_overlap_either_direction() {
         // Runner prefix is broader than task prefix.
         assert!(scopes_within(
-            &vec!["modules/jobs/**".into()],
-            &vec!["modules/".into()]
+            &["modules/jobs/**".into()],
+            &["modules/".into()]
         ));
         // Task prefix is broader than runner prefix.
         assert!(scopes_within(
-            &vec!["modules/**".into()],
-            &vec!["modules/jobs/".into()]
+            &["modules/**".into()],
+            &["modules/jobs/".into()]
         ));
         // Disjoint.
         assert!(!scopes_within(
-            &vec!["modules/jobs/**".into()],
-            &vec!["docs/".into()]
+            &["modules/jobs/**".into()],
+            &["docs/".into()]
         ));
     }
 
     #[test]
     fn empty_runner_prefixes_accept_everything() {
-        assert!(scopes_within(&vec!["modules/jobs/**".into()], &vec![]));
+        assert!(scopes_within(&["modules/jobs/**".into()], &[]));
     }
 
     #[test]
@@ -314,14 +313,7 @@ mod tests {
         );
         assert_eq!(pick_task(&tasks, &r1).0, Some(0));
 
-        let r2 = RunnerView::from_raw(
-            &["docs/".into()],
-            &[],
-            &[],
-            Some("beta".into()),
-            None,
-            None,
-        );
+        let r2 = RunnerView::from_raw(&["docs/".into()], &[], &[], Some("beta".into()), None, None);
         assert_eq!(pick_task(&tasks, &r2).0, None);
 
         let r3 = RunnerView::from_raw(&["docs/".into()], &[], &[], None, None, None);

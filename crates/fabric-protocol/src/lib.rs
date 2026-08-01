@@ -130,18 +130,13 @@ fn write_ascii_string(s: &str, out: &mut Vec<u8>) {
 
 fn write_unicode_escape(cp: u32, out: &mut Vec<u8>) {
     out.extend_from_slice(b"\\u");
-    let nibbles = [
-        (cp >> 12) & 0xf,
-        (cp >> 8) & 0xf,
-        (cp >> 4) & 0xf,
-        cp & 0xf,
-    ];
+    let nibbles = [(cp >> 12) & 0xf, (cp >> 8) & 0xf, (cp >> 4) & 0xf, cp & 0xf];
     for n in nibbles {
-        let byte = if n < 10 {
-            b'0' + n as u8
-        } else {
-            b'a' + (n as u8 - 10)
-        };
+        // `& 0xf` above guarantees n <= 15, so this cast can never truncate --
+        // `try_from` would only add an unreachable error path.
+        #[allow(clippy::cast_possible_truncation)]
+        let n = n as u8;
+        let byte = if n < 10 { b'0' + n } else { b'a' + (n - 10) };
         out.push(byte);
     }
 }
@@ -194,10 +189,7 @@ pub fn verify_signature_hex(
 ///
 /// Returns the 64-byte signature as a lowercase hex string, matching the Python
 /// runner identity's `sign(payload).hex()` output.
-pub fn sign_payload_hex(
-    secret_key_hex: &str,
-    payload: &[u8],
-) -> Result<String, ProtocolError> {
+pub fn sign_payload_hex(secret_key_hex: &str, payload: &[u8]) -> Result<String, ProtocolError> {
     let sk_raw = hex::decode(secret_key_hex)?;
     if sk_raw.len() != SECRET_KEY_LENGTH {
         return Err(ProtocolError::PrivateKeyLength(sk_raw.len()));
@@ -222,10 +214,7 @@ pub fn verify_envelope_hex(
 }
 
 /// Convenience: sign an envelope (object) with a hex secret key.
-pub fn sign_envelope_hex(
-    secret_key_hex: &str,
-    envelope: &Value,
-) -> Result<String, ProtocolError> {
+pub fn sign_envelope_hex(secret_key_hex: &str, envelope: &Value) -> Result<String, ProtocolError> {
     let canonical = canonicalize(envelope)?;
     sign_payload_hex(secret_key_hex, &canonical)
 }
@@ -239,7 +228,10 @@ mod tests {
     fn canonicalize_sorts_keys() {
         let v = json!({"b": 1, "a": 2, "c": [3, 4]});
         let s = canonicalize(&v).unwrap();
-        assert_eq!(std::str::from_utf8(&s).unwrap(), r#"{"a":2,"b":1,"c":[3,4]}"#);
+        assert_eq!(
+            std::str::from_utf8(&s).unwrap(),
+            r#"{"a":2,"b":1,"c":[3,4]}"#
+        );
     }
 
     #[test]
@@ -276,9 +268,8 @@ mod tests {
     fn sign_then_verify_roundtrip() {
         // Deterministic: ed25519 from a fixed 32-byte seed.
         let sk_hex = "1".repeat(64);
-        let signing = SigningKey::from_bytes(
-            &<[u8; 32]>::try_from(hex::decode(&sk_hex).unwrap()).unwrap(),
-        );
+        let signing =
+            SigningKey::from_bytes(&<[u8; 32]>::try_from(hex::decode(&sk_hex).unwrap()).unwrap());
         let pk_hex = hex::encode(signing.verifying_key().to_bytes());
         let envelope = json!({"op": "register", "runner_id": "abc", "ts": 1234});
 

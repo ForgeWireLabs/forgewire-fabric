@@ -112,8 +112,21 @@ def audit_export(day: str, out_path: str | None, verify_only: bool) -> None:
 @click.argument("path", type=click.Path(exists=True, dir_okay=False))
 def audit_verify(path: str) -> None:
     import gzip
+    import hashlib
 
-    from forgewire_fabric.hub.server import Blackboard
+    def verify_chain(items: list[dict[str, Any]]) -> tuple[bool, str | None]:
+        expected = "0" * 64
+        for index, event in enumerate(items):
+            if event.get("prev_event_id_hash") != expected:
+                return False, f"event {index}: previous hash mismatch"
+            payload = event.get("payload") or {}
+            canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+            material = f"{expected}|{event.get('kind')}|{canonical}".encode()
+            actual = hashlib.sha256(material).hexdigest()
+            if event.get("event_id_hash") != actual:
+                return False, f"event {index}: event hash mismatch"
+            expected = actual
+        return True, None
 
     events: list[dict[str, Any]] = []
     manifest: dict[str, Any] | None = None
@@ -127,7 +140,7 @@ def audit_verify(path: str) -> None:
                 manifest = obj
                 continue
             events.append(obj)
-    ok, err = Blackboard.verify_audit_chain(events)
+    ok, err = verify_chain(events)
     summary = {
         "path": path,
         "events": len(events),

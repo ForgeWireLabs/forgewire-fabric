@@ -1,4 +1,4 @@
-﻿//! Store trait definitions for ForgeWire Fabric hub persistence.
+//! Store trait definitions for ForgeWire Fabric hub persistence.
 //!
 //! These traits define the durable state contract for the rqlite backend
 //! backends. The hub daemon programs against these traits; the backend is
@@ -89,6 +89,19 @@ pub struct CreateTaskParams {
     /// returns `needs_approval`.
     #[serde(default)]
     pub initial_status: Option<String>,
+    /// M2.5.7 provenance derived by the hub from the registered dispatcher and
+    /// signed request metadata. None of these fields alter the signed v2 core.
+    pub dispatched_by_user: Option<String>,
+    pub dispatched_by_host: Option<String>,
+    pub dispatched_by_agent: Option<String>,
+    pub dispatcher_pubkey_fingerprint: Option<String>,
+    pub approval_id: Option<String>,
+    #[serde(default)]
+    pub policy_decisions: Value,
+    #[serde(default)]
+    pub approvals_required: i64,
+    #[serde(default)]
+    pub approvals_received: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,6 +119,21 @@ pub struct TaskRow {
     pub claimed_at: Option<String>,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
+    pub dispatched_at: String,
+    pub dispatched_by_user: Option<String>,
+    pub dispatched_by_host: Option<String>,
+    pub dispatched_by_agent: Option<String>,
+    pub dispatcher_pubkey_fingerprint: Option<String>,
+    pub claimed_by_runner: Option<String>,
+    pub claimed_by_host: Option<String>,
+    pub wall_seconds: Option<f64>,
+    pub runner_cpu_seconds: Option<f64>,
+    pub policy_decisions: Value,
+    pub approvals_required: i64,
+    pub approvals_received: i64,
+    pub approval_id: Option<String>,
+    pub exit_reason: Option<String>,
+    pub exit_code: Option<i64>,
     pub cancel_requested: bool,
     pub metadata: Value,
     pub todo_id: Option<String>,
@@ -140,8 +168,10 @@ pub struct TaskRow {
 }
 
 /// Atomic claim result — either the task was claimed or someone else got it.
+/// `TaskRow` is boxed so the no-data `AlreadyClaimed` variant doesn't force
+/// every `ClaimResult` to be as large as the largest variant.
 pub enum ClaimResult {
-    Claimed(TaskRow),
+    Claimed(Box<TaskRow>),
     AlreadyClaimed,
 }
 
@@ -149,11 +179,32 @@ pub enum ClaimResult {
 pub trait TaskStore: Send + Sync {
     async fn create_task(&self, params: CreateTaskParams, now: &str) -> StoreResult<TaskRow>;
     async fn get_task(&self, id: i64) -> StoreResult<TaskRow>;
-    async fn list_tasks(&self, status_filter: Option<&str>, limit: i64) -> StoreResult<Vec<TaskRow>>;
+    async fn list_tasks(
+        &self,
+        status_filter: Option<&str>,
+        limit: i64,
+    ) -> StoreResult<Vec<TaskRow>>;
     /// Atomic CAS: claim task only if status is still 'queued'.
-    async fn claim_task(&self, task_id: i64, worker_id: &str, now: &str) -> StoreResult<ClaimResult>;
+    async fn claim_task(
+        &self,
+        task_id: i64,
+        worker_id: &str,
+        hostname: &str,
+        now: &str,
+    ) -> StoreResult<ClaimResult>;
     async fn mark_running(&self, task_id: i64, now: &str) -> StoreResult<TaskRow>;
     async fn cancel_task(&self, task_id: i64, now: &str) -> StoreResult<TaskRow>;
+    async fn append_task_policy_decision(
+        &self,
+        task_id: i64,
+        decision: Value,
+    ) -> StoreResult<TaskRow>;
+    async fn record_task_approval_decision(
+        &self,
+        approval_id: &str,
+        decision: Value,
+        approved: bool,
+    ) -> StoreResult<Option<TaskRow>>;
     async fn count_tasks(&self) -> StoreResult<i64>;
 }
 
@@ -170,6 +221,10 @@ pub struct SubmitResultParams {
     pub test_summary: Option<String>,
     pub log_tail: Option<String>,
     pub error: Option<String>,
+    pub wall_seconds: Option<f64>,
+    pub runner_cpu_seconds: Option<f64>,
+    pub exit_reason: String,
+    pub exit_code: Option<i64>,
 }
 
 #[async_trait]
@@ -230,7 +285,12 @@ pub trait RunnerStore: Send + Sync {
     async fn get_runner(&self, runner_id: &str) -> StoreResult<RunnerRow>;
     async fn list_runners(&self) -> StoreResult<Vec<RunnerRow>>;
     async fn runner_public_key(&self, runner_id: &str) -> StoreResult<Option<String>>;
-    async fn heartbeat_runner(&self, runner_id: &str, data: Value, now: &str) -> StoreResult<RunnerRow>;
+    async fn heartbeat_runner(
+        &self,
+        runner_id: &str,
+        data: Value,
+        now: &str,
+    ) -> StoreResult<RunnerRow>;
     async fn request_drain(&self, runner_id: &str) -> StoreResult<RunnerRow>;
     async fn request_undrain(&self, runner_id: &str) -> StoreResult<RunnerRow>;
     async fn delete_runner(&self, runner_id: &str) -> StoreResult<RunnerRow>;
@@ -262,8 +322,18 @@ pub trait DispatcherStore: Send + Sync {
 
 #[async_trait]
 pub trait NonceStore: Send + Sync {
-    async fn consume_dispatcher_nonce(&self, dispatcher_id: &str, nonce: &str, now: &str) -> StoreResult<()>;
-    async fn consume_runner_nonce(&self, runner_id: &str, nonce: &str, now: &str) -> StoreResult<()>;
+    async fn consume_dispatcher_nonce(
+        &self,
+        dispatcher_id: &str,
+        nonce: &str,
+        now: &str,
+    ) -> StoreResult<()>;
+    async fn consume_runner_nonce(
+        &self,
+        runner_id: &str,
+        nonce: &str,
+        now: &str,
+    ) -> StoreResult<()>;
 }
 
 // -- Stream store ------------------------------------------------------------
@@ -280,9 +350,27 @@ pub struct StreamLine {
 
 #[async_trait]
 pub trait StreamStore: Send + Sync {
-    async fn append_stream(&self, task_id: i64, worker_id: &str, channel: &str, line: &str, now: &str) -> StoreResult<StreamLine>;
-    async fn append_stream_bulk(&self, task_id: i64, worker_id: &str, entries: &[(String, String)], now: &str) -> StoreResult<Vec<StreamLine>>;
-    async fn streams_since(&self, task_id: i64, after_seq: i64, limit: i64) -> StoreResult<Vec<StreamLine>>;
+    async fn append_stream(
+        &self,
+        task_id: i64,
+        worker_id: &str,
+        channel: &str,
+        line: &str,
+        now: &str,
+    ) -> StoreResult<StreamLine>;
+    async fn append_stream_bulk(
+        &self,
+        task_id: i64,
+        worker_id: &str,
+        entries: &[(String, String)],
+        now: &str,
+    ) -> StoreResult<Vec<StreamLine>>;
+    async fn streams_since(
+        &self,
+        task_id: i64,
+        after_seq: i64,
+        limit: i64,
+    ) -> StoreResult<Vec<StreamLine>>;
 }
 
 // -- Progress store ----------------------------------------------------------
@@ -299,8 +387,16 @@ pub struct ProgressEntry {
 
 #[async_trait]
 pub trait ProgressStore: Send + Sync {
-    async fn append_progress(&self, task_id: i64, worker_id: &str, message: &str, files: Option<Vec<String>>, now: &str) -> StoreResult<ProgressEntry>;
-    async fn progress_since(&self, task_id: i64, after_seq: i64) -> StoreResult<Vec<ProgressEntry>>;
+    async fn append_progress(
+        &self,
+        task_id: i64,
+        worker_id: &str,
+        message: &str,
+        files: Option<Vec<String>>,
+        now: &str,
+    ) -> StoreResult<ProgressEntry>;
+    async fn progress_since(&self, task_id: i64, after_seq: i64)
+        -> StoreResult<Vec<ProgressEntry>>;
 }
 
 // -- Audit store -------------------------------------------------------------
@@ -327,6 +423,7 @@ pub trait AuditStore: Send + Sync {
     async fn audit_chain_tail(&self) -> StoreResult<String>;
     /// Append with expected-tail compare-and-swap. Returns `TailConflict`
     /// if another writer appended since we read the tail.
+    #[allow(clippy::too_many_arguments)]
     async fn append_audit_event(
         &self,
         expected_tail: &str,
@@ -339,7 +436,10 @@ pub trait AuditStore: Send + Sync {
     ) -> StoreResult<AuditAppendResult>;
     async fn audit_events_for_task(&self, task_id: i64) -> StoreResult<Vec<AuditEventRow>>;
     async fn audit_events_for_day(&self, day: &str) -> StoreResult<Vec<AuditEventRow>>;
-    async fn verify_audit_chain(&self, events: &[AuditEventRow]) -> StoreResult<(bool, Option<String>)>;
+    async fn verify_audit_chain(
+        &self,
+        events: &[AuditEventRow],
+    ) -> StoreResult<(bool, Option<String>)>;
 }
 
 // -- Approval store ----------------------------------------------------------
@@ -362,10 +462,31 @@ pub struct ApprovalRow {
 
 #[async_trait]
 pub trait ApprovalStore: Send + Sync {
-    async fn create_or_get_pending_approval(&self, envelope_hash: &str, decision: Value, task_label: &str, branch: Option<&str>, scope_globs: Vec<String>, dispatcher_id: Option<&str>, now: &str) -> StoreResult<(String, bool)>;
+    #[allow(clippy::too_many_arguments)]
+    async fn create_or_get_pending_approval(
+        &self,
+        envelope_hash: &str,
+        decision: Value,
+        task_label: &str,
+        branch: Option<&str>,
+        scope_globs: Vec<String>,
+        dispatcher_id: Option<&str>,
+        now: &str,
+    ) -> StoreResult<(String, bool)>;
     async fn consume_approval(&self, approval_id: &str, envelope_hash: &str) -> StoreResult<bool>;
-    async fn resolve_approval(&self, approval_id: &str, status: &str, approver: Option<&str>, reason: Option<&str>, now: &str) -> StoreResult<ApprovalRow>;
-    async fn list_approvals(&self, status: Option<&str>, limit: i64) -> StoreResult<Vec<ApprovalRow>>;
+    async fn resolve_approval(
+        &self,
+        approval_id: &str,
+        status: &str,
+        approver: Option<&str>,
+        reason: Option<&str>,
+        now: &str,
+    ) -> StoreResult<ApprovalRow>;
+    async fn list_approvals(
+        &self,
+        status: Option<&str>,
+        limit: i64,
+    ) -> StoreResult<Vec<ApprovalRow>>;
     async fn get_approval(&self, approval_id: &str) -> StoreResult<Option<ApprovalRow>>;
 }
 
@@ -381,10 +502,28 @@ pub struct SecretMetadata {
 
 #[async_trait]
 pub trait SecretStore: Send + Sync {
-    async fn put_secret(&self, name: &str, encrypted_value: &str, now: &str) -> StoreResult<SecretMetadata>;
-    async fn rotate_secret(&self, name: &str, encrypted_value: &str, now: &str) -> StoreResult<SecretMetadata>;
+    async fn put_secret(
+        &self,
+        name: &str,
+        encrypted_value: &str,
+        now: &str,
+    ) -> StoreResult<SecretMetadata>;
+    async fn rotate_secret(
+        &self,
+        name: &str,
+        encrypted_value: &str,
+        now: &str,
+    ) -> StoreResult<SecretMetadata>;
     async fn list_secrets(&self) -> StoreResult<Vec<SecretMetadata>>;
-    async fn resolve_secrets(&self, names: &[String]) -> StoreResult<std::collections::HashMap<String, String>>;
+    /// Return encrypted envelopes only. Decryption is exclusively a hub claim
+    /// concern; persistence implementations must never return a value as if it
+    /// were plaintext.
+    async fn secret_envelopes(
+        &self,
+        names: &[String],
+    ) -> StoreResult<std::collections::HashMap<String, String>>;
+    /// Return every name/envelope pair for ingress and audit redaction.
+    async fn all_secret_envelopes(&self) -> StoreResult<std::collections::HashMap<String, String>>;
     async fn delete_secret(&self, name: &str) -> StoreResult<bool>;
 }
 
@@ -393,9 +532,26 @@ pub trait SecretStore: Send + Sync {
 #[async_trait]
 pub trait LabelStore: Send + Sync {
     async fn get_labels(&self) -> StoreResult<Value>;
-    async fn set_hub_name(&self, name: &str, updated_by: Option<&str>, now: &str) -> StoreResult<()>;
-    async fn set_runner_alias(&self, runner_id: &str, alias: &str, updated_by: Option<&str>, now: &str) -> StoreResult<()>;
-    async fn set_host_alias(&self, hostname: &str, alias: &str, updated_by: Option<&str>, now: &str) -> StoreResult<()>;
+    async fn set_hub_name(
+        &self,
+        name: &str,
+        updated_by: Option<&str>,
+        now: &str,
+    ) -> StoreResult<()>;
+    async fn set_runner_alias(
+        &self,
+        runner_id: &str,
+        alias: &str,
+        updated_by: Option<&str>,
+        now: &str,
+    ) -> StoreResult<()>;
+    async fn set_host_alias(
+        &self,
+        hostname: &str,
+        alias: &str,
+        updated_by: Option<&str>,
+        now: &str,
+    ) -> StoreResult<()>;
 }
 
 // -- Host role store ---------------------------------------------------------
@@ -412,9 +568,60 @@ pub struct HostRoleRow {
 
 #[async_trait]
 pub trait HostRoleStore: Send + Sync {
-    async fn set_host_role(&self, hostname: &str, role: &str, enabled: bool, status: Option<&str>, metadata: Value, now: &str) -> StoreResult<HostRoleRow>;
+    async fn set_host_role(
+        &self,
+        hostname: &str,
+        role: &str,
+        enabled: bool,
+        status: Option<&str>,
+        metadata: Value,
+        now: &str,
+    ) -> StoreResult<HostRoleRow>;
     async fn get_host_role(&self, hostname: &str, role: &str) -> StoreResult<Option<HostRoleRow>>;
     async fn list_host_roles(&self) -> StoreResult<Vec<HostRoleRow>>;
+}
+
+// -- Role-separated bearer tokens (M2.5.6) ---------------------------------
+
+/// Public metadata for a role token. The credential hash is deliberately not
+/// part of this type, so API serialization and audit payloads cannot expose it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RoleTokenRow {
+    pub token_id: String,
+    pub label: String,
+    pub roles: Vec<String>,
+    pub created_at: String,
+    pub created_by: String,
+    pub migrated: bool,
+    pub revoked_at: Option<String>,
+}
+
+#[async_trait]
+pub trait RoleTokenStore: Send + Sync {
+    /// Persist a SHA-256 credential hash. Raw bearer values never cross this
+    /// store boundary.
+    #[allow(clippy::too_many_arguments)]
+    async fn create_role_token(
+        &self,
+        token_id: &str,
+        token_hash: &str,
+        label: &str,
+        roles: &[String],
+        created_by: &str,
+        migrated: bool,
+        now: &str,
+    ) -> StoreResult<RoleTokenRow>;
+
+    /// Resolve a currently-valid token by SHA-256 hash.
+    async fn role_token_by_hash(&self, token_hash: &str) -> StoreResult<Option<RoleTokenRow>>;
+
+    async fn list_role_tokens(&self, include_revoked: bool) -> StoreResult<Vec<RoleTokenRow>>;
+
+    async fn revoke_role_token(
+        &self,
+        token_id: &str,
+        now: &str,
+    ) -> StoreResult<Option<RoleTokenRow>>;
 }
 
 // -- Schema management -------------------------------------------------------
@@ -439,7 +646,13 @@ pub struct NoteRow {
 
 #[async_trait]
 pub trait NoteStore: Send + Sync {
-    async fn post_note(&self, task_id: i64, author: &str, body: &str, now: &str) -> StoreResult<NoteRow>;
+    async fn post_note(
+        &self,
+        task_id: i64,
+        author: &str,
+        body: &str,
+        now: &str,
+    ) -> StoreResult<NoteRow>;
     async fn read_notes(&self, task_id: i64, after_id: i64) -> StoreResult<Vec<NoteRow>>;
 }
 
@@ -462,6 +675,7 @@ pub struct CostRow {
 
 #[async_trait]
 pub trait CostStore: Send + Sync {
+    #[allow(clippy::too_many_arguments)]
     async fn record_cost(
         &self,
         task_id: &str,
@@ -476,11 +690,7 @@ pub trait CostStore: Send + Sync {
         now: &str,
     ) -> StoreResult<CostRow>;
 
-    async fn query_cost(
-        &self,
-        since_iso: Option<&str>,
-        limit: i64,
-    ) -> StoreResult<Vec<CostRow>>;
+    async fn query_cost(&self, since_iso: Option<&str>, limit: i64) -> StoreResult<Vec<CostRow>>;
 }
 
 // -- Budget accumulators (M2.5.3) --------------------------------------------
@@ -572,10 +782,7 @@ pub trait RunnerCapabilityStore: Send + Sync {
     ) -> StoreResult<()>;
 
     /// Capabilities currently advertised by `runner_id`.
-    async fn runner_capabilities(
-        &self,
-        runner_id: &str,
-    ) -> StoreResult<Vec<RunnerCapabilityRow>>;
+    async fn runner_capabilities(&self, runner_id: &str) -> StoreResult<Vec<RunnerCapabilityRow>>;
 
     /// Runners that advertise `name` under `capability_kind`. The capability
     /// router intersects this set with the eligible-runner set when handling
@@ -591,9 +798,76 @@ pub trait RunnerCapabilityStore: Send + Sync {
     async fn delete_runner_capabilities(&self, runner_id: &str) -> StoreResult<()>;
 }
 
+// -- Unified settings -------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SettingsDocument {
+    pub revision: i64,
+    pub value: Value,
+    pub updated_at: Option<String>,
+    pub updated_by: Option<String>,
+}
+
+#[async_trait]
+pub trait SettingsStore: Send + Sync {
+    async fn get_settings_document(&self) -> StoreResult<SettingsDocument>;
+
+    /// Compare-and-swap the complete validated hub overlay. This keeps
+    /// concurrent desktop, VSIX, and CLI mutations from silently overwriting
+    /// one another.
+    async fn put_settings_document(
+        &self,
+        expected_revision: i64,
+        value: &Value,
+        updated_by: &str,
+        now: &str,
+    ) -> StoreResult<SettingsDocument>;
+}
+
+// -- Optional Tier-2 history export ----------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryExportRow {
+    pub stream: String,
+    pub sequence: i64,
+    pub record_id: String,
+    pub occurred_at_ms: i64,
+    pub payload: Value,
+}
+
+#[async_trait]
+pub trait HistoryExportStore: Send + Sync {
+    async fn history_streams(&self) -> StoreResult<Vec<String>>;
+    async fn fetch_history_rows(
+        &self,
+        stream: &str,
+        after_sequence: i64,
+        limit: usize,
+    ) -> StoreResult<Vec<HistoryExportRow>>;
+    async fn history_watermark(&self, stream: &str) -> StoreResult<i64>;
+    async fn commit_history_watermark(
+        &self,
+        stream: &str,
+        sequence: i64,
+        now: &str,
+    ) -> StoreResult<()>;
+}
+
 // -- Composite trait ---------------------------------------------------------
 
 /// The full store contract. A backend implements all sub-traits.
+///
+/// Extended in 114C.4 with the four `fabric-accounts` repository traits
+/// (`AccountRepository`, `CredentialRepository`, `MembershipRepository`,
+/// `SessionRepository`) so `fabric-hub`'s single `Arc<dyn FabricStore>`
+/// handle can also resolve human sessions and memberships -- matching the
+/// plan's rule that store implementations depend on domain contracts, not
+/// the other way around. Extended again in 114C.5 with `AccountOrchestration`
+/// so admin HTTP route handlers (which likewise only hold `Arc<dyn
+/// FabricStore>`) can reach the cross-cutting bootstrap/login/disable/revoke
+/// operations, not just the four CRUD-shaped repository traits. No new
+/// methods are declared here; a backend that already implements all
+/// twenty-four sub-traits satisfies this automatically.
 #[async_trait]
 pub trait FabricStore:
     TaskStore
@@ -608,11 +882,20 @@ pub trait FabricStore:
     + SecretStore
     + LabelStore
     + HostRoleStore
+    + RoleTokenStore
     + NoteStore
     + SchemaStore
     + CostStore
     + BudgetStore
     + RunnerCapabilityStore
+    + SettingsStore
+    + HistoryExportStore
+    + fabric_accounts::repository::AccountRepository
+    + fabric_accounts::repository::CredentialRepository
+    + fabric_accounts::repository::MembershipRepository
+    + fabric_accounts::repository::SessionRepository
+    + fabric_accounts::repository::AccountOrchestration
+    + fabric_accounts::webauthn::ChallengeRepository
     + Send
     + Sync
 {

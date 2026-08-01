@@ -9,8 +9,8 @@
 //! The Python `BudgetEnforcer` keys accumulators as:
 //! - day  = `datetime.strftime("%Y-%m-%d")`           → `"YYYY-MM-DD"`
 //! - week = `f"{iso.year}-W{iso.week:02d}"` from `datetime.isocalendar()`
-//!          → `"YYYY-WNN"` using the **ISO year** (not the calendar year) and
-//!          a zero-padded 2-digit ISO week number.
+//!   → `"YYYY-WNN"` using the **ISO year** (not the calendar year) and
+//!   a zero-padded 2-digit ISO week number.
 //!
 //! These functions must produce byte-identical keys to the Python forms above
 //! for every UTC instant, so the Rust hub's `budget_state` rows and the Python

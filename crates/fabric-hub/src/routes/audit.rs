@@ -9,6 +9,13 @@ use serde_json::{json, Value};
 
 use crate::state::HubState;
 
+owned_router! {
+    pub fn router, ROUTES {
+        "GET" get "/audit/tasks/{task_id}" => audit_for_task;
+        "GET" get "/audit/tail" => audit_tail;
+    }
+}
+
 pub async fn audit_for_task(
     State(state): State<Arc<HubState>>,
     Path(task_id): Path<i64>,
@@ -23,7 +30,9 @@ pub async fn audit_for_task(
         .verify_audit_chain(&events)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(json!({ "events": events, "verified": ok, "error": err })))
+    Ok(Json(
+        json!({ "events": events, "verified": ok, "error": err }),
+    ))
 }
 
 pub async fn audit_tail(

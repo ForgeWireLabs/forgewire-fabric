@@ -36,7 +36,8 @@ use tracing::{info, warn};
 
 /// Markers delimiting the block this reconciler owns in the OS hosts file.
 /// Everything between them is rewritten; everything else is preserved.
-pub const BLOCK_BEGIN: &str = "# forgewire-managed begin (do not edit; rewritten by ForgeWireRunner)";
+pub const BLOCK_BEGIN: &str =
+    "# forgewire-managed begin (do not edit; rewritten by ForgeWireRunner)";
 pub const BLOCK_END: &str = "# forgewire-managed end";
 
 /// Default: drop a directory entry whose presence has been silent this long.
@@ -174,7 +175,11 @@ impl NodeDirectory {
     pub fn unicast_targets(&self, port: u16) -> Vec<SocketAddr> {
         self.entries
             .values()
-            .filter_map(|e| e.ip.parse::<IpAddr>().ok().map(|ip| SocketAddr::new(ip, port)))
+            .filter_map(|e| {
+                e.ip.parse::<IpAddr>()
+                    .ok()
+                    .map(|ip| SocketAddr::new(ip, port))
+            })
             .collect()
     }
 }
@@ -234,10 +239,7 @@ pub fn splice_block(existing: &str, block: &str) -> String {
 ///
 /// Idempotent: running it twice with the same directory is a no-op the second
 /// time (used as a change-detector in the loop).
-pub fn reconcile_hosts_file(
-    hosts_path: &Path,
-    directory: &NodeDirectory,
-) -> std::io::Result<bool> {
+pub fn reconcile_hosts_file(hosts_path: &Path, directory: &NodeDirectory) -> std::io::Result<bool> {
     let existing = std::fs::read_to_string(hosts_path).unwrap_or_default();
     let block = render_block(&directory.host_lines());
     let updated = splice_block(&existing, &block);
@@ -261,11 +263,7 @@ pub fn default_hosts_path() -> PathBuf {
 
 /// Default directory cache path.
 pub fn default_directory_path() -> PathBuf {
-    if cfg!(windows) {
-        PathBuf::from(r"C:\ProgramData\forgewire\fabric-hosts.json")
-    } else {
-        PathBuf::from("/var/lib/forgewire/fabric-hosts.json")
-    }
+    crate::default_state_dir().join("fabric-hosts.json")
 }
 
 /// One directory maintenance cycle: query (broadcast + known-address unicast),
@@ -318,9 +316,7 @@ pub fn directory_tick(
             "reconciled managed hosts block"
         ),
         Ok(false) => {}
-        Err(e) => warn!(
-            "hosts-file reconcile failed (continuing; will retry next cycle): {e}"
-        ),
+        Err(e) => warn!("hosts-file reconcile failed (continuing; will retry next cycle): {e}"),
     }
     dir
 }
@@ -383,9 +379,15 @@ mod tests {
     #[test]
     fn merge_detects_address_change() {
         let mut dir = NodeDirectory::default();
-        dir.merge(&[observed("peer", "PEER", [10, 0, 0, 2], 100, true, "t")], "self");
+        dir.merge(
+            &[observed("peer", "PEER", [10, 0, 0, 2], 100, true, "t")],
+            "self",
+        );
         // Newer record, new IP (a DHCP move).
-        let changed = dir.merge(&[observed("peer", "PEER", [10, 9, 9, 9], 200, true, "t")], "self");
+        let changed = dir.merge(
+            &[observed("peer", "PEER", [10, 9, 9, 9], 200, true, "t")],
+            "self",
+        );
         assert_eq!(changed, vec!["PEER"]);
         assert_eq!(dir.entries["PEER"].ip, "10.9.9.9");
     }
@@ -393,9 +395,15 @@ mod tests {
     #[test]
     fn conflict_keeps_newer_record() {
         let mut dir = NodeDirectory::default();
-        dir.merge(&[observed("peer", "PEER", [10, 0, 0, 2], 200, true, "t")], "self");
+        dir.merge(
+            &[observed("peer", "PEER", [10, 0, 0, 2], 200, true, "t")],
+            "self",
+        );
         // Older record claiming a different IP must be ignored.
-        let changed = dir.merge(&[observed("peer", "PEER", [10, 0, 0, 3], 100, true, "t")], "self");
+        let changed = dir.merge(
+            &[observed("peer", "PEER", [10, 0, 0, 3], 100, true, "t")],
+            "self",
+        );
         assert!(changed.is_empty());
         assert_eq!(dir.entries["PEER"].ip, "10.0.0.2");
     }
@@ -403,7 +411,10 @@ mod tests {
     #[test]
     fn expire_removes_silent_entries() {
         let mut dir = NodeDirectory::default();
-        dir.merge(&[observed("peer", "PEER", [10, 0, 0, 2], 100, true, "t")], "self");
+        dir.merge(
+            &[observed("peer", "PEER", [10, 0, 0, 2], 100, true, "t")],
+            "self",
+        );
         // Force last_seen into the past.
         dir.entries.get_mut("PEER").unwrap().last_seen = now_unix() - 1000;
         let expired = dir.expire(Duration::from_secs(180));
@@ -414,8 +425,14 @@ mod tests {
     #[test]
     fn render_block_is_stable_and_includes_local_alias() {
         let lines = vec![
-            ("10.0.0.2".to_owned(), vec!["A".to_owned(), "A.local".to_owned()]),
-            ("10.0.0.3".to_owned(), vec!["B".to_owned(), "B.local".to_owned()]),
+            (
+                "10.0.0.2".to_owned(),
+                vec!["A".to_owned(), "A.local".to_owned()],
+            ),
+            (
+                "10.0.0.3".to_owned(),
+                vec!["B".to_owned(), "B.local".to_owned()],
+            ),
         ];
         let block = render_block(&lines);
         assert!(block.starts_with(BLOCK_BEGIN));
@@ -433,7 +450,10 @@ mod tests {
 # forgewire-managed end
 192.168.1.5 printer
 ";
-        let block = render_block(&[("10.0.0.2".to_owned(), vec!["A".to_owned(), "A.local".to_owned()])]);
+        let block = render_block(&[(
+            "10.0.0.2".to_owned(),
+            vec!["A".to_owned(), "A.local".to_owned()],
+        )]);
         let out = splice_block(existing, &block);
         assert!(out.contains("127.0.0.1 localhost"));
         assert!(out.contains("192.168.1.5 printer"));
@@ -448,7 +468,10 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("fw_hosts_{}.txt", now_unix()));
         std::fs::write(&tmp, "127.0.0.1 localhost\n").unwrap();
         let mut dir = NodeDirectory::default();
-        dir.merge(&[observed("peer", "PEER", [10, 0, 0, 2], 100, true, "t")], "self");
+        dir.merge(
+            &[observed("peer", "PEER", [10, 0, 0, 2], 100, true, "t")],
+            "self",
+        );
 
         let changed1 = reconcile_hosts_file(&tmp, &dir).unwrap();
         assert!(changed1, "first reconcile should change the file");
@@ -465,7 +488,10 @@ mod tests {
     fn directory_save_load_roundtrip() {
         let tmp = std::env::temp_dir().join(format!("fw_dir_{}.json", now_unix()));
         let mut dir = NodeDirectory::default();
-        dir.merge(&[observed("peer", "PEER", [10, 0, 0, 2], 100, true, "t")], "self");
+        dir.merge(
+            &[observed("peer", "PEER", [10, 0, 0, 2], 100, true, "t")],
+            "self",
+        );
         dir.save(&tmp).unwrap();
         let loaded = NodeDirectory::load(&tmp);
         assert_eq!(loaded.entries["PEER"].ip, "10.0.0.2");

@@ -10,8 +10,30 @@ import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
 import * as vscode from "vscode";
-import { ApprovalInfo, DispatcherSession, HubClient } from "./hubClient";
 import {
+  beginRefresh,
+  completeRefresh,
+  COMMAND_DESCRIPTORS,
+  DEFAULT_REFRESH_POLICY,
+  VIEW_IDS,
+  detectFabricFeatures,
+  isRefreshDue,
+  type AccountSummaryWireDto,
+  type CommandId,
+  type DispatcherIdentityState,
+  type RefreshPolicy,
+  type RefreshState,
+  type SessionSecrets,
+  type SessionState,
+  type ViewId,
+} from "@forgewire/fabric-client-core";
+import { vscodeCommandAvailability, type VscodeGatingState, type VscodeSelection } from "./commandGating";
+import { ApprovalInfo, DispatcherSession, HubClient } from "./hubClient";
+import { DEFAULT_SESSION_PROFILE_ID, VscodeSessionCredentialStore } from "./humanSession";
+import { WebauthnBridgeFlowError, runWebauthnBridgeFlow } from "./webauthnBridgeClient";
+import {
+  AccountNode,
+  AccountProvider,
   AgentsProvider,
   ApprovalNode,
   ApprovalsProvider,
@@ -39,8 +61,14 @@ let secretsProvider: SecretsProvider;
 let settingsProvider: SettingsProvider;
 let tasksProvider: TasksProvider;
 let agentsProvider: AgentsProvider;
+let accountProvider: AccountProvider;
 let refreshTimer: NodeJS.Timeout | undefined;
+// 114C.7 Slice 6d (AC-114B-5): single-flight + backoff-on-failure state for
+// the periodic refresh ticker only -- see tickRefresh()'s own doc comment.
+let refreshState: RefreshState = { inFlight: false, consecutiveFailures: 0 };
 let context: vscode.ExtensionContext;
+let sessionHubToken = "";
+let humanSessionStore: VscodeSessionCredentialStore;
 
 // Active hub state: maintained by probeActiveHub() on every refresh tick.
 let activeClient: HubClient | undefined;
@@ -51,6 +79,19 @@ const snoozedApprovals = new Map<string, SnoozedApproval>();
 // Loaded/generated on activation; may be undefined if Web Crypto is unavailable.
 let dispatcherSession: DispatcherSession | undefined;
 
+// Live command-gating inputs, refreshed each probe tick (see refreshGatingState).
+// These drive commandAvailability() at handler entry and the forgewire.can.*
+// context keys, replacing the previous ad hoc getClient()-truthiness guards.
+let commandAuthorities: ReadonlySet<string> = new Set();
+let commandFeatures: ReadonlySet<string> = new Set();
+// 114C.7 Slice 4c: the signed-in human's account roles (empty when no human
+// session), fed to command gating so requiresHumanRole commands (account
+// administration) fail closed for automation credentials.
+let commandHumanRoles: ReadonlySet<string> = new Set();
+let commandSessionState: SessionState = "misconfigured";
+let commandFreshness: "missing" | "stale" | "live" = "missing";
+let everConnected = false;
+
 // ---------------------------------------------------------------------------
 // activation
 // ---------------------------------------------------------------------------
@@ -59,6 +100,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   context = ctx;
   outputChannel = vscode.window.createOutputChannel("ForgeWire");
   ctx.subscriptions.push(outputChannel);
+  reportCommandContract();
 
   statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
   statusItem.command = "forgewire.connectHub";
@@ -76,7 +118,9 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   // Load or generate a dispatcher identity for signed dispatch (protocol v3+).
   dispatcherSession = await DispatcherSession.loadOrCreate(ctx.secrets);
 
-  hubProvider = new HubProvider(getClient, getProbe);
+  humanSessionStore = new VscodeSessionCredentialStore(ctx.secrets);
+
+  hubProvider = new HubProvider(getClient, getProbe, () => sessionHubToken.length > 0);
   hostsProvider = new HostsProvider(getClient);
   approvalsProvider = new ApprovalsProvider(
     getClient,
@@ -86,67 +130,96 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   costProvider = new CostProvider(getClient);
   auditProvider = new AuditProvider(getClient);
   secretsProvider = new SecretsProvider(getClient);
-  settingsProvider = new SettingsProvider();
+  settingsProvider = new SettingsProvider(() => sessionHubToken.length > 0);
   tasksProvider = new TasksProvider(getClient, 100, ctx);
   agentsProvider = new AgentsProvider(getClient);
+  accountProvider = new AccountProvider(
+    getClient,
+    () => humanSessionStore.get(DEFAULT_SESSION_PROFILE_ID),
+    () => commandFeatures.has("human_accounts"),
+  );
+  const viewProviders: Record<ViewId, vscode.TreeDataProvider<any>> = {
+    "forgewire.hub": hubProvider,
+    "forgewire.hosts": hostsProvider,
+    "forgewire.tasks": tasksProvider,
+    "forgewire.agents": agentsProvider,
+    "forgewire.approvals": approvalsProvider,
+    "forgewire.cost": costProvider,
+    "forgewire.audit": auditProvider,
+    "forgewire.secrets": secretsProvider,
+    "forgewire.settings": settingsProvider,
+    "forgewire.account": accountProvider,
+  };
   ctx.subscriptions.push(
-    vscode.window.registerTreeDataProvider("forgewire.hub", hubProvider),
-    vscode.window.registerTreeDataProvider("forgewire.hosts", hostsProvider),
-    vscode.window.registerTreeDataProvider("forgewire.agents", agentsProvider),
-    vscode.window.registerTreeDataProvider("forgewire.approvals", approvalsProvider),
-    vscode.window.registerTreeDataProvider("forgewire.cost", costProvider),
-    vscode.window.registerTreeDataProvider("forgewire.audit", auditProvider),
-    vscode.window.registerTreeDataProvider("forgewire.secrets", secretsProvider),
-    vscode.window.registerTreeDataProvider("forgewire.tasks", tasksProvider),
-    vscode.window.registerTreeDataProvider("forgewire.settings", settingsProvider)
+    ...VIEW_IDS.map((viewId) =>
+      vscode.window.registerTreeDataProvider(viewId, viewProviders[viewId])
+    )
   );
 
+  const commandHandlers: Record<CommandId, (...args: any[]) => unknown> = {
+    "forgewire.installAgentSuite": () => installAgentSuite(ctx),
+    "forgewire.installCli": installCli,
+    "forgewire.connectHub": connectHub,
+    "forgewire.setToken": setToken,
+    "forgewire.auth.signInWithPasskey": signInWithPasskeyCmd,
+    "forgewire.auth.registerPasskey": registerPasskeyCmd,
+    "forgewire.auth.stepUp": stepUpCmd,
+    "forgewire.auth.signOut": signOutCmd,
+    "forgewire.account.revokeSession": revokeSessionCmd,
+    "forgewire.account.createAccount": createAccountCmd,
+    "forgewire.account.disableAccount": disableAccountCmd,
+    "forgewire.account.enableAccount": enableAccountCmd,
+    "forgewire.account.grantRole": grantRoleCmd,
+    "forgewire.account.revokeRole": revokeRoleCmd,
+    "forgewire.account.deleteAccount": deleteAccountCmd,
+    "forgewire.account.completeDeletion": completeDeletionCmd,
+    "forgewire.copyJoinToken": copyJoinToken,
+    "forgewire.disconnect": disconnect,
+    "forgewire.startHubHere": startHubHere,
+    "forgewire.startRunnerHere": startRunnerHere,
+    "forgewire.dispatchTask": dispatchTask,
+    "forgewire.refresh": refreshAll,
+    "forgewire.cost.refresh": () => costProvider?.refresh(),
+    "forgewire.streamTask": streamTaskCmd,
+    "forgewire.cancelTask": cancelTaskCmd,
+    "forgewire.showTask": showTaskCmd,
+    "forgewire.redispatchTask": redispatchTaskCmd,
+    "forgewire.dismissTask": dismissTaskCmd,
+    "forgewire.cancelStaleTask": cancelStaleTaskCmd,
+    "forgewire.approveApproval": approveApprovalCmd,
+    "forgewire.denyApproval": denyApprovalCmd,
+    "forgewire.deferApproval": deferApprovalCmd,
+    "forgewire.showDeferredApprovals": showDeferredApprovalsCmd,
+    "forgewire.examineApproval": examineApprovalCmd,
+    "forgewire.copyApprovalReference": copyApprovalReferenceCmd,
+    "forgewire.copyToken": copyToken,
+    "forgewire.generateToken": generateToken,
+    "forgewire.openSettings": openSettings,
+    "forgewire.renameHub": renameHub,
+    "forgewire.renameHost": renameHost,
+    "forgewire.renameRunner": renameRunner,
+    "forgewire.pauseRunner": pauseRunner,
+    "forgewire.resumeRunner": resumeRunner,
+    "forgewire.restartRunnerService": restartRunnerService,
+    "forgewire.startRunnerService": startRunnerService,
+    "forgewire.stopRunnerService": stopRunnerService,
+    "forgewire.pinHub": pinHub,
+    "forgewire.unpinHub": unpinHub,
+    "forgewire.promoteHub": promoteHub,
+    "forgewire.demoteHub": demoteHub,
+    "forgewire.editHubCandidates": editHubCandidates,
+    "forgewire.dr.installBackupTask": drInstallBackupTask,
+    "forgewire.dr.installChaosTask": drInstallChaosTask,
+    "forgewire.dr.provisionSshForSystem": drProvisionSshForSystem,
+    "forgewire.dr.runChaosNow": drRunChaosNow,
+    "forgewire.dr.tailLastChaosLog": drTailLastChaosLog,
+    "forgewire.dr.openClusterYaml": drOpenClusterYaml,
+    "forgewire.dr.openSettings": drOpenSettings,
+  };
   ctx.subscriptions.push(
-    vscode.commands.registerCommand("forgewire.installCli", installCli),
-    vscode.commands.registerCommand("forgewire.connectHub", connectHub),
-    vscode.commands.registerCommand("forgewire.setToken", setToken),
-    vscode.commands.registerCommand("forgewire.copyJoinToken", copyJoinToken),
-    vscode.commands.registerCommand("forgewire.disconnect", disconnect),
-    vscode.commands.registerCommand("forgewire.startHubHere", startHubHere),
-    vscode.commands.registerCommand("forgewire.startRunnerHere", startRunnerHere),
-    vscode.commands.registerCommand("forgewire.dispatchTask", dispatchTask),
-    vscode.commands.registerCommand("forgewire.refresh", refreshAll),
-    vscode.commands.registerCommand("forgewire.cost.refresh", () => costProvider?.refresh()),
-    vscode.commands.registerCommand("forgewire.streamTask", streamTaskCmd),
-    vscode.commands.registerCommand("forgewire.cancelTask", cancelTaskCmd),
-    vscode.commands.registerCommand("forgewire.showTask", showTaskCmd),
-    vscode.commands.registerCommand("forgewire.redispatchTask", redispatchTaskCmd),
-    vscode.commands.registerCommand("forgewire.dismissTask", dismissTaskCmd),
-    vscode.commands.registerCommand("forgewire.cancelStaleTask", cancelStaleTaskCmd),
-    vscode.commands.registerCommand("forgewire.approveApproval", approveApprovalCmd),
-    vscode.commands.registerCommand("forgewire.denyApproval", denyApprovalCmd),
-    vscode.commands.registerCommand("forgewire.deferApproval", deferApprovalCmd),
-    vscode.commands.registerCommand("forgewire.showDeferredApprovals", showDeferredApprovalsCmd),
-    vscode.commands.registerCommand("forgewire.examineApproval", examineApprovalCmd),
-    vscode.commands.registerCommand("forgewire.copyApprovalReference", copyApprovalReferenceCmd),
-    vscode.commands.registerCommand("forgewire.copyToken", copyToken),
-    vscode.commands.registerCommand("forgewire.generateToken", generateToken),
-    vscode.commands.registerCommand("forgewire.openSettings", openSettings),
-    vscode.commands.registerCommand("forgewire.renameHub", renameHub),
-    vscode.commands.registerCommand("forgewire.renameHost", renameHost),
-    vscode.commands.registerCommand("forgewire.renameRunner", renameRunner),
-    vscode.commands.registerCommand("forgewire.pauseRunner", pauseRunner),
-    vscode.commands.registerCommand("forgewire.resumeRunner", resumeRunner),
-    vscode.commands.registerCommand("forgewire.restartRunnerService", restartRunnerService),
-    vscode.commands.registerCommand("forgewire.startRunnerService", startRunnerService),
-    vscode.commands.registerCommand("forgewire.stopRunnerService", stopRunnerService),
-    vscode.commands.registerCommand("forgewire.pinHub", pinHub),
-    vscode.commands.registerCommand("forgewire.unpinHub", unpinHub),
-    vscode.commands.registerCommand("forgewire.promoteHub", promoteHub),
-    vscode.commands.registerCommand("forgewire.demoteHub", demoteHub),
-    vscode.commands.registerCommand("forgewire.editHubCandidates", editHubCandidates),
-    vscode.commands.registerCommand("forgewire.dr.installBackupTask", drInstallBackupTask),
-    vscode.commands.registerCommand("forgewire.dr.installChaosTask", drInstallChaosTask),
-    vscode.commands.registerCommand("forgewire.dr.provisionSshForSystem", drProvisionSshForSystem),
-    vscode.commands.registerCommand("forgewire.dr.runChaosNow", drRunChaosNow),
-    vscode.commands.registerCommand("forgewire.dr.tailLastChaosLog", drTailLastChaosLog),
-    vscode.commands.registerCommand("forgewire.dr.openClusterYaml", drOpenClusterYaml),
-    vscode.commands.registerCommand("forgewire.dr.openSettings", drOpenSettings)
+    ...COMMAND_DESCRIPTORS.map(({ id }) =>
+      vscode.commands.registerCommand(id, commandHandlers[id])
+    )
   );
 
   ctx.subscriptions.push(
@@ -173,6 +246,110 @@ export function deactivate(): void {
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+function reportCommandContract(): void {
+  const counts = { core: 0, equivalent: 0, vscode_specific: 0 };
+  for (const descriptor of COMMAND_DESCRIPTORS) {
+    counts[descriptor.parityClass]++;
+  }
+  outputChannel.appendLine(
+    `[command-contract] ${COMMAND_DESCRIPTORS.length} commands: ` +
+      `${counts.core} core, ${counts.equivalent} equivalent, ` +
+      `${counts.vscode_specific} VS Code-specific.`
+  );
+  for (const descriptor of COMMAND_DESCRIPTORS) {
+    if (descriptor.parityClass === "vscode_specific") {
+      outputChannel.appendLine(
+        `[command-contract] ${descriptor.id} desktop alternative: ` +
+          `${descriptor.desktopAlternative ?? "not documented"}`
+      );
+    }
+  }
+}
+
+const AGENT_SUITE_FILES = {
+  chatmodes: [
+    "forgewire-dispatcher.chatmode.md",
+    "forgewire-runner.chatmode.md",
+    "forgewire-approver.chatmode.md",
+    "forgewire-observer.chatmode.md",
+  ],
+  skills: [
+    "dispatch-test-fix.prompt.md",
+    "dispatch-docs-sync.prompt.md",
+    "bisect-regression.prompt.md",
+    "triage-pending-approvals.prompt.md",
+    "replay-with-cheaper-model.prompt.md",
+    "enroll-runner.prompt.md",
+    "dispatch-cost-aware.prompt.md",
+  ],
+} as const;
+
+async function installAgentSuite(ctx: vscode.ExtensionContext): Promise<void> {
+  const folders = vscode.workspace.workspaceFolders;
+  if (!folders?.length) {
+    void vscode.window.showErrorMessage(
+      "Open a workspace before installing the ForgeWire agent suite."
+    );
+    return;
+  }
+
+  const selected = folders.length === 1
+    ? folders[0]
+    : await vscode.window.showWorkspaceFolderPick({
+        placeHolder: "Choose the workspace that will receive the ForgeWire agent suite",
+      });
+  if (!selected) return;
+
+  const copies = [
+    ...AGENT_SUITE_FILES.chatmodes.map((name) => ({
+      source: path.join(ctx.extensionPath, "chatmodes", name),
+      target: path.join(selected.uri.fsPath, ".github", "chatmodes", name),
+    })),
+    ...AGENT_SUITE_FILES.skills.map((name) => ({
+      source: path.join(ctx.extensionPath, "skills", name),
+      target: path.join(selected.uri.fsPath, ".github", "prompts", name),
+    })),
+  ];
+
+  const conflicts: string[] = [];
+  for (const copy of copies) {
+    if (!fs.existsSync(copy.target)) continue;
+    const [sourceBody, targetBody] = await Promise.all([
+      fs.promises.readFile(copy.source, "utf8"),
+      fs.promises.readFile(copy.target, "utf8"),
+    ]);
+    if (sourceBody !== targetBody) conflicts.push(path.basename(copy.target));
+  }
+
+  let replace = false;
+  if (conflicts.length) {
+    const choice = await vscode.window.showWarningMessage(
+      `${conflicts.length} ForgeWire agent-suite file(s) have local changes.`,
+      "Install missing only",
+      "Replace ForgeWire files",
+      "Cancel"
+    );
+    if (!choice || choice === "Cancel") return;
+    replace = choice === "Replace ForgeWire files";
+  }
+
+  let written = 0;
+  let preserved = 0;
+  for (const copy of copies) {
+    if (fs.existsSync(copy.target) && conflicts.includes(path.basename(copy.target)) && !replace) {
+      preserved++;
+      continue;
+    }
+    await fs.promises.mkdir(path.dirname(copy.target), { recursive: true });
+    await fs.promises.copyFile(copy.source, copy.target);
+    written++;
+  }
+
+  void vscode.window.showInformationMessage(
+    `ForgeWire agent suite installed: ${written} file(s) updated, ${preserved} local file(s) preserved.`
+  );
+}
 
 function getClient(): HubClient | undefined {
   // Once a probe has run, trust its election: activeClient is the hub that was
@@ -221,13 +398,54 @@ function labelForUrl(url: string): string {
   }
 }
 
+function refreshPolicyFromConfig(): RefreshPolicy {
+  const cfg = vscode.workspace.getConfiguration("forgewire");
+  const configuredMs = Math.max(2, cfg.get<number>("refreshIntervalSeconds") ?? 10) * 1000;
+  // No foreground/background distinction is tracked today (no reliable
+  // "panel is visible" signal), so both use the same configured cadence;
+  // maximumBackoffMs stays >= that cadence so validateRefreshPolicy's
+  // ordering invariant always holds regardless of the configured value.
+  return {
+    foregroundMs: configuredMs,
+    backgroundMs: configuredMs,
+    maximumBackoffMs: Math.max(configuredMs, DEFAULT_REFRESH_POLICY.maximumBackoffMs),
+    backoffMultiplier: DEFAULT_REFRESH_POLICY.backoffMultiplier,
+  };
+}
+
+/**
+ * 114C.7 Slice 6d (AC-114B-5): adopts resilience.ts's single-flight +
+ * backoff-on-failure state machine for the periodic ticker specifically.
+ * Before this, a bare `setInterval(refreshAll, seconds*1000)` had no overlap
+ * guard at all -- a slow `probeAndRefresh()` could still be running when the
+ * next tick fired, stacking concurrent hub probes
+ * (known_reference_defects: vsix-overlapping-refresh). The ticker still
+ * fires at the same configured cadence as before; `isRefreshDue` decides
+ * whether *this* tick should actually refresh, which only differs from
+ * "always yes" once consecutive failures push the backoff delay beyond that
+ * cadence, at which point some ticks are correctly skipped instead of
+ * hammering an unreachable hub every single tick forever. The many explicit
+ * `refreshAll()` call sites elsewhere (after a mutation completes) are
+ * deliberately NOT routed through this gate -- those reflect "show the
+ * result of what I just did" and must keep refreshing unconditionally, not
+ * silently no-op because a periodic tick happens to be in flight.
+ */
 function scheduleRefresh(): void {
   if (refreshTimer) {
     clearInterval(refreshTimer);
   }
-  const cfg = vscode.workspace.getConfiguration("forgewire");
-  const seconds = Math.max(2, cfg.get<number>("refreshIntervalSeconds") ?? 10);
-  refreshTimer = setInterval(refreshAll, seconds * 1000);
+  const policy = refreshPolicyFromConfig();
+  refreshTimer = setInterval(() => void tickRefresh(policy), policy.foregroundMs);
+}
+
+async function tickRefresh(policy: RefreshPolicy): Promise<void> {
+  const now = Date.now();
+  if (!isRefreshDue(refreshState, now, policy, "foreground")) {
+    return;
+  }
+  refreshState = beginRefresh(refreshState, now);
+  const reachable = await probeAndRefresh();
+  refreshState = completeRefresh(refreshState, reachable, Date.now());
 }
 
 function refreshAll(): void {
@@ -236,7 +454,7 @@ function refreshAll(): void {
   void probeAndRefresh();
 }
 
-async function probeAndRefresh(): Promise<void> {
+async function probeAndRefresh(): Promise<boolean> {
   try {
     const probe = await HubClient.probe();
     const prevUrl = activeClient?.url;
@@ -249,6 +467,19 @@ async function probeAndRefresh(): Promise<void> {
   } catch (err) {
     outputChannel.appendLine(`probe failed: ${err}`);
   }
+  if (activeClient) {
+    const [settings, history] = await Promise.allSettled([
+      activeClient.getSettings(),
+      activeClient.getHistoryStatus(),
+    ]);
+    settingsProvider?.setHubState(
+      settings.status === "fulfilled" ? settings.value : null,
+      history.status === "fulfilled" ? history.value : null,
+    );
+  } else {
+    settingsProvider?.setHubState(null, null);
+  }
+  await refreshGatingState();
   updateStatus();
   hubProvider?.refresh();
   tasksProvider?.refresh();
@@ -258,16 +489,209 @@ async function probeAndRefresh(): Promise<void> {
   costProvider?.refresh();
   auditProvider?.refresh();
   secretsProvider?.refresh();
+  // Isolated like secretsProvider: its own getChildren catches account-fetch
+  // failures and never feeds the global status computation.
+  accountProvider?.refresh();
+  return Boolean(activeClient);
+}
+
+/**
+ * Recompute the command-gating inputs from the active hub. VS Code has no
+ * per-resource freshness cache (it reads live each tick), so freshness is a
+ * single tri-state: reachable-now / last-known / never. Authorities are the
+ * hub's authoritative answer (GET /whoami); an older hub without the route, or
+ * an unauthorized credential, yields no authorities and every authority-gated
+ * command fails closed -- the correct fail-safe posture.
+ */
+async function refreshGatingState(): Promise<void> {
+  const client = getClient();
+  if (!client) {
+    commandAuthorities = new Set();
+    commandFeatures = new Set();
+    commandHumanRoles = new Set();
+    commandSessionState = sessionHubToken.length > 0 ? "offline" : "misconfigured";
+    commandFreshness = everConnected ? "stale" : "missing";
+    applyLocalFeatures();
+    void publishCommandContextKeys();
+    return;
+  }
+  const [health, who, authPolicy] = await Promise.allSettled([
+    client.healthz(),
+    client.whoami(),
+    // 114C.7 Slice 6e (AC-114B-5 follow-up, discovered while adopting
+    // auth.ts): `human_accounts` is deliberately advertisement-only in
+    // detectFabricFeatures (see features.ts) -- it can never be inferred
+    // from protocol version alone. Without this probe, `commandFeatures`
+    // never contained "human_accounts" at all, which made every
+    // `feature: "human_accounts"` command (including every admin account
+    // command, via `guardCommand`) fail closed with "Required feature is
+    // unavailable" regardless of hub support or role -- a real, live bug,
+    // not a hypothetical one. `GET /auth-policy` is public and exists only
+    // on a hub with 114C's human-accounts routes at all, so a fulfilled
+    // result (any body, including bootstrap_open: false) is exactly the
+    // "this hub supports human accounts" signal.
+    client.authPolicy(),
+  ]);
+  if (health.status === "fulfilled") {
+    everConnected = true;
+    commandFeatures = detectFabricFeatures({
+      protocolVersion: health.value.protocol_version,
+      advertised: authPolicy.status === "fulfilled" ? ["human_accounts"] : [],
+    });
+    commandFreshness = "live";
+    // whoami rejects with the hub's typed auth error message on 401/403.
+    if (who.status === "fulfilled") {
+      commandAuthorities = new Set(who.value.authorities);
+      commandSessionState = "connected";
+    } else {
+      commandAuthorities = new Set();
+      const message = String(who.reason ?? "").toLowerCase();
+      commandSessionState = message.includes("401") || message.includes("403") || message.includes("unauthor")
+        ? "unauthorized"
+        : "connected";
+    }
+    commandHumanRoles = await loadHumanRoles(client);
+  } else {
+    commandAuthorities = new Set();
+    commandFeatures = new Set();
+    commandHumanRoles = new Set();
+    commandSessionState = "offline";
+    commandFreshness = everConnected ? "stale" : "missing";
+  }
+  applyLocalFeatures();
+  void publishCommandContextKeys();
+}
+
+/**
+ * The signed-in human's own account roles (whoami above reports the *hub
+ * token*'s roles, an automation credential -- a human's account roles come
+ * from their session via GET /auth/me). Empty when no human session is
+ * stored or the fetch fails, so requiresHumanRole account-admin commands fail
+ * closed. This is the only place human roles enter command gating.
+ */
+async function loadHumanRoles(client: HubClient): Promise<ReadonlySet<string>> {
+  const session = await humanSessionStore.get(DEFAULT_SESSION_PROFILE_ID);
+  if (!session) return new Set();
+  try {
+    const me = await client.authMe(session.accessSecret);
+    return new Set(me.roles);
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * Merge client-local capabilities into the hub-derived feature set. The
+ * `disaster-recovery` capability is *not* a hub protocol feature (the hub has
+ * no such concept) -- it is local tooling: the DR commands drive PowerShell
+ * scripts from a `config/cluster.yaml` + `scripts/dr` checkout. So it is
+ * present exactly when that checkout is locatable, independent of hub state.
+ */
+function applyLocalFeatures(): void {
+  if (findClusterRepoRoot()) {
+    commandFeatures = new Set([...commandFeatures, "disaster-recovery"]);
+  }
+}
+
+/** The dispatcher identity is a Dispatcher-purpose key or nothing (VS Code has
+ *  no other identity kind), so the three-state reduces to two here. */
+function dispatcherIdentityStateForVscode(): DispatcherIdentityState {
+  return dispatcherSession ? "dispatcher" : "missing";
+}
+
+function gatingState(): VscodeGatingState {
+  return {
+    sessionState: commandSessionState,
+    features: commandFeatures,
+    authorities: commandAuthorities,
+    identity: dispatcherIdentityStateForVscode(),
+    freshness: commandFreshness,
+    humanRoles: commandHumanRoles,
+  };
+}
+
+/**
+ * Evaluate a command and, if it is unavailable, surface the hub-aligned reason
+ * and return false so the handler can no-op. The single guard every wired
+ * handler calls after resolving its selection.
+ */
+/** The active hub as a `{kind:"hub"}` selection. Hub-scoped commands
+ *  (rename/promote/demote) act on the active hub rather than a picked tree
+ *  node, so the "selection" is synthesized from the active client. */
+function hubSelection(): VscodeSelection | undefined {
+  const client = getClient();
+  return client ? { kind: "hub", id: client.url } : undefined;
+}
+
+function guardCommand(id: CommandId, selection?: VscodeSelection): boolean {
+  const availability = vscodeCommandAvailability(id, gatingState(), selection);
+  if (!availability.enabled) {
+    void vscode.window.showWarningMessage(availability.reason ?? "This action is currently unavailable.");
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Publish `forgewire.can.<id>` context keys for the authority/session/feature/
+ * identity/freshness gate of each command, so package.json `when` clauses can
+ * hide or disable menu items. Selection-status is intentionally *not* folded
+ * in here (it is per-invocation and belongs to the `viewItem` match in the
+ * `when` clause); this key reflects the credential/session capability, and the
+ * handler guard applies the full check including selection status.
+ */
+async function publishCommandContextKeys(): Promise<void> {
+  const state = gatingState();
+  await Promise.all(
+    COMMAND_DESCRIPTORS.map((descriptor) => {
+      // Evaluate with a synthetic satisfying selection so the key reflects only
+      // the credential/session gate, not whether something is selected.
+      const selection: VscodeSelection | undefined = descriptor.selectionKind === undefined
+        ? undefined
+        : { kind: descriptor.selectionKind, id: "context-probe", status: descriptor.selectionStatuses?.[0] };
+      const availability = vscodeCommandAvailability(descriptor.id, state, selection);
+      return vscode.commands.executeCommand("setContext", `forgewire.can.${descriptor.id}`, availability.enabled);
+    }),
+  );
 }
 
 async function hydrateTokenFromSecret(): Promise<void> {
   const cfg = vscode.workspace.getConfiguration("forgewire");
-  if ((cfg.get<string>("hubToken") ?? "").trim().length > 0) {
-    return;
+  const configured = (cfg.get<string>("hubToken") ?? "").trim();
+  const stored = ((await context.secrets.get(SECRET_TOKEN_KEY)) ?? "").trim();
+  // An explicitly configured legacy token wins once, then is moved into the
+  // secret store and removed from plaintext configuration.
+  const token = configured || stored;
+  if (token) {
+    await storeSecretToken(token);
   }
-  const stored = await context.secrets.get(SECRET_TOKEN_KEY);
-  if (stored) {
-    await cfg.update("hubToken", stored, vscode.ConfigurationTarget.Global);
+  if (configured) {
+    await clearPlaintextTokenConfiguration(cfg);
+  }
+}
+
+async function storeSecretToken(token: string): Promise<void> {
+  sessionHubToken = token.trim();
+  HubClient.setSecretStorageToken(sessionHubToken);
+  if (sessionHubToken) {
+    await context.secrets.store(SECRET_TOKEN_KEY, sessionHubToken);
+  } else {
+    await context.secrets.delete(SECRET_TOKEN_KEY);
+  }
+}
+
+async function clearPlaintextTokenConfiguration(
+  cfg: vscode.WorkspaceConfiguration
+): Promise<void> {
+  const value = cfg.inspect<string>("hubToken");
+  if (value?.workspaceFolderValue !== undefined) {
+    await cfg.update("hubToken", undefined, vscode.ConfigurationTarget.WorkspaceFolder);
+  }
+  if (value?.workspaceValue !== undefined) {
+    await cfg.update("hubToken", undefined, vscode.ConfigurationTarget.Workspace);
+  }
+  if (value?.globalValue !== undefined) {
+    await cfg.update("hubToken", undefined, vscode.ConfigurationTarget.Global);
   }
 }
 
@@ -335,8 +759,7 @@ async function connectHub(): Promise<void> {
     return;
   }
   await cfg.update("hubUrl", url.trim(), vscode.ConfigurationTarget.Global);
-  await cfg.update("hubToken", token.trim(), vscode.ConfigurationTarget.Global);
-  await context.secrets.store(SECRET_TOKEN_KEY, token.trim());
+  await storeSecretToken(token);
 
   const client = HubClient.fromConfig();
   if (!client) {
@@ -367,18 +790,410 @@ async function setToken(): Promise<void> {
   if (!token) {
     return;
   }
-  await vscode.workspace
-    .getConfiguration("forgewire")
-    .update("hubToken", token.trim(), vscode.ConfigurationTarget.Global);
-  await context.secrets.store(SECRET_TOKEN_KEY, token.trim());
+  await storeSecretToken(token);
   vscode.window.showInformationMessage("ForgeWire: hub token updated.");
   updateStatus();
   refreshAll();
 }
 
+/**
+ * Runs a bridge flow (114C.6 Slice 5c) inside a cancellable progress
+ * notification and reports the result. `onOk` handles only the success case;
+ * the ceremony-failed and flow-never-completed cases are handled once, here,
+ * so both commands report failures the same way rather than each re-deriving
+ * "was this a cancel, a timeout, or a real error."
+ */
+async function runBridgeCommand(
+  title: string,
+  mode: "login" | "register",
+  onOk: (outcome: Extract<Awaited<ReturnType<typeof runWebauthnBridgeFlow>>, { status: "ok" }>) => Promise<void>
+): Promise<void> {
+  const client = getClient();
+  if (!client) {
+    vscode.window.showWarningMessage("ForgeWire: connect to a hub first.");
+    return;
+  }
+  try {
+    const outcome = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title, cancellable: true },
+      (_progress, token) => runWebauthnBridgeFlow(client.url, mode, token)
+    );
+    if (outcome.status === "error") {
+      vscode.window.showErrorMessage(`ForgeWire: ${outcome.message}`);
+      return;
+    }
+    await onOk(outcome);
+  } catch (err) {
+    // A user-initiated cancel is not a failure worth a red toast.
+    if (err instanceof WebauthnBridgeFlowError && err.message === "Cancelled.") return;
+    vscode.window.showErrorMessage(
+      `ForgeWire: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+
+async function signInWithPasskeyCmd(): Promise<void> {
+  await runBridgeCommand("ForgeWire: waiting for the browser…", "login", async (outcome) => {
+    if (outcome.mode !== "login") return;
+    await humanSessionStore.set(DEFAULT_SESSION_PROFILE_ID, {
+      sessionId: outcome.session.sessionId,
+      accessSecret: outcome.session.accessSecret,
+      refreshSecret: outcome.session.refreshSecret,
+    });
+    accountProvider?.refresh();
+    vscode.window.showInformationMessage("ForgeWire: signed in with a passkey.");
+  });
+}
+
+async function registerPasskeyCmd(): Promise<void> {
+  await runBridgeCommand("ForgeWire: waiting for the browser…", "register", async (outcome) => {
+    if (outcome.mode !== "register") return;
+    // Registration signs in inside the browser page itself and does not
+    // return a session (see webauthn_bridge.js's runRegister) -- nothing to
+    // store here, only to report.
+    vscode.window.showInformationMessage("ForgeWire: passkey registered.");
+  });
+}
+
+/**
+ * 114C.7 Slice 4c-3: run the true in-place step-up ceremony and return the
+ * elevated session, or `undefined` on cancel/failure (already surfaced to the
+ * user). Credential relay: the VSIX holds the session bearer and makes the
+ * step_up_options/verify calls itself; the browser only runs
+ * navigator.credentials.get on the public challenge and returns the assertion,
+ * so the access secret never enters the browser. On success the hub elevates
+ * the session to aal2 in place and rotates its access secret, which is
+ * persisted here (keeping the same sessionId/refreshSecret). Returned so a
+ * caller (e.g. account deletion in 4c-3b) can chain a sensitive action on a
+ * freshly-stepped-up session.
+ */
+async function stepUp(): Promise<SessionSecrets | undefined> {
+  const session = await humanSessionStore.get(DEFAULT_SESSION_PROFILE_ID);
+  const client = getClient();
+  if (!session || !client) {
+    vscode.window.showWarningMessage("ForgeWire: sign in first.");
+    return undefined;
+  }
+  let options: { challenge_id: string; options_token: string; public_key: unknown };
+  try {
+    // The client makes this authenticated call itself (it has the bearer);
+    // AssuranceTooLow (no passkey to step up with) surfaces here via the
+    // typed-auth boundary, never a raw body.
+    options = await client.stepUpOptions(session.accessSecret);
+  } catch (err) {
+    vscode.window.showErrorMessage(`ForgeWire: ${err instanceof Error ? err.message : String(err)}`);
+    return undefined;
+  }
+  let outcome: Awaited<ReturnType<typeof runWebauthnBridgeFlow>>;
+  try {
+    outcome = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: "ForgeWire: verify with your passkey…", cancellable: true },
+      // Only the public request challenge crosses to the browser.
+      (_progress, token) => runWebauthnBridgeFlow(client.url, "step-up", token, JSON.stringify(options.public_key)),
+    );
+  } catch (err) {
+    if (err instanceof WebauthnBridgeFlowError && err.message === "Cancelled.") return undefined;
+    vscode.window.showErrorMessage(`ForgeWire: ${err instanceof Error ? err.message : String(err)}`);
+    return undefined;
+  }
+  if (outcome.status === "error") {
+    vscode.window.showErrorMessage(`ForgeWire: ${outcome.message}`);
+    return undefined;
+  }
+  if (outcome.mode !== "step-up") return undefined;
+  let verified: { access_secret: string };
+  try {
+    // The client completes verification itself with the relayed assertion.
+    verified = await client.stepUpVerify(session.accessSecret, options.challenge_id, options.options_token, outcome.credential);
+  } catch (err) {
+    vscode.window.showErrorMessage(`ForgeWire: ${err instanceof Error ? err.message : String(err)}`);
+    return undefined;
+  }
+  const elevated: SessionSecrets = {
+    sessionId: session.sessionId,
+    accessSecret: verified.access_secret,
+    refreshSecret: session.refreshSecret,
+  };
+  await humanSessionStore.set(DEFAULT_SESSION_PROFILE_ID, elevated);
+  accountProvider?.refresh();
+  return elevated;
+}
+
+async function stepUpCmd(): Promise<void> {
+  const elevated = await stepUp();
+  if (elevated) vscode.window.showInformationMessage("ForgeWire: verified — your session is elevated.");
+}
+
+/**
+ * 114C.7 Slice 4a: sign out the stored human session. Best-effort hub revoke
+ * (POST /auth/logout via HubClient.authLogout) followed by an *unconditional*
+ * clear of the platform credential store -- the local credential is removed
+ * even if the hub is unreachable or the revoke fails, so "sign out" always
+ * leaves this machine signed out. The session's own access secret is the
+ * bearer for its revoke, matching every other self-service auth route.
+ */
+async function signOutCmd(): Promise<void> {
+  const session = await humanSessionStore.get(DEFAULT_SESSION_PROFILE_ID);
+  if (!session) {
+    vscode.window.showInformationMessage("ForgeWire: not signed in.");
+    return;
+  }
+  const client = getClient();
+  if (client) {
+    try {
+      await client.authLogout(session.accessSecret, session.sessionId);
+    } catch (err) {
+      // Non-fatal: the local credential is cleared regardless below, so the
+      // machine ends up signed out even if the hub revoke could not be
+      // delivered. Surface it without a raw body (authLogout throws the
+      // typed-auth boundary's generic/typed message, never the raw response).
+      outputChannel.appendLine(`sign-out: hub revoke failed (clearing local session anyway): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  await humanSessionStore.delete(DEFAULT_SESSION_PROFILE_ID);
+  accountProvider?.refresh();
+  vscode.window.showInformationMessage("ForgeWire: signed out.");
+}
+
+/**
+ * 114C.7 Slice 4b: revoke one of the caller's *other* sessions from the
+ * Account view's per-session context menu. Invoked with the session tree
+ * node; the current session is excluded by the menu `when` clause
+ * (contextValue `account.session.current`, not `account.session`), and this
+ * re-checks it defensively -- ending the window's own session is what Sign
+ * Out is for. The caller's own access secret authorizes the revoke (the hub's
+ * revoke_session allows owner-or-admin).
+ */
+async function revokeSessionCmd(node?: AccountNode): Promise<void> {
+  if (!node || node.kind !== "session") {
+    vscode.window.showWarningMessage("ForgeWire: revoke a session from the Account view.");
+    return;
+  }
+  if (node.session.current) {
+    vscode.window.showWarningMessage("ForgeWire: use Sign Out to end the current session.");
+    return;
+  }
+  if (!guardCommand("forgewire.account.revokeSession")) return;
+  const session = await humanSessionStore.get(DEFAULT_SESSION_PROFILE_ID);
+  const client = getClient();
+  if (!session || !client) {
+    vscode.window.showWarningMessage("ForgeWire: sign in and connect to a hub first.");
+    return;
+  }
+  const label = node.session.client_label ?? node.session.client_kind;
+  const ok = await vscode.window.showWarningMessage(
+    `Revoke the session "${label}"? That client will be signed out.`,
+    { modal: true },
+    "Revoke",
+  );
+  if (ok !== "Revoke") return;
+  try {
+    await client.revokeAuthSession(session.accessSecret, node.session.session_id);
+    accountProvider?.refresh();
+    vscode.window.showInformationMessage("ForgeWire: session revoked.");
+  } catch (err) {
+    // authLogout/revokeAuthSession throw through the Slice-1 typed-auth
+    // boundary -- never a raw response body.
+    vscode.window.showErrorMessage(`ForgeWire: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * 114C.7 Slice 4c: create a human account (admin-only). Gated through the
+ * shared commandAvailability() humanRole mechanism (guardCommand →
+ * requiresHumanRole:"admin" against the signed-in human's roles), the same
+ * decision the account tree uses to show its Administration section, so an
+ * automation credential can never reach this. Collects username / display
+ * name / password / role, then POST /accounts with the admin's own session
+ * secret as bearer.
+ */
+async function createAccountCmd(): Promise<void> {
+  if (!guardCommand("forgewire.account.createAccount")) return;
+  const session = await humanSessionStore.get(DEFAULT_SESSION_PROFILE_ID);
+  const client = getClient();
+  if (!session || !client) {
+    vscode.window.showWarningMessage("ForgeWire: sign in as an administrator first.");
+    return;
+  }
+  const username = await vscode.window.showInputBox({ prompt: "New account username", ignoreFocusOut: true });
+  if (!username) return;
+  const displayName = await vscode.window.showInputBox({ prompt: `Display name for "${username}"`, ignoreFocusOut: true });
+  if (!displayName) return;
+  const password = await vscode.window.showInputBox({ prompt: "Initial password", password: true, ignoreFocusOut: true });
+  if (!password) return;
+  // The authoritative assignable-role list comes from the hub (auth-policy),
+  // not a hardcoded copy that could drift from what the hub accepts.
+  let roles: string[];
+  try {
+    roles = (await client.authPolicy()).roles;
+  } catch {
+    vscode.window.showErrorMessage("ForgeWire: could not load the role list from the hub.");
+    return;
+  }
+  const role = await vscode.window.showQuickPick(roles, { placeHolder: `Role for "${username}"`, ignoreFocusOut: true });
+  if (!role) return;
+  try {
+    await client.createAccount(session.accessSecret, username, displayName, password, role);
+    accountProvider?.refresh();
+    vscode.window.showInformationMessage(`ForgeWire: created account "${username}" (${role}).`);
+  } catch (err) {
+    // createAccount throws through the Slice-1 typed-auth boundary -- e.g. a
+    // UsernameConflict surfaces as its typed message, never a raw body.
+    vscode.window.showErrorMessage(`ForgeWire: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * 114C.7 Slice 4c-2: shared preamble for the per-account admin mutations
+ * invoked from the Administration section's account context menu. Narrows the
+ * invoked node, applies the shared requiresHumanRole:"admin" gate
+ * (guardCommand), resolves the admin's own session secret + client, runs the
+ * specific mutation, and refreshes the view. Errors (including typed-auth
+ * ones such as LastAdministratorViolation) surface via the boundary, never a
+ * raw body. `run` owns its own confirmation/role-pick and success message so
+ * a cancelled interaction reports nothing.
+ */
+async function withAdminAccount(
+  node: AccountNode | undefined,
+  id: CommandId,
+  run: (client: HubClient, secret: string, account: AccountSummaryWireDto) => Promise<void>,
+): Promise<void> {
+  if (!node || node.kind !== "adminAccount") {
+    vscode.window.showWarningMessage("ForgeWire: run this from an account in the Administration section.");
+    return;
+  }
+  if (!guardCommand(id)) return;
+  const session = await humanSessionStore.get(DEFAULT_SESSION_PROFILE_ID);
+  const client = getClient();
+  if (!session || !client) {
+    vscode.window.showWarningMessage("ForgeWire: sign in as an administrator first.");
+    return;
+  }
+  try {
+    await run(client, session.accessSecret, node.account);
+    accountProvider?.refresh();
+  } catch (err) {
+    vscode.window.showErrorMessage(`ForgeWire: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+async function disableAccountCmd(node?: AccountNode): Promise<void> {
+  await withAdminAccount(node, "forgewire.account.disableAccount", async (client, secret, a) => {
+    const ok = await vscode.window.showWarningMessage(
+      `Disable "${a.username}"? Their sessions are revoked and they can no longer sign in.`,
+      { modal: true },
+      "Disable",
+    );
+    if (ok !== "Disable") return;
+    // expected_revision is a compare-and-set token: the tree node's revision.
+    await client.disableAccount(secret, a.account_id, a.revision);
+    vscode.window.showInformationMessage(`ForgeWire: disabled "${a.username}".`);
+  });
+}
+
+async function enableAccountCmd(node?: AccountNode): Promise<void> {
+  await withAdminAccount(node, "forgewire.account.enableAccount", async (client, secret, a) => {
+    await client.enableAccount(secret, a.account_id, a.revision);
+    vscode.window.showInformationMessage(`ForgeWire: enabled "${a.username}".`);
+  });
+}
+
+async function grantRoleCmd(node?: AccountNode): Promise<void> {
+  await withAdminAccount(node, "forgewire.account.grantRole", async (client, secret, a) => {
+    // Offer only roles the account does not already hold, from the hub's
+    // authoritative assignable-role list (not a hardcoded copy).
+    const roles = (await client.authPolicy()).roles.filter((r) => !a.roles.includes(r));
+    if (roles.length === 0) {
+      vscode.window.showInformationMessage(`ForgeWire: "${a.username}" already holds every assignable role.`);
+      return;
+    }
+    const role = await vscode.window.showQuickPick(roles, { placeHolder: `Grant a role to "${a.username}"`, ignoreFocusOut: true });
+    if (!role) return;
+    await client.grantMembership(secret, a.account_id, role);
+    vscode.window.showInformationMessage(`ForgeWire: granted "${role}" to "${a.username}".`);
+  });
+}
+
+async function revokeRoleCmd(node?: AccountNode): Promise<void> {
+  await withAdminAccount(node, "forgewire.account.revokeRole", async (client, secret, a) => {
+    if (a.roles.length === 0) {
+      vscode.window.showInformationMessage(`ForgeWire: "${a.username}" holds no roles to revoke.`);
+      return;
+    }
+    const role = await vscode.window.showQuickPick([...a.roles], { placeHolder: `Revoke a role from "${a.username}"`, ignoreFocusOut: true });
+    if (!role) return;
+    // The hub's revoke_membership protects the realm's last administrator;
+    // that rejection surfaces as its typed LastAdministratorViolation message.
+    await client.revokeMembership(secret, a.account_id, role);
+    vscode.window.showInformationMessage(`ForgeWire: revoked "${role}" from "${a.username}".`);
+  });
+}
+
+/**
+ * 114C.7 Slice 4c-3b: shared preamble for the two account-deletion actions.
+ * Beyond the admin role gate, the client REQUIRES a fresh in-place step-up
+ * (`stepUp()`) before either deletion action -- even though the hub does not
+ * yet enforce step-up on the deletion routes -- so the client is never laxer
+ * than the documented security intent. `run` is called with the *rotated*
+ * access secret from step-up (the pre-step-up secret is now invalid, so order
+ * matters). Only the modal confirmation is `run`'s own.
+ */
+async function withDeletionStepUp(
+  node: AccountNode | undefined,
+  id: CommandId,
+  run: (client: HubClient, elevatedSecret: string, account: AccountSummaryWireDto) => Promise<void>,
+): Promise<void> {
+  if (!node || node.kind !== "adminAccount") {
+    vscode.window.showWarningMessage("ForgeWire: run this from an account in the Administration section.");
+    return;
+  }
+  if (!guardCommand(id)) return;
+  // Fresh step-up first. On cancel/failure stepUp() has already told the user
+  // and we stop -- deletion never proceeds without a completed step-up.
+  const elevated = await stepUp();
+  if (!elevated) return;
+  const client = getClient();
+  if (!client) {
+    vscode.window.showWarningMessage("ForgeWire: connect to a hub first.");
+    return;
+  }
+  try {
+    await run(client, elevated.accessSecret, node.account);
+    accountProvider?.refresh();
+  } catch (err) {
+    // e.g. LastAdministratorViolation surfaces as its typed message.
+    vscode.window.showErrorMessage(`ForgeWire: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+async function deleteAccountCmd(node?: AccountNode): Promise<void> {
+  await withDeletionStepUp(node, "forgewire.account.deleteAccount", async (client, secret, a) => {
+    const ok = await vscode.window.showWarningMessage(
+      `Delete "${a.username}"? Their sessions are revoked and the account is marked for deletion (a second, permanent step completes it).`,
+      { modal: true },
+      "Delete",
+    );
+    if (ok !== "Delete") return;
+    await client.initiateAccountDeletion(secret, a.account_id, a.revision);
+    vscode.window.showInformationMessage(`ForgeWire: "${a.username}" marked for deletion.`);
+  });
+}
+
+async function completeDeletionCmd(node?: AccountNode): Promise<void> {
+  await withDeletionStepUp(node, "forgewire.account.completeDeletion", async (client, secret, a) => {
+    const ok = await vscode.window.showWarningMessage(
+      `Permanently delete "${a.username}"? This is irreversible.`,
+      { modal: true },
+      "Permanently delete",
+    );
+    if (ok !== "Permanently delete") return;
+    await client.completeAccountDeletion(secret, a.account_id, a.revision);
+    vscode.window.showInformationMessage(`ForgeWire: "${a.username}" permanently deleted.`);
+  });
+}
+
 async function copyJoinToken(): Promise<void> {
-  const cfg = vscode.workspace.getConfiguration("forgewire");
-  let token = (cfg.get<string>("hubToken") ?? "").trim();
+  let token = sessionHubToken;
   if (!token) {
     token = ((await context.secrets.get(SECRET_TOKEN_KEY)) ?? "").trim();
   }
@@ -399,16 +1214,15 @@ async function copyJoinToken(): Promise<void> {
 async function disconnect(): Promise<void> {
   const cfg = vscode.workspace.getConfiguration("forgewire");
   await cfg.update("hubUrl", "", vscode.ConfigurationTarget.Global);
-  await cfg.update("hubToken", "", vscode.ConfigurationTarget.Global);
-  await context.secrets.delete(SECRET_TOKEN_KEY);
+  await clearPlaintextTokenConfiguration(cfg);
+  await storeSecretToken("");
   updateStatus();
   refreshAll();
   vscode.window.showInformationMessage("ForgeWire: disconnected.");
 }
 
 async function copyToken(): Promise<void> {
-  const cfg = vscode.workspace.getConfiguration("forgewire");
-  const t = (cfg.get<string>("hubToken") ?? "").trim();
+  const t = sessionHubToken;
   if (!t) {
     vscode.window.showWarningMessage("ForgeWire: no hub token configured.");
     return;
@@ -444,8 +1258,7 @@ async function startHubHere(): Promise<void> {
   }
 
   const cfgUrl = (cfg.get<string>("hubUrl") ?? "").trim();
-  const cfgToken = (cfg.get<string>("hubToken") ?? "").trim();
-  let token = cfgToken;
+  let token = sessionHubToken;
   if (!token) {
     const ans = await vscode.window.showQuickPick(
       [
@@ -495,8 +1308,7 @@ async function startHubHere(): Promise<void> {
       vscode.ConfigurationTarget.Global
     );
   }
-  await cfg.update("hubToken", token, vscode.ConfigurationTarget.Global);
-  await context.secrets.store(SECRET_TOKEN_KEY, token);
+  await storeSecretToken(token);
 
   const term = getOrCreateTerminal("ForgeWire: hub", { FORGEWIRE_HUB_TOKEN: token });
   term.show();
@@ -533,10 +1345,9 @@ async function startRunnerHere(): Promise<void> {
     value: "",
   });
 
-  const cfg = vscode.workspace.getConfiguration("forgewire");
   const env: Record<string, string> = {
     FORGEWIRE_HUB_URL: c.url,
-    FORGEWIRE_HUB_TOKEN: (cfg.get<string>("hubToken") ?? "").trim(),
+    FORGEWIRE_HUB_TOKEN: sessionHubToken,
   };
   const term = getOrCreateTerminal("ForgeWire: runner", env);
   term.show();
@@ -562,6 +1373,7 @@ async function dispatchTask(): Promise<void> {
     vscode.window.showWarningMessage("Connect to a hub first.");
     return;
   }
+  if (!guardCommand("forgewire.dispatchTask")) return;
   const prompt = await vscode.window.showInputBox({
     title: "ForgeWire \u00b7 Dispatch \u00b7 prompt",
     prompt: "Shell command (default executor) or sealed brief",
@@ -628,6 +1440,30 @@ async function dispatchTask(): Promise<void> {
 
 
 type TaskCommandArg = number | string | { id?: unknown; task?: { id?: unknown } } | TaskNode | undefined;
+
+/**
+ * Resolve a `{kind:"task"}` selection (id + status) from a command argument for
+ * the gating check. A stale task reports status `"stale"` (matching
+ * cancelStaleTask's requirement) rather than its underlying lifecycle status;
+ * a bare id (palette invocation) has no status and the handler's own
+ * "Select a task first" path already covers the no-target case.
+ */
+function taskSelection(arg: TaskCommandArg): VscodeSelection | undefined {
+  const id = resolveTaskId(arg);
+  if (!id) return undefined;
+  let status: string | undefined;
+  if (arg && typeof arg === "object") {
+    const node = arg as { kind?: string; stale?: boolean; task?: { status?: string }; status?: unknown };
+    if (node.kind === "task" || node.kind === "historyTask") {
+      status = node.stale ? "stale" : node.task?.status;
+    } else if (typeof node.status === "string") {
+      status = node.status;
+    } else if (node.task?.status) {
+      status = node.task.status;
+    }
+  }
+  return { kind: "task", id: String(id), status };
+}
 
 function resolveTaskId(arg: TaskCommandArg): number | undefined {
   if (typeof arg === "number") {
@@ -731,6 +1567,7 @@ async function cancelTaskCmd(arg: TaskCommandArg): Promise<void> {
     vscode.window.showWarningMessage("Select a task first.");
     return;
   }
+  if (!guardCommand("forgewire.cancelTask", taskSelection(arg))) return;
   const ok = await vscode.window.showWarningMessage(
     `Cancel task #${id}?`,
     { modal: true },
@@ -762,6 +1599,7 @@ async function redispatchTaskCmd(arg: TaskCommandArg): Promise<void> {
     vscode.window.showWarningMessage("Select a task first.");
     return;
   }
+  if (!guardCommand("forgewire.redispatchTask", taskSelection(arg))) return;
   try {
     const t = await c.getTask(id);
     const payload = {
@@ -811,6 +1649,7 @@ async function cancelStaleTaskCmd(arg: TaskCommandArg): Promise<void> {
     vscode.window.showWarningMessage("Select a task first.");
     return;
   }
+  if (!guardCommand("forgewire.cancelStaleTask", taskSelection(arg))) return;
   try {
     await c.cancel(id);
     vscode.window.showInformationMessage(`Cancelled stale task #${id}.`);
@@ -854,6 +1693,7 @@ async function approveApprovalCmd(arg: ApprovalCommandArg): Promise<void> {
   }
   const approval = await resolveApprovalArg(arg, c);
   if (!approval) return;
+  if (!guardCommand("forgewire.approveApproval", { kind: "approval", id: approval.approval_id, status: approval.status })) return;
   const label = approval.task_label || approval.approval_id;
   const ok = await vscode.window.showWarningMessage(
     `Approve ${label}?`,
@@ -889,6 +1729,7 @@ async function denyApprovalCmd(arg: ApprovalCommandArg): Promise<void> {
   }
   const approval = await resolveApprovalArg(arg, c);
   if (!approval) return;
+  if (!guardCommand("forgewire.denyApproval", { kind: "approval", id: approval.approval_id, status: approval.status })) return;
   const label = approval.task_label || approval.approval_id;
   const reason = await vscode.window.showInputBox({
     title: `Deny ${label}`,
@@ -1130,6 +1971,7 @@ async function renameHub(): Promise<void> {
     vscode.window.showWarningMessage("Connect to a hub first \u2014 hub names are stored on the hub and propagate to all connected nodes.");
     return;
   }
+  if (!guardCommand("forgewire.renameHub", hubSelection())) return;
   let current = "";
   try {
     current = (await c.getLabels()).hub_name ?? "";
@@ -1215,6 +2057,8 @@ async function renameHost(arg?: unknown): Promise<void> {
     }
     hostname = pick.hostname;
   }
+
+  if (!guardCommand("forgewire.renameHost", { kind: "host", id: hostname })) return;
 
   const labels = await c.getLabels().catch(() => ({
     hub_name: "",
@@ -1327,6 +2171,8 @@ async function renameRunner(arg?: unknown): Promise<void> {
     runnerHost = runners.find((r) => r.runner_id === runnerId)?.hostname;
   }
 
+  if (!guardCommand("forgewire.renameRunner", { kind: "runner", id: runnerId })) return;
+
   const isThisHost = !!runnerHost && runnerHost.toLowerCase() === os.hostname().toLowerCase();
   const currentAlias = labels.runner_aliases[runnerId] ?? "";
   const next = await vscode.window.showInputBox({
@@ -1377,6 +2223,19 @@ interface RunnerArg {
   runner_id?: string;
   hostname?: string;
   state?: string;
+  drain_requested?: boolean;
+}
+
+/** A `{kind:"runner"}` selection with the descriptor status vocabulary. A
+ *  drain-requested runner reports `"draining"` (matching resumeRunner's
+ *  requirement) regardless of its underlying lifecycle state; otherwise its
+ *  `state` (e.g. `"online"`) is used. */
+function runnerSelection(r: RunnerArg): VscodeSelection {
+  return {
+    kind: "runner",
+    id: r.runner_id ?? "",
+    status: r.drain_requested ? "draining" : (r.state ?? "online"),
+  };
 }
 
 function extractRunnerArg(arg: unknown): RunnerArg | undefined {
@@ -1438,6 +2297,7 @@ async function pauseRunner(arg?: unknown): Promise<void> {
   }
   const r = await pickRunnerIfMissing(arg);
   if (!r?.runner_id) return;
+  if (!guardCommand("forgewire.pauseRunner", runnerSelection(r))) return;
   const target = r.hostname ?? r.runner_id.slice(0, 8);
   const ok = await vscode.window.showWarningMessage(
     `Pause runner ${target}? It will finish current tasks but stop accepting new ones.`,
@@ -1464,6 +2324,7 @@ async function resumeRunner(arg?: unknown): Promise<void> {
   }
   const r = await pickRunnerIfMissing(arg);
   if (!r?.runner_id) return;
+  if (!guardCommand("forgewire.resumeRunner", runnerSelection(r))) return;
   const target = r.hostname ?? r.runner_id.slice(0, 8);
   try {
     await c.undrainRunner(r.runner_id);
@@ -1565,6 +2426,7 @@ async function editHubCandidates(): Promise<void> {
 }
 
 async function promoteHub(): Promise<void> {
+  if (!guardCommand("forgewire.promoteHub", hubSelection())) return;
   const ok = await vscode.window.showWarningMessage(
     "Promote this node to active hub?\n\n" +
       "This will start the local hub service. If another hub is already serving on the candidate list, promotion will be refused (split-brain guard) -- demote that one first, or pass --force from the CLI.",
@@ -1588,6 +2450,7 @@ async function promoteHub(): Promise<void> {
 }
 
 async function demoteHub(): Promise<void> {
+  if (!guardCommand("forgewire.demoteHub", hubSelection())) return;
   const probe = lastProbe;
   const target = probe?.activeUrl ?? "(active hub)";
   const ok = await vscode.window.showWarningMessage(
@@ -1631,7 +2494,7 @@ async function openSettings(): Promise<void> {
   const wsRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? os.homedir();
   const initial = {
     hubUrl: cfg.get<string>("hubUrl") ?? "",
-    hubToken: cfg.get<string>("hubToken") ?? "",
+    hubToken: "",
     hubTokenFile: cfg.get<string>("hubTokenFile") ?? "",
     pythonPath: cfg.get<string>("pythonPath") ?? "",
     refreshIntervalSeconds: cfg.get<number>("refreshIntervalSeconds") ?? 10,
@@ -1660,8 +2523,7 @@ async function openSettings(): Promise<void> {
         await c.update("cluster.preferredNode", String(msg.clusterPreferredNode ?? "").trim(), vscode.ConfigurationTarget.Global);
         const tok = String(msg.hubToken ?? "").trim();
         if (tok) {
-          await c.update("hubToken", tok, vscode.ConfigurationTarget.Global);
-          await context.secrets.store(SECRET_TOKEN_KEY, tok);
+          await storeSecretToken(tok);
         }
         vscode.window.showInformationMessage("ForgeWire: settings saved.");
         updateStatus();
@@ -1993,6 +2855,7 @@ function ensureWindows(): boolean {
 }
 
 async function drInstallBackupTask(): Promise<void> {
+  if (!guardCommand("forgewire.dr.installBackupTask")) return;
   if (!ensureWindows()) return;
   const root = await requireRepoRoot();
   if (!root) return;
@@ -2017,6 +2880,7 @@ async function drInstallBackupTask(): Promise<void> {
 }
 
 async function drInstallChaosTask(): Promise<void> {
+  if (!guardCommand("forgewire.dr.installChaosTask")) return;
   if (!ensureWindows()) return;
   const root = await requireRepoRoot();
   if (!root) return;
@@ -2045,6 +2909,7 @@ async function drInstallChaosTask(): Promise<void> {
 }
 
 async function drProvisionSshForSystem(): Promise<void> {
+  if (!guardCommand("forgewire.dr.provisionSshForSystem")) return;
   if (!ensureWindows()) return;
   const root = await requireRepoRoot();
   if (!root) return;
@@ -2068,6 +2933,7 @@ async function drProvisionSshForSystem(): Promise<void> {
 }
 
 async function drRunChaosNow(): Promise<void> {
+  if (!guardCommand("forgewire.dr.runChaosNow")) return;
   if (!ensureWindows()) return;
   const root = await requireRepoRoot();
   if (!root) return;
@@ -2098,6 +2964,7 @@ async function drRunChaosNow(): Promise<void> {
 }
 
 async function drTailLastChaosLog(): Promise<void> {
+  if (!guardCommand("forgewire.dr.tailLastChaosLog")) return;
   if (!ensureWindows()) return;
   const root = await requireRepoRoot();
   if (!root) return;
@@ -2133,6 +3000,7 @@ async function drTailLastChaosLog(): Promise<void> {
 }
 
 async function drOpenClusterYaml(): Promise<void> {
+  if (!guardCommand("forgewire.dr.openClusterYaml")) return;
   const root = await requireRepoRoot();
   if (!root) return;
   const yaml = path.join(root, "config", "cluster.yaml");
@@ -2141,6 +3009,11 @@ async function drOpenClusterYaml(): Promise<void> {
 }
 
 async function drOpenSettings(): Promise<void> {
+  // Deliberately NOT routed through guardCommand: this is the escape hatch for
+  // configuring DR itself (it opens forgewire.cluster.repoRoot). Gating it on
+  // the disaster-recovery capability would be a chicken-and-egg lock -- you
+  // could not open the settings needed to make cluster.yaml locatable in the
+  // first place.
   await vscode.commands.executeCommand(
     "workbench.action.openSettings",
     "forgewire.cluster forgewire.dr"
@@ -2166,7 +3039,7 @@ async function migrateSettingsFromFabric(ctx: vscode.ExtensionContext): Promise<
 
   // Settings keys that existed under forgewireFabric.*
   const keys = [
-    "hubUrl", "hubCandidates", "hubPin", "hubName", "hubToken", "hubTokenFile",
+    "hubUrl", "hubCandidates", "hubPin", "hubName", "hubTokenFile",
     "runnerAliases", "pythonPath", "refreshIntervalSeconds",
     "approvals.ageBadgeHours", "autoStartHubPort",
     "cluster.repoRoot", "cluster.preferredNode",
@@ -2197,14 +3070,15 @@ async function migrateSettingsFromFabric(ctx: vscode.ExtensionContext): Promise<
     }
   }
 
-  // Migrate SecretStorage token
+  // Migrate tokens into SecretStorage only. Never copy a secret back into
+  // user/workspace settings, where it would be stored as plaintext JSON.
   const oldToken = await ctx.secrets.get("forgewireFabric.hubToken");
-  if (oldToken) {
-    const newToken = await ctx.secrets.get("forgewire.hubToken");
-    if (!newToken) {
-      await ctx.secrets.store("forgewire.hubToken", oldToken);
-      migrated++;
-    }
+  const oldConfiguredToken = (oldCfg.get<string>("hubToken") ?? "").trim();
+  const newToken = await ctx.secrets.get("forgewire.hubToken");
+  const tokenToMigrate = oldToken || oldConfiguredToken;
+  if (tokenToMigrate && !newToken) {
+    await ctx.secrets.store("forgewire.hubToken", tokenToMigrate);
+    migrated++;
   }
 
   if (migrated > 0) {

@@ -10,14 +10,15 @@ name = "forgewire-fabric-cli"
 path = "src/main.rs"
 
 [dependencies]
-fabric-types = { path = "../fabric-types" }
-fabric-protocol = { path = "../fabric-protocol" }
-fabric-identity = { path = "../fabric-identity" }
-fabric-audit = { path = "../fabric-audit" }
-fabric-client = { path = "../fabric-client" }
-fabric-beacon = { path = "../fabric-beacon" }
+fabric-types = { package = "forgewire-fabric-types", path = "../fabric-types", version = "0.10.0" }
+fabric-protocol = { path = "../fabric-protocol", version = "0.10.0" }
+fabric-identity = { path = "../fabric-identity", version = "0.10.0" }
+fabric-audit = { path = "../fabric-audit", version = "0.10.0" }
+fabric-client = { path = "../fabric-client", version = "0.10.0" }
+fabric-beacon = { path = "../fabric-beacon", version = "0.10.0" }
 serde.workspace = true
 serde_json.workspace = true
+fs2 = "0.4"
 hex.workspace = true
 thiserror.workspace = true
 tokio = { version = "1", features = ["full"] }

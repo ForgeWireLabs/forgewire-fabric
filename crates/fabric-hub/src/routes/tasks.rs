@@ -9,20 +9,40 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::extract::{Extension, Path, Query, State};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
 use fabric_claim_router::{pick_task, CandidateTask, RunnerView};
-use fabric_policy::DispatchRequest;
-use fabric_store::{ClaimResult, CreateTaskParams, TaskRow};
+use fabric_policy::{DispatchRequest, PolicyDecision};
+use fabric_store::{ClaimResult, CreateTaskParams, DispatcherRow, TaskRow};
 
+use crate::auth::AuthContext;
+use crate::capabilities::match_required;
+use crate::error::ApiError;
 use crate::state::HubState;
-use crate::utils::{
-    audit_append, budget_denial, check_skew, runner_kind_from_row, utc_now, verify_sig,
-};
+
+owned_router! {
+    pub fn router, ROUTES {
+        "GET" get "/tasks" => list_tasks;
+        "POST" post "/tasks" => dispatch_task;
+        "POST" post "/tasks/v2" => dispatch_task_signed;
+        "GET" get "/tasks/waiting" => list_waiting_tasks;
+        "POST" post "/tasks/claim" => claim_task_legacy;
+        "POST" post "/tasks/claim-loom" => claim_task_loom;
+        "POST" post "/tasks/claim-fabric" => claim_task_fabric;
+        "GET" get "/tasks/{task_id}" => get_task;
+    }
+}
+
+owned_router! {
+    pub fn intent_router, INTENT_ROUTES {
+        "POST" post "/tasks/{task_id}/intent" => evaluate_intent;
+    }
+}
+use crate::utils::{attribution, audit_append, budget_denial, check_skew, utc_now, verify_sig};
 
 /// SHA-256 of the canonical JSON of the (string-only) env map. Byte-identical to
 /// the Python signer's `_loom_env_digest` (via `canonical_payload`) and the Rust
@@ -123,6 +143,17 @@ pub struct ClaimV2Payload {
 }
 
 #[derive(Deserialize)]
+pub struct LegacyClaimPayload {
+    pub worker_id: String,
+    #[serde(default)]
+    pub hostname: String,
+    /// Accepted for wire compatibility only. Unsigned capabilities are not
+    /// trusted and cannot satisfy capability-gated tasks.
+    #[serde(default)]
+    pub capabilities: Value,
+}
+
+#[derive(Deserialize)]
 pub struct ListQuery {
     pub status: Option<String>,
     #[serde(default = "default_limit")]
@@ -144,7 +175,7 @@ fn default_limit() -> i64 {
 pub async fn list_tasks(
     State(state): State<Arc<HubState>>,
     Query(q): Query<ListQuery>,
-) -> Result<Json<Value>, (StatusCode, String)> {
+) -> Result<Json<Value>, ApiError> {
     let tasks = state
         .store
         .list_tasks(q.status.as_deref(), q.limit)
@@ -153,12 +184,126 @@ pub async fn list_tasks(
     Ok(Json(json!({ "tasks": tasks })))
 }
 
+/// List queued capability-gated tasks that no online runner can satisfy.
+pub async fn list_waiting_tasks(
+    State(state): State<Arc<HubState>>,
+) -> Result<Json<Value>, ApiError> {
+    let runners = state
+        .store
+        .list_runners()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let online: Vec<_> = runners
+        .iter()
+        .filter(|runner| {
+            matches!(runner.state.as_str(), "online" | "degraded") && !runner.drain_requested
+        })
+        .collect();
+    let tasks = state
+        .store
+        .list_tasks(Some("queued"), 200)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let mut waiting = Vec::new();
+    for task in tasks {
+        let required = task
+            .required_capabilities
+            .as_ref()
+            .filter(|value| value.as_array().is_some_and(|items| !items.is_empty()));
+        let Some(required) = required else {
+            continue;
+        };
+        let mut satisfied_by = Vec::new();
+        let mut missing_per_runner = serde_json::Map::new();
+        for runner in &online {
+            let (ok, missing) = match_required(required, &runner.capabilities);
+            if ok {
+                satisfied_by.push(runner.runner_id.clone());
+            } else {
+                missing_per_runner.insert(runner.runner_id.clone(), json!(missing));
+            }
+        }
+        if satisfied_by.is_empty() {
+            waiting.push(json!({
+                "task_id": task.id,
+                "title": task.title,
+                "branch": task.branch,
+                "required_capabilities": required,
+                "missing_per_runner": missing_per_runner,
+            }));
+        }
+    }
+    Ok(Json(json!({
+        "tasks": waiting,
+        "online_runners": online.iter().map(|runner| &runner.runner_id).collect::<Vec<_>>(),
+    })))
+}
+
+/// Legacy unsigned claim, retained during the compatibility window.
+///
+/// It is intentionally degraded: agent tasks only, no capability-gated
+/// tasks, no supplied capability trust, and an audit event on every use.
+pub async fn claim_task_legacy(
+    State(state): State<Arc<HubState>>,
+    Extension(actor): Extension<AuthContext>,
+    Json(payload): Json<LegacyClaimPayload>,
+) -> Result<(HeaderMap, Json<Value>), ApiError> {
+    let candidates = state
+        .store
+        .list_tasks(Some("queued"), 200)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let candidate = candidates.into_iter().find(|task| {
+        task.kind == "agent"
+            && !task.cancel_requested
+            && task
+                .required_capabilities
+                .as_ref()
+                .and_then(Value::as_array)
+                .is_none_or(Vec::is_empty)
+    });
+
+    let compatibility_audit = json!({
+        "worker_id": payload.worker_id,
+        "hostname": payload.hostname,
+        "supplied_capabilities_ignored": !payload.capabilities.is_null(),
+        "posture": "degraded",
+        "attribution": attribution(&actor),
+    });
+    let _ = audit_append(
+        &*state.store,
+        &state.secrets,
+        "legacy_claim_degraded",
+        candidate.as_ref().map(|task| task.id),
+        &compatibility_audit,
+    )
+    .await;
+
+    let Json(mut body) = if let Some(task) = candidate {
+        do_claim(&state, &actor, &task, &payload.worker_id, &payload.hostname).await?
+    } else {
+        Json(json!({"task": null, "info": {"reason": "queue_empty"}}))
+    };
+    if let Some(info) = body.get_mut("info").and_then(Value::as_object_mut) {
+        info.insert("compatibility".into(), Value::String("degraded".into()));
+    }
+    let mut headers = HeaderMap::new();
+    headers.insert(
+        header::WARNING,
+        HeaderValue::from_static(
+            "299 ForgeWire \"legacy unsigned claim is degraded; migrate to signed kind-specific claim\"",
+        ),
+    );
+    Ok((headers, Json(body)))
+}
+
 // ---- GET /tasks/{task_id} --------------------------------------------------
 
 pub async fn get_task(
     State(state): State<Arc<HubState>>,
     Path(task_id): Path<i64>,
-) -> Result<Json<Value>, (StatusCode, String)> {
+) -> Result<Json<Value>, ApiError> {
     let task = state.store.get_task(task_id).await.map_err(|e| match e {
         fabric_store::StoreError::NotFound(_) => (StatusCode::NOT_FOUND, "task not found".into()),
         other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
@@ -182,6 +327,7 @@ pub async fn dispatch_task(
 
 pub async fn dispatch_task_signed(
     State(state): State<Arc<HubState>>,
+    Extension(actor): Extension<AuthContext>,
     Json(payload): Json<SignedDispatchPayload>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     check_skew(payload.timestamp).map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
@@ -205,12 +351,17 @@ pub async fn dispatch_task_signed(
         ));
     }
 
-    let public_key = state
+    let dispatcher = state
         .store
-        .dispatcher_public_key(&payload.dispatcher_id)
+        .get_dispatcher(&payload.dispatcher_id)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, "dispatcher not registered".into()))?;
+        .map_err(|error| match error {
+            fabric_store::StoreError::NotFound(_) => {
+                (StatusCode::NOT_FOUND, "dispatcher not registered".into())
+            }
+            other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+        })?;
+    let public_key = dispatcher.public_key.clone();
 
     // M2.9.1 (F1): for command-kind briefs, detect whether the signer included
     // the executable payload in the envelope. If the signed fields are present,
@@ -218,12 +369,15 @@ pub async fn dispatch_task_signed(
     // command/cwd/env_keys/env_digest. If absent (legacy brief), accept during
     // the deprecation window and log a legacy audit event.
     let is_command = payload.base.kind == "command";
-    let has_signed_command = is_command && payload.base.command.is_some() && payload.base.loom_env_digest.is_some();
+    let has_signed_command =
+        is_command && payload.base.command.is_some() && payload.base.loom_env_digest.is_some();
 
     let envelope = if has_signed_command {
         let loom_command = payload.base.command.as_deref().unwrap_or(&[]);
         let loom_cwd = payload.base.cwd.as_deref().unwrap_or("");
-        let loom_env_keys: Vec<String> = payload.base.env
+        let loom_env_keys: Vec<String> = payload
+            .base
+            .env
             .as_ref()
             .and_then(|v| v.as_object())
             .map(|obj| {
@@ -296,12 +450,14 @@ pub async fn dispatch_task_signed(
     if is_command && !has_signed_command {
         let _ = audit_append(
             &*state.store,
+            &state.secrets,
             "legacy_loom_unsigned_command",
             None,
             &json!({
                 "dispatcher_id": payload.dispatcher_id,
                 "title": payload.base.title,
                 "warning": "command/cwd/env not covered by dispatcher signature; rejected",
+                "attribution": attribution(&actor),
             }),
         )
         .await;
@@ -322,12 +478,14 @@ pub async fn dispatch_task_signed(
             if actual != signed_digest {
                 let _ = audit_append(
                     &*state.store,
+                    &state.secrets,
                     "dispatch_denied",
                     None,
                     &json!({
                         "reason": "loom_env_digest_mismatch",
                         "signed": true,
                         "dispatcher_id": payload.dispatcher_id,
+                        "attribution": attribution(&actor),
                     }),
                 )
                 .await;
@@ -361,11 +519,13 @@ pub async fn dispatch_task_signed(
     {
         let _ = audit_append(
             &*state.store,
+            &state.secrets,
             "dispatch_denied",
             None,
             &json!({
                 "reason": "budget_exceeded", "detail": reason, "signed": true,
                 "dispatcher_id": payload.dispatcher_id,
+                "attribution": attribution(&actor),
             }),
         )
         .await;
@@ -377,7 +537,11 @@ pub async fn dispatch_task_signed(
     let gate_req = DispatchRequest {
         task_id: String::new(), // not yet assigned
         scope_globs: payload.base.scope_globs.clone(),
-        target_branch: if payload.base.branch.is_empty() { None } else { Some(payload.base.branch.clone()) },
+        target_branch: if payload.base.branch.is_empty() {
+            None
+        } else {
+            Some(payload.base.branch.clone())
+        },
         dispatcher_id: Some(payload.dispatcher_id.clone()),
         kind: payload.base.kind.clone(),
         cwd: payload.base.cwd.clone(),
@@ -387,6 +551,7 @@ pub async fn dispatch_task_signed(
         let reason = gate_decision.reasons.join("; ");
         let _ = audit_append(
             &*state.store,
+            &state.secrets,
             "dispatch_denied",
             None,
             &json!({
@@ -395,10 +560,14 @@ pub async fn dispatch_task_signed(
                 "signed": true,
                 "dispatcher_id": payload.dispatcher_id,
                 "kind": payload.base.kind,
+                "attribution": attribution(&actor),
             }),
         )
         .await;
-        return Err((StatusCode::FORBIDDEN, format!("dispatch denied by policy: {reason}")));
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!("dispatch denied by policy: {reason}"),
+        ));
     }
     if gate_decision.needs_approval {
         let reason = gate_decision.reasons.join("; ");
@@ -409,12 +578,17 @@ pub async fn dispatch_task_signed(
             let canonical = fabric_protocol::canonicalize(&envelope).unwrap_or_default();
             hex::encode(Sha256::digest(&canonical))
         };
-        let (approval_id, _created) = state.store
+        let (approval_id, _created) = state
+            .store
             .create_or_get_pending_approval(
                 &envelope_hash,
                 json!({ "reason": reason, "kind": payload.base.kind }),
                 &payload.base.title,
-                if payload.base.branch.is_empty() { None } else { Some(payload.base.branch.as_str()) },
+                if payload.base.branch.is_empty() {
+                    None
+                } else {
+                    Some(payload.base.branch.as_str())
+                },
                 payload.base.scope_globs.clone(),
                 Some(payload.dispatcher_id.as_str()),
                 &now,
@@ -422,13 +596,25 @@ pub async fn dispatch_task_signed(
             .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
-        let mut p = dispatch_params(&payload.base, Some(&payload.dispatcher_id));
+        let mut p = dispatch_params(
+            &payload.base,
+            &dispatcher,
+            &gate_decision,
+            &now,
+            Some(&approval_id),
+            1,
+            0,
+        );
         p.initial_status = Some("held".into());
-        let task = state.store.create_task(p, &now).await
+        let task = state
+            .store
+            .create_task(p, &now)
+            .await
             .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
         let _ = audit_append(
             &*state.store,
+            &state.secrets,
             "dispatch_held",
             Some(task.id),
             &json!({
@@ -438,6 +624,7 @@ pub async fn dispatch_task_signed(
                 "dispatcher_id": payload.dispatcher_id,
                 "kind": payload.base.kind,
                 "title": payload.base.title,
+                "attribution": attribution(&actor),
             }),
         )
         .await;
@@ -452,7 +639,11 @@ pub async fn dispatch_task_signed(
                 &payload.base.title,
                 &reason,
                 &payload.base.kind,
-                if payload.base.branch.is_empty() { None } else { Some(payload.base.branch.as_str()) },
+                if payload.base.branch.is_empty() {
+                    None
+                } else {
+                    Some(payload.base.branch.as_str())
+                },
                 &payload.base.scope_globs,
                 "forgewire-fabric",
             );
@@ -461,18 +652,20 @@ pub async fn dispatch_task_signed(
                     forgelink_routed = Some(fl_id.clone());
                     let _ = audit_append(
                         &*state.store,
+                        &state.secrets,
                         "forgelink_routed",
                         Some(task.id),
-                        &json!({ "approval_id": approval_id, "forgelink_request_id": fl_id }),
+                        &json!({ "approval_id": approval_id, "forgelink_request_id": fl_id, "attribution": attribution(&actor) }),
                     )
                     .await;
                 }
                 Err(e) => {
                     let _ = audit_append(
                         &*state.store,
+                        &state.secrets,
                         "forgelink_unavailable",
                         Some(task.id),
-                        &json!({ "approval_id": approval_id, "error": e, "fallback": "fabric_builtin_pane" }),
+                        &json!({ "approval_id": approval_id, "error": e, "fallback": "fabric_builtin_pane", "attribution": attribution(&actor) }),
                     )
                     .await;
                 }
@@ -489,7 +682,15 @@ pub async fn dispatch_task_signed(
         })));
     }
 
-    let p = dispatch_params(&payload.base, Some(&payload.dispatcher_id));
+    let p = dispatch_params(
+        &payload.base,
+        &dispatcher,
+        &gate_decision,
+        &now,
+        payload.base.approval_id.as_deref(),
+        i64::from(payload.base.approval_id.is_some()),
+        i64::from(payload.base.approval_id.is_some()),
+    );
     let task = state
         .store
         .create_task(p, &now)
@@ -499,7 +700,9 @@ pub async fn dispatch_task_signed(
     // M2.9.1 (F5): include the executed command in the audit chain so a Loom task's
     // audit entry can answer "what command ran." Agent briefs have no command field.
     let audit_payload = if has_signed_command {
-        let loom_env_keys: Vec<String> = payload.base.env
+        let loom_env_keys: Vec<String> = payload
+            .base
+            .env
             .as_ref()
             .and_then(|v| v.as_object())
             .map(|obj| {
@@ -520,6 +723,7 @@ pub async fn dispatch_task_signed(
             "loom_command": payload.base.command,
             "loom_cwd": payload.base.cwd,
             "loom_env_keys": loom_env_keys,
+            "attribution": attribution(&actor),
         })
     } else {
         json!({
@@ -531,9 +735,17 @@ pub async fn dispatch_task_signed(
             "signed": true,
             "dispatcher_id": payload.dispatcher_id,
             "approval_id": payload.base.approval_id,
+            "attribution": attribution(&actor),
         })
     };
-    let _ = audit_append(&*state.store, "dispatch", Some(task.id), &audit_payload).await;
+    let _ = audit_append(
+        &*state.store,
+        &state.secrets,
+        "dispatch",
+        Some(task.id),
+        &audit_payload,
+    )
+    .await;
 
     Ok(Json(serde_json::to_value(task).unwrap_or(Value::Null)))
 }
@@ -546,8 +758,9 @@ pub async fn dispatch_task_signed(
 
 pub async fn claim_task_loom(
     State(state): State<Arc<HubState>>,
+    Extension(actor): Extension<AuthContext>,
     Json(payload): Json<ClaimV2Payload>,
-) -> Result<Json<Value>, (StatusCode, String)> {
+) -> Result<Json<Value>, ApiError> {
     check_skew(payload.timestamp).map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
 
     let public_key = state
@@ -587,7 +800,8 @@ pub async fn claim_task_loom(
         return Err((
             StatusCode::FORBIDDEN,
             "runner is not registered as a Loom (command) runner".into(),
-        ));
+        )
+            .into());
     }
 
     if runner.drain_requested {
@@ -595,8 +809,16 @@ pub async fn claim_task_loom(
     }
 
     // Concurrency cap
-    let active = state.store.list_tasks(Some("claimed"), 200).await.unwrap_or_default();
-    let running = state.store.list_tasks(Some("running"), 200).await.unwrap_or_default();
+    let active = state
+        .store
+        .list_tasks(Some("claimed"), 200)
+        .await
+        .unwrap_or_default();
+    let running = state
+        .store
+        .list_tasks(Some("running"), 200)
+        .await
+        .unwrap_or_default();
     let current_load = active
         .iter()
         .chain(running.iter())
@@ -629,13 +851,12 @@ pub async fn claim_task_loom(
         .collect();
 
     if queued.is_empty() {
-        return Ok(Json(json!({"task": null, "info": {"reason": "queue_empty"}})));
+        return Ok(Json(
+            json!({"task": null, "info": {"reason": "queue_empty"}}),
+        ));
     }
 
-    let candidates: Vec<CandidateTask> = queued
-        .iter()
-        .map(|t| build_candidate(t))
-        .collect();
+    let candidates: Vec<CandidateTask> = queued.iter().map(build_candidate).collect();
 
     let runner_view = RunnerView::from_raw(
         &payload.scope_prefixes,
@@ -647,16 +868,20 @@ pub async fn claim_task_loom(
     );
 
     let (picked_idx, candidates_seen) = pick_task(&candidates, &runner_view);
-    let chosen_idx = match picked_idx {
-        None => {
-            return Ok(Json(
-                json!({"task": null, "info": {"reason": "no_eligible_runner", "candidates_seen": candidates_seen}}),
-            ));
-        }
-        Some(i) => i,
+    let Some(chosen_idx) = picked_idx else {
+        return Ok(Json(
+            json!({"task": null, "info": {"reason": "no_eligible_runner", "candidates_seen": candidates_seen}}),
+        ));
     };
 
-    do_claim(&*state, &queued[chosen_idx], &payload.runner_id, &runner.hostname).await
+    do_claim(
+        &state,
+        &actor,
+        &queued[chosen_idx],
+        &payload.runner_id,
+        &runner.hostname,
+    )
+    .await
 }
 
 // ---- POST /tasks/claim-fabric -----------------------------------------------
@@ -668,8 +893,9 @@ pub async fn claim_task_loom(
 
 pub async fn claim_task_fabric(
     State(state): State<Arc<HubState>>,
+    Extension(actor): Extension<AuthContext>,
     Json(payload): Json<ClaimV2Payload>,
-) -> Result<Json<Value>, (StatusCode, String)> {
+) -> Result<Json<Value>, ApiError> {
     check_skew(payload.timestamp).map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
 
     let public_key = state
@@ -709,7 +935,8 @@ pub async fn claim_task_fabric(
         return Err((
             StatusCode::FORBIDDEN,
             "runner is not registered as a Fabric (agent) runner".into(),
-        ));
+        )
+            .into());
     }
 
     if runner.drain_requested {
@@ -717,8 +944,16 @@ pub async fn claim_task_fabric(
     }
 
     // Concurrency cap
-    let active = state.store.list_tasks(Some("claimed"), 200).await.unwrap_or_default();
-    let running = state.store.list_tasks(Some("running"), 200).await.unwrap_or_default();
+    let active = state
+        .store
+        .list_tasks(Some("claimed"), 200)
+        .await
+        .unwrap_or_default();
+    let running = state
+        .store
+        .list_tasks(Some("running"), 200)
+        .await
+        .unwrap_or_default();
     let current_load = active
         .iter()
         .chain(running.iter())
@@ -762,16 +997,16 @@ pub async fn claim_task_fabric(
                 Some("skill") => {
                     // Runner must advertise the skill as a prompt capability.
                     let skill_name = t.skill.as_deref().unwrap_or("");
-                    runner_caps.iter().any(|c| {
-                        c.capability_kind == "prompt" && c.name == skill_name
-                    })
+                    runner_caps
+                        .iter()
+                        .any(|c| c.capability_kind == "prompt" && c.name == skill_name)
                 }
                 Some("tool") => {
                     // Runner must advertise the tool capability.
                     let tool_name = t.tool.as_deref().unwrap_or("");
-                    runner_caps.iter().any(|c| {
-                        c.capability_kind == "tool" && c.name == tool_name
-                    })
+                    runner_caps
+                        .iter()
+                        .any(|c| c.capability_kind == "tool" && c.name == tool_name)
                 }
                 // "prompt" or NULL: no capability gate, route by scope/tags.
                 _ => true,
@@ -780,10 +1015,12 @@ pub async fn claim_task_fabric(
         .collect();
 
     if eligible.is_empty() {
-        return Ok(Json(json!({"task": null, "info": {"reason": "queue_empty"}})));
+        return Ok(Json(
+            json!({"task": null, "info": {"reason": "queue_empty"}}),
+        ));
     }
 
-    let candidates: Vec<CandidateTask> = eligible.iter().map(|t| build_candidate(t)).collect();
+    let candidates: Vec<CandidateTask> = eligible.iter().map(build_candidate).collect();
 
     let runner_view = RunnerView::from_raw(
         &payload.scope_prefixes,
@@ -795,16 +1032,20 @@ pub async fn claim_task_fabric(
     );
 
     let (picked_idx, candidates_seen) = pick_task(&candidates, &runner_view);
-    let chosen_idx = match picked_idx {
-        None => {
-            return Ok(Json(
-                json!({"task": null, "info": {"reason": "no_eligible_runner", "candidates_seen": candidates_seen}}),
-            ));
-        }
-        Some(i) => i,
+    let Some(chosen_idx) = picked_idx else {
+        return Ok(Json(
+            json!({"task": null, "info": {"reason": "no_eligible_runner", "candidates_seen": candidates_seen}}),
+        ));
     };
 
-    do_claim(&*state, &eligible[chosen_idx], &payload.runner_id, &runner.hostname).await
+    do_claim(
+        &state,
+        &actor,
+        &eligible[chosen_idx],
+        &payload.runner_id,
+        &runner.hostname,
+    )
+    .await
 }
 
 // ---- POST /tasks/{task_id}/intent (M2.9.2 — runtime intent gate) -----------
@@ -834,9 +1075,29 @@ pub async fn evaluate_intent(
     Json(payload): Json<IntentPayload>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let decision = state.gate.evaluate_intent(&payload.kind);
+    let evidence = policy_evidence(
+        "intent",
+        &decision,
+        &utc_now(),
+        json!({
+            "kind": payload.kind,
+            "worker_id": payload.worker_id,
+            "command_present": payload.command.is_some(),
+        }),
+    );
+    state
+        .store
+        .append_task_policy_decision(task_id, evidence)
+        .await
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
     let _ = audit_append(
         &*state.store,
-        if decision.allowed { "intent_allowed" } else { "intent_denied" },
+        &state.secrets,
+        if decision.allowed {
+            "intent_allowed"
+        } else {
+            "intent_denied"
+        },
         Some(task_id),
         &json!({
             "kind": payload.kind,
@@ -901,16 +1162,52 @@ fn build_candidate(t: &TaskRow) -> CandidateTask {
 /// Perform the atomic claim + secret resolution + audit for a chosen task.
 async fn do_claim(
     state: &crate::state::HubState,
+    actor: &AuthContext,
     task: &TaskRow,
     runner_id: &str,
     hostname: &str,
-) -> Result<axum::Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+) -> Result<axum::Json<serde_json::Value>, ApiError> {
     use axum::http::StatusCode;
+
+    let requested: Vec<String> = task
+        .secrets_needed
+        .as_ref()
+        .and_then(|v| v.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_owned()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    // Resolve before the claim CAS. If key material, an envelope, or a named
+    // secret is unavailable, the task remains queued rather than becoming a
+    // permanently claimed task with silently missing credentials.
+    let mut resolved = std::collections::HashMap::new();
+    if !requested.is_empty() {
+        let envelopes = state
+            .store
+            .secret_envelopes(&requested)
+            .await
+            .map_err(|e| {
+                ApiError::secret(fabric_secrets::SecretError::ProviderIo(e.to_string()))
+            })?;
+        for name in &requested {
+            let envelope = envelopes.get(name).ok_or_else(|| {
+                ApiError::secret(fabric_secrets::SecretError::MissingSecret(name.clone()))
+            })?;
+            let value = state
+                .secrets
+                .open(name, envelope)
+                .map_err(ApiError::secret)?;
+            resolved.insert(name.clone(), value);
+        }
+    }
 
     let now = utc_now();
     let claim_result = state
         .store
-        .claim_task(task.id, runner_id, &now)
+        .claim_task(task.id, runner_id, hostname, &now)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -924,25 +1221,15 @@ async fn do_claim(
     };
 
     let mut task_val = serde_json::to_value(&claimed_task).unwrap_or(Value::Null);
-    let mut secrets_dispatched: Vec<String> = vec![];
-    let requested: Vec<String> = claimed_task
-        .secrets_needed
-        .as_ref()
-        .and_then(|v| v.as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|v| v.as_str().map(|s| s.to_owned()))
-                .collect()
-        })
-        .unwrap_or_default();
-    if !requested.is_empty() {
-        if let Ok(resolved) = state.store.resolve_secrets(&requested).await {
-            if !resolved.is_empty() {
-                secrets_dispatched = resolved.keys().cloned().collect();
-                if let Some(obj) = task_val.as_object_mut() {
-                    obj.insert("secrets".into(), json!(resolved));
-                }
-            }
+    let mut secrets_dispatched: Vec<String> = resolved.keys().cloned().collect();
+    secrets_dispatched.sort();
+    if !resolved.is_empty() {
+        let secret_json: serde_json::Map<String, Value> = resolved
+            .iter()
+            .map(|(name, value)| (name.clone(), Value::String(value.to_string())))
+            .collect();
+        if let Some(obj) = task_val.as_object_mut() {
+            obj.insert("secrets".into(), Value::Object(secret_json));
         }
     }
 
@@ -951,13 +1238,31 @@ async fn do_claim(
         "worker_id": runner_id,
         "hostname": hostname,
         "secrets_dispatched": secrets_dispatched,
+        "attribution": attribution(actor),
     });
-    let _ = audit_append(&*state.store, "claim", Some(claimed_task.id), &audit_payload).await;
+    let _ = audit_append(
+        &*state.store,
+        &state.secrets,
+        "claim",
+        Some(claimed_task.id),
+        &audit_payload,
+    )
+    .await;
 
-    Ok(axum::Json(json!({"task": task_val, "info": {"reason": "claimed"}})))
+    Ok(axum::Json(
+        json!({"task": task_val, "info": {"reason": "claimed"}}),
+    ))
 }
 
-fn dispatch_params(p: &DispatchPayload, dispatcher_id: Option<&str>) -> CreateTaskParams {
+fn dispatch_params(
+    p: &DispatchPayload,
+    dispatcher: &DispatcherRow,
+    decision: &PolicyDecision,
+    now: &str,
+    approval_id: Option<&str>,
+    approvals_required: i64,
+    approvals_received: i64,
+) -> CreateTaskParams {
     let metadata = if p.metadata.is_null() {
         json!({})
     } else {
@@ -994,7 +1299,7 @@ fn dispatch_params(p: &DispatchPayload, dispatcher_id: Option<&str>) -> CreateTa
         required_capabilities: p.required_capabilities.clone(),
         secrets_needed: p.secrets_needed.clone(),
         network_egress: p.network_egress.clone(),
-        dispatcher_id: dispatcher_id.map(|s| s.to_owned()),
+        dispatcher_id: Some(dispatcher.dispatcher_id.clone()),
         dispatch,
         skill: p.skill.clone(),
         tool: p.tool.clone(),
@@ -1005,5 +1310,74 @@ fn dispatch_params(p: &DispatchPayload, dispatcher_id: Option<&str>) -> CreateTa
         cwd: p.cwd.clone(),
         env: p.env.clone(),
         initial_status: None,
+        dispatched_by_user: actor_value(
+            &p.metadata,
+            &dispatcher.metadata,
+            &["user", "username", "operator"],
+        )
+        .or_else(|| Some(dispatcher.label.clone())),
+        dispatched_by_host: actor_value(&p.metadata, &dispatcher.metadata, &["host", "hostname"])
+            .or_else(|| dispatcher.hostname.clone()),
+        dispatched_by_agent: actor_value(
+            &p.metadata,
+            &dispatcher.metadata,
+            &["agent", "agent_type", "source", "client"],
+        )
+        .or_else(|| Some(dispatcher.label.clone())),
+        dispatcher_pubkey_fingerprint: Some(public_key_fingerprint(&dispatcher.public_key)),
+        approval_id: approval_id.map(str::to_owned),
+        policy_decisions: json!([policy_evidence(
+            "dispatch",
+            decision,
+            now,
+            json!({
+                "dispatcher_id": dispatcher.dispatcher_id,
+                "kind": p.kind,
+                "branch": p.branch,
+            })
+        )]),
+        approvals_required,
+        approvals_received,
     }
+}
+
+fn actor_value(request: &Value, registered: &Value, keys: &[&str]) -> Option<String> {
+    for source in [request, registered] {
+        for key in keys {
+            if let Some(value) = source.get(*key).and_then(Value::as_str) {
+                let value = value.trim();
+                if !value.is_empty() {
+                    return Some(value.to_owned());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn public_key_fingerprint(public_key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let bytes = hex::decode(public_key).unwrap_or_else(|_| public_key.as_bytes().to_vec());
+    format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
+}
+
+// `context` is moved directly into the `json!` object below; call sites
+// build it fresh from a `json!({...})` literal, so by-value is the natural
+// shape here, not an accidental extra clone.
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn policy_evidence(
+    stage: &str,
+    decision: &PolicyDecision,
+    at: &str,
+    context: Value,
+) -> Value {
+    json!({
+        "stage": stage,
+        "at": at,
+        "allowed": decision.allowed,
+        "denied": decision.denied,
+        "needs_approval": decision.needs_approval,
+        "reasons": decision.reasons,
+        "context": context,
+    })
 }

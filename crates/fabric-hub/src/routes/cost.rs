@@ -16,6 +16,14 @@ use serde_json::{json, Value};
 
 use crate::state::HubState;
 
+owned_router! {
+    pub fn router, ROUTES {
+        "GET" get "/cost/summary" => cost_summary;
+        "GET" get "/cost/records" => cost_records;
+        "GET" get "/cost/budget" => cost_budget;
+    }
+}
+
 #[derive(Deserialize)]
 pub struct SinceQuery {
     pub since_days: Option<i64>,
@@ -32,20 +40,46 @@ fn since_iso(days: i64) -> String {
 }
 
 fn epoch_to_iso(ts: i64) -> String {
-    let ts = ts as u64;
+    // `ts` can go negative if a caller-supplied `days` cutoff is large
+    // enough to underflow past the epoch; saturate to the epoch rather than
+    // silently wrapping to a huge value, which would corrupt the query
+    // range instead of just widening it.
+    let ts = u64::try_from(ts).unwrap_or(0);
     let mut days = (ts / 86400) as i64;
     let mut year = 1970i64;
     loop {
-        let diy = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) { 366 } else { 365 };
-        if days < diy { break; }
+        let diy = if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
+            366
+        } else {
+            365
+        };
+        if days < diy {
+            break;
+        }
         days -= diy;
         year += 1;
     }
     let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
-    let md = [31i64, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let md = [
+        31i64,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
     let mut month = 0usize;
     for (i, &m) in md.iter().enumerate() {
-        if days < m { month = i; break; }
+        if days < m {
+            month = i;
+            break;
+        }
         days -= m;
     }
     format!("{year:04}-{:02}-{:02} 00:00:00", month + 1, days + 1)
@@ -56,7 +90,11 @@ pub async fn cost_summary(
     Query(q): Query<SinceQuery>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let days = q.since_days.unwrap_or(7).max(0);
-    let since = if days > 0 { Some(since_iso(days)) } else { None };
+    let since = if days > 0 {
+        Some(since_iso(days))
+    } else {
+        None
+    };
     let rows = state
         .store
         .query_cost(since.as_deref(), 100_000)
@@ -75,21 +113,33 @@ pub async fn cost_summary(
         total_tokens += tokens;
         total_wall += r.wall_seconds;
         let e = by_model.entry(r.model_id.clone()).or_default();
-        e.0 += r.cost_usd; e.1 += tokens;
+        e.0 += r.cost_usd;
+        e.1 += tokens;
         let day = r.created_at.get(..10).unwrap_or("").to_owned();
         let e = by_day.entry(day).or_default();
-        e.0 += r.cost_usd; e.1 += tokens;
+        e.0 += r.cost_usd;
+        e.1 += tokens;
     }
 
     let by_model_json: serde_json::Map<String, Value> = by_model
         .into_iter()
-        .map(|(k, (c, t))| (k, json!({"cost_usd": (c * 1_000_000.0).round() / 1_000_000.0, "tokens": t})))
+        .map(|(k, (c, t))| {
+            (
+                k,
+                json!({"cost_usd": (c * 1_000_000.0).round() / 1_000_000.0, "tokens": t}),
+            )
+        })
         .collect();
     let mut by_day_sorted: Vec<(String, (f64, i64))> = by_day.into_iter().collect();
     by_day_sorted.sort_by(|a, b| a.0.cmp(&b.0));
     let by_day_json: serde_json::Map<String, Value> = by_day_sorted
         .into_iter()
-        .map(|(k, (c, t))| (k, json!({"cost_usd": (c * 1_000_000.0).round() / 1_000_000.0, "tokens": t})))
+        .map(|(k, (c, t))| {
+            (
+                k,
+                json!({"cost_usd": (c * 1_000_000.0).round() / 1_000_000.0, "tokens": t}),
+            )
+        })
         .collect();
 
     Ok(Json(json!({
@@ -109,7 +159,11 @@ pub async fn cost_records(
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let days = q.since_days.unwrap_or(30).max(0);
     let limit = q.limit.unwrap_or(500).min(10_000);
-    let since = if days > 0 { Some(since_iso(days)) } else { None };
+    let since = if days > 0 {
+        Some(since_iso(days))
+    } else {
+        None
+    };
     let rows = state
         .store
         .query_cost(since.as_deref(), limit)

@@ -29,7 +29,7 @@ fn presence_to_managed_hosts_block_end_to_end() {
     let port: u16 = 49340;
     let peer = advert("e2e-peer", "E2E-PEER");
     std::thread::spawn(move || {
-        let _ = serve_presence(peer, port, Duration::from_secs(3600));
+        let _ = serve_presence(&peer, port, Duration::from_secs(3600));
     });
     std::thread::sleep(Duration::from_millis(150));
 
@@ -67,8 +67,14 @@ fn presence_to_managed_hosts_block_end_to_end() {
     assert!(changed, "hosts file should be updated");
 
     let content = std::fs::read_to_string(&tmp).unwrap();
-    assert!(content.contains("127.0.0.1 localhost"), "foreign line preserved");
-    assert!(content.contains("203.0.113.7 someprinter"), "foreign line preserved");
+    assert!(
+        content.contains("127.0.0.1 localhost"),
+        "foreign line preserved"
+    );
+    assert!(
+        content.contains("203.0.113.7 someprinter"),
+        "foreign line preserved"
+    );
     assert!(
         content.contains("127.0.0.1 E2E-PEER E2E-PEER.local"),
         "managed entry present with .local alias:\n{content}"

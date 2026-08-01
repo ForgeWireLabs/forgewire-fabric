@@ -1,6 +1,8 @@
+import type { ResourceFreshness, SessionState } from "@forgewire/fabric-client-core";
+
 export interface HubConfig {
   hubUrl: string;
-  token: string;
+  tokenPresent: boolean;
 }
 
 export interface HubCandidate {
@@ -12,6 +14,8 @@ export interface HubCandidate {
 export interface GuiConfig {
   hub_url: string;
   hub_candidates?: HubCandidate[];
+  hub_pin?: string | null;
+  refresh_interval_seconds?: number;
 }
 
 export interface DispatcherIdentitySummary {
@@ -24,7 +28,7 @@ export interface DispatcherIdentitySummary {
 export interface FabricContext {
   hub_url: string;
   hub_source: string;
-  token?: string | null;
+  token_present: boolean;
   token_path?: string | null;
   token_source?: string | null;
   dispatcher_identity?: DispatcherIdentitySummary | null;
@@ -80,6 +84,9 @@ export interface HubDiscoveryCandidate {
   label: string;
   status: string;
   version?: string | null;
+  priority: number;
+  reachable: boolean;
+  error?: string | null;
 }
 
 export interface Healthz {
@@ -174,9 +181,30 @@ export interface TaskInfo {
   runner_id?: string | null;
   worker_id?: string | null;
   created_at?: string;
+  dispatched_at?: string;
+  dispatched_by_user?: string | null;
+  dispatched_by_host?: string | null;
+  dispatched_by_agent?: string | null;
+  dispatcher_pubkey_fingerprint?: string | null;
+  claimed_by_runner?: string | null;
+  claimed_by_host?: string | null;
   started_at?: string | null;
   completed_at?: string | null;
+  wall_seconds?: number | null;
+  runner_cpu_seconds?: number | null;
+  policy_decisions?: Array<Record<string, unknown>>;
+  approvals_required?: number;
+  approvals_received?: number;
+  approval_id?: string | null;
+  exit_reason?: string | null;
   priority?: number;
+  prompt?: string | null;
+  result?: unknown;
+  error?: string | null;
+  exit_code?: number | null;
+  timeout_minutes?: number;
+  required_tags?: string[];
+  required_capabilities?: string[];
   scope_globs?: string[];
   scope_globs_json?: string;
   [key: string]: unknown;
@@ -209,12 +237,25 @@ export interface ApprovalInfo {
   resolved_at?: string | null;
   approver?: string | null;
   reason?: string | null;
+  prompt?: string | null;
+  requested_by?: string | null;
+  risk?: string | null;
   [key: string]: unknown;
 }
 
 export interface ApprovalDecision {
   approver?: string;
   reason?: string;
+}
+
+export interface DesktopUpdateStatus {
+  configured: boolean;
+  current_version: string;
+  available: boolean;
+  version?: string | null;
+  published_at?: string | null;
+  notes?: string | null;
+  message: string;
 }
 
 export interface AuditEvent {
@@ -292,9 +333,64 @@ export interface HubSnapshot {
   budget: CostBudget | null;
   hosts: HostSummary[];
   audit: AuditTail | null;
+  cost?: Record<string, unknown> | null;
+  secrets?: Array<Record<string, unknown>>;
+  dispatchers?: Array<Record<string, unknown>>;
+  hub_settings?: Record<string, unknown> | null;
+  history?: Record<string, unknown> | null;
 }
 
 export interface SnapshotResult {
   snapshot: HubSnapshot;
   errors: Record<string, string>;
+  restrictions: Record<string, string>;
+  freshness: Record<string, ResourceFreshness | undefined>;
+  sessionState: SessionState;
+  activeHub: string;
+  refreshedAtMs: number;
+  /** The active credential's `fabric.*.write` authorities from `GET /whoami`
+   *  (via the native snapshot). Empty when the hub predates `/whoami` or the
+   *  credential is unauthorized -- the UI fails closed. */
+  authorities: string[];
 }
+
+export interface TokenStorageSummary {
+  present: boolean;
+  path: string;
+  source: string;
+}
+
+/**
+ * Result of a WebAuthn bridge flow (114C.6 Slice 5d). Deliberately carries no
+ * session data: a successful sign-in writes straight into the OS keyring
+ * from the Rust backend (see webauthn_bridge.rs), so the webview is told
+ * only whether it worked, never given the session secrets themselves.
+ */
+export interface PasskeyBridgeResult {
+  ok: boolean;
+  message: string | null;
+  credentialId: string | null;
+}
+
+export interface CapabilityDetail {
+  kind?: string;
+  name?: string;
+  description?: string | null;
+  input_schema?: unknown;
+  arguments?: unknown;
+  uri?: string;
+  server_id?: string;
+  agents?: Array<Record<string, unknown>>;
+  [key: string]: unknown;
+}
+
+export interface AuditDayResult {
+  day?: string;
+  events?: AuditEvent[];
+  verified?: boolean;
+  verification_error?: string | null;
+  [key: string]: unknown;
+}
+
+export type FabricEntityKind = "hub" | "host" | "runner";
+export type SecretGovernanceAction = "put" | "rotate" | "delete";

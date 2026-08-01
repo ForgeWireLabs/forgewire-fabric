@@ -69,7 +69,7 @@ def discover_hubs_beacon(
         while _time.monotonic() < deadline:
             try:
                 data, (src_ip, _) = sock.recvfrom(4096)
-            except socket.timeout:
+            except TimeoutError:
                 continue
             try:
                 b = json.loads(data.decode("utf-8"))

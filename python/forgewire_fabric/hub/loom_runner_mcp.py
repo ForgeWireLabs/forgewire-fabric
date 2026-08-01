@@ -33,9 +33,9 @@ harness.  It must NOT be shipped as the primary runner; a drift-guard test
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
-import subprocess
 import time as _time
 from typing import Any
 
@@ -396,15 +396,13 @@ def _register_tools(registry: ToolRegistry, session: LoomSession) -> None:
             if timeout_secs > 0:
                 try:
                     rc = await asyncio.wait_for(proc.wait(), timeout=float(timeout_secs))
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     LOGGER.warning("loom task_id=%d timed out after %ds", task_id, timeout_secs)
-                    try:
+                    with contextlib.suppress(ProcessLookupError):
                         proc.kill()
-                    except ProcessLookupError:
-                        pass
                     await proc.wait()
                     session._processes.pop(task_id, None)
-                    try:
+                    with contextlib.suppress(BlackboardError):
                         await client.submit_result(
                             task_id,
                             {
@@ -414,8 +412,6 @@ def _register_tools(registry: ToolRegistry, session: LoomSession) -> None:
                                 "error": f"timed out after {timeout_secs}s",
                             },
                         )
-                    except BlackboardError:
-                        pass
                     return
             else:
                 rc = await proc.wait()

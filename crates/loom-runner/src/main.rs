@@ -12,14 +12,14 @@
 //!   FORGEWIRE_RUNNER_TENANT      -- tenant id for multi-tenant routing
 //!   FORGEWIRE_RUNNER_MAX_CONCURRENT -- task concurrency cap (default 2)
 //!   FORGEWIRE_RUNNER_POLL_INTERVAL  -- claim poll interval in seconds (default 3.0)
-//!   FORGEWIRE_BEACON_PORT        -- UDP LAN discovery port (default 47890)
+//!   FORGEWIRE_BEACON_PORT        -- UDP LAN discovery port (default 48765)
 
 use std::sync::Arc;
 
 use fabric_client::{HeartbeatStats, HubClient};
 use loom_runner::{
-    claim_loop, drain_and_shutdown, heartbeat_loop, load_or_create_identity,
-    register_with_retries, resolve_hub_url, LoomConfig,
+    claim_loop, drain_and_shutdown, heartbeat_loop, load_or_create_identity, register_with_retries,
+    resolve_hub_url, LoomConfig,
 };
 use tokio::sync::{watch, Mutex};
 use tracing::info;
@@ -28,8 +28,7 @@ use tracing::info;
 async fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 

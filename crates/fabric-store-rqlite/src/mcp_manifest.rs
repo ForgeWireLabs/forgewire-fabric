@@ -28,16 +28,12 @@ use std::collections::HashSet;
 ///
 /// `manifest` may be `Value::Null`, an empty object, or absent the `servers`
 /// key — all yield an empty row set.
-pub fn normalize_manifest_to_rows(
-    runner_id: &str,
-    manifest: &Value,
-) -> Vec<RunnerCapabilityRow> {
+pub fn normalize_manifest_to_rows(runner_id: &str, manifest: &Value) -> Vec<RunnerCapabilityRow> {
     let mut rows: Vec<RunnerCapabilityRow> = Vec::new();
     let mut seen: HashSet<(String, String)> = HashSet::new();
 
-    let servers = match manifest.get("servers").and_then(|v| v.as_array()) {
-        Some(s) => s,
-        None => return rows,
+    let Some(servers) = manifest.get("servers").and_then(|v| v.as_array()) else {
+        return rows;
     };
 
     for server in servers {
@@ -137,9 +133,7 @@ mod tests {
     use super::*;
     use serde_json::from_str;
 
-    const FIXTURE: &str = include_str!(
-        "../../../tests/fixtures/phase_2_8/capability_index.json"
-    );
+    const FIXTURE: &str = include_str!("../../../tests/fixtures/phase_2_8/capability_index.json");
 
     #[derive(serde::Deserialize)]
     struct Fixture {
@@ -173,10 +167,7 @@ mod tests {
             "[{case}] capability_kind mismatch on {}",
             expected.name
         );
-        assert_eq!(
-            actual.name, expected.name,
-            "[{case}] name mismatch"
-        );
+        assert_eq!(actual.name, expected.name, "[{case}] name mismatch");
         assert_eq!(
             actual.source_server, expected.source_server,
             "[{case}] source_server mismatch on {}",
@@ -221,17 +212,14 @@ mod tests {
 
     #[test]
     fn missing_servers_key_yields_empty_rows() {
-        let rows =
-            normalize_manifest_to_rows("runner-x", &json!({ "schema_version": 1 }));
+        let rows = normalize_manifest_to_rows("runner-x", &json!({ "schema_version": 1 }));
         assert!(rows.is_empty());
     }
 
     #[test]
     fn empty_servers_array_yields_empty_rows() {
-        let rows = normalize_manifest_to_rows(
-            "runner-x",
-            &json!({ "schema_version": 1, "servers": [] }),
-        );
+        let rows =
+            normalize_manifest_to_rows("runner-x", &json!({ "schema_version": 1, "servers": [] }));
         assert!(rows.is_empty());
     }
 

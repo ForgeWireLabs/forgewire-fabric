@@ -1,7 +1,7 @@
 # ForgeWire Fabric
 
-[![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](rust-toolchain.toml)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/LICENSE)
+[![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/rust-toolchain.toml)
 [![Status: Alpha](https://img.shields.io/badge/status-alpha-yellow.svg)](#status)
 
 **Dispatch work to your own machines — from your editor, your AI agent, or your CLI — with signatures, policy, and an audit trail.**
@@ -10,7 +10,7 @@ ForgeWire Fabric is a self-hosted control plane for trusted remote execution. Yo
 
 No hosted control plane. No shared SSH key sprayed across agents. No mystery worker deciding what happened.
 
-![forgewire-fabric-cli doctor — a healthy hub on an rqlite-backed cluster](docs/assets/fabric-doctor.svg)
+![forgewire-fabric-cli doctor — a healthy hub on an rqlite-backed cluster](https://raw.githubusercontent.com/ForgeWireLabs/forgewire-fabric/main/docs/assets/fabric-doctor.svg)
 
 *`forgewire-fabric-cli doctor` against a live cluster (hostnames anonymized).*
 
@@ -109,7 +109,7 @@ Verify:
 
 ### 2. Drive it from your agent
 
-This is the part the project is actually for. Fabric ships two dispatcher MCP servers — `forgewire-loom` (host control) and `forgewire-fabric` (agent dispatch). Wire them into Claude Code or VS Code using the templates in [`install/mcp-configs/`](install/mcp-configs/README.md), or let the CLI do it for VS Code:
+This is the part the project is actually for. Fabric ships two dispatcher MCP servers — `forgewire-loom` (host control) and `forgewire-fabric` (agent dispatch). Wire them into Claude Code or VS Code using the templates in [`install/mcp-configs/`](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/install/mcp-configs/README.md), or let the CLI do it for VS Code:
 
 ```bash
 pip install forgewire-fabric
@@ -146,18 +146,19 @@ Every row links to the code, tests, or docs that back it.
 
 | Capability | Evidence |
 |---|---|
-| **Signed dispatch** — work enters as ed25519-signed envelopes with nonce replay protection; for Loom briefs the signature covers the command, cwd, and env digest. | [protocol spec](docs/protocol-v3-spec.md) · [cross-language fixtures](tests/fixtures/phase_2_8/) |
-| **Kind-split queues** — separate signed claim routes for agent and command work; the hub rejects cross-rail claims and briefs without an explicit `kind`. | [claim router](crates/fabric-claim-router/) · [routing tests](tests/hub/test_capability_routing.py) |
-| **Capability-aware routing** — agent runners advertise their MCP tools/skills/resources; skill and tool dispatch route only to agents that advertise the capability. | [auth matrix](tests/fixtures/ENDPOINT_AUTH_MATRIX.md) · [mcp-configs](install/mcp-configs/README.md) |
-| **Policy gates** — dispatch, runtime-intent, and completion gates can allow, deny, or hold work for human approval. | [policy.yaml.example](policy.yaml.example) · [gate tests](tests/hub/test_policy_gate.py) · [intent tests](tests/hub/test_intent_gate.py) |
-| **Approvals inbox** — held work surfaces in CLI, VS Code, ntfy.sh, Slack, and webhooks for one-click approve/deny. | [approval tests](tests/hub/test_approvals.py) |
-| **Secret broker** — tasks reference secrets by name; values are injected at claim time into a clean process environment and redacted from stored output. | [broker](python/forgewire_fabric/hub/secret_broker.py) · [redaction tests](tests/hub/test_secret_broker.py) |
-| **Budget controls** — per-task, daily, and weekly USD caps enforced at dispatch. | [cost ledger tests](tests/hub/test_cost_ledger.py) |
-| **Live streams** — stdout, stderr, progress, notes, and terminal results observable while the task runs. | [streams crate](crates/fabric-streams/) |
-| **Hash-chained audit** — lifecycle events form a tamper-evident chain; `replay` reconstructs a task's sealed brief at its exact base commit. | [audit tests](tests/hub/test_audit_chain.py) · [audit crate](crates/fabric-audit/) |
-| **HA state** — rqlite is the only runtime store; backups, restore drills, and chaos drills are scripted. | [DR runbook](docs/operations/dr-rqlite-backups.md) · [chaos drills](docs/operations/chaos-drills.md) |
-| **LAN discovery** — UDP beacon lets runners, CLIs, and editors find the hub with zero static addressing, surviving DHCP and subnet changes. | [beacon crate](crates/fabric-beacon/) |
-| **Service installs** — one-command provisioning of rqlite + hub + runner under NSSM (Windows) or systemd/launchd, with watchdogs and reboot recovery. | [service install](docs/operations/service-install.md) |
+| **Signed dispatch** — work enters as ed25519-signed envelopes with nonce replay protection; for Loom briefs the signature covers the command, cwd, and env digest. | [protocol spec](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/docs/protocol-v3-spec.md) · [cross-language fixtures](https://github.com/ForgeWireLabs/forgewire-fabric/tree/main/tests/fixtures/phase_2_8/) |
+| **Kind-split queues** — separate signed claim routes for agent and command work; the hub rejects cross-rail claims and briefs without an explicit `kind`. | [claim router](https://github.com/ForgeWireLabs/forgewire-fabric/tree/main/crates/fabric-claim-router/) · [routing tests](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/tests/hub/test_capability_routing.py) |
+| **Capability-aware routing** — agent runners advertise their MCP tools/skills/resources; skill and tool dispatch route only to agents that advertise the capability. | [auth matrix](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/tests/fixtures/ENDPOINT_AUTH_MATRIX.md) · [mcp-configs](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/install/mcp-configs/README.md) |
+| **Policy gates** — dispatch, runtime-intent, and completion gates can allow, deny, or hold work for human approval. | [policy.yaml.example](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/policy.yaml.example) · [gate tests](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/tests/hub/test_policy_gate.py) · [intent tests](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/tests/hub/test_intent_gate.py) |
+| **Approvals inbox** — held work surfaces in CLI, VS Code, ntfy.sh, Slack, and webhooks for one-click approve/deny. | [approval tests](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/tests/hub/test_approvals.py) |
+| **Secret broker** — tasks reference secrets by name; values are injected at claim time into a clean process environment and redacted from stored output. | [broker](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/python/forgewire_fabric/hub/secret_broker.py) · [redaction tests](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/tests/hub/test_secret_broker.py) |
+| **Budget controls** — per-task, daily, and weekly USD caps enforced at dispatch. | [cost ledger tests](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/tests/hub/test_cost_ledger.py) |
+| **Live streams** — stdout, stderr, progress, notes, and terminal results observable while the task runs. | [streams crate](https://github.com/ForgeWireLabs/forgewire-fabric/tree/main/crates/fabric-streams/) |
+| **Hash-chained audit** — lifecycle events form a tamper-evident chain; `replay` reconstructs a task's sealed brief at its exact base commit. | [audit tests](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/tests/hub/test_audit_chain.py) · [audit crate](https://github.com/ForgeWireLabs/forgewire-fabric/tree/main/crates/fabric-audit/) |
+| **HA state** — rqlite is the only runtime store; backups, restore drills, and chaos drills are scripted. | [DR runbook](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/docs/operations/dr-rqlite-backups.md) · [chaos drills](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/docs/operations/chaos-drills.md) |
+| **LAN discovery** — UDP beacon lets runners, CLIs, and editors find the hub with zero static addressing, surviving DHCP and subnet changes. | [beacon crate](https://github.com/ForgeWireLabs/forgewire-fabric/tree/main/crates/fabric-beacon/) |
+| **Service installs** — one-command provisioning of rqlite + hub + runner under NSSM (Windows) or systemd/launchd, with watchdogs and reboot recovery. | [service install](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/docs/operations/service-install.md) |
+| **Human accounts** — passkey sign-in, revocable sessions, step-up, and admin account management for the VS Code and desktop clients, alongside the dispatcher/runner bearer-token model above. | [vscode/README.md](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/vscode/README.md#human-accounts) · [desktop/README.md](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/desktop/README.md#account) |
 
 ---
 
@@ -171,7 +172,7 @@ iwr https://raw.githubusercontent.com/ForgeWireLabs/forgewire-fabric/main/script
 pwsh -NoProfile -ExecutionPolicy Bypass -File .\install-fabric.ps1 -WorkspaceRoot C:\Projects\your-repo
 ```
 
-It provisions rqlite plus the hub/runner services under NSSM supervision, including watchdog behavior for reboot and frozen-loop recovery. Joining a second machine to an existing cluster is the same command plus `-Token <cluster token>`. systemd and launchd scripts live alongside it in [`scripts/install/`](scripts/install/). Read [docs/operations/service-install.md](docs/operations/service-install.md) before installing on a production host.
+It provisions rqlite plus the hub/runner services under NSSM supervision, including watchdog behavior for reboot and frozen-loop recovery. Joining a second machine to an existing cluster is the same command plus `-Token <cluster token>`. systemd and launchd scripts live alongside it in [`scripts/install/`](https://github.com/ForgeWireLabs/forgewire-fabric/tree/main/scripts/install/). Read [docs/operations/service-install.md](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/docs/operations/service-install.md) before installing on a production host.
 
 ---
 
@@ -203,14 +204,14 @@ Secrets follow the same rule: a task asks for a secret *name*, the hub injects t
 
 ## Security
 
-The threat model is explicit: the hub is trusted; runners, dispatchers, and the network are not. Dispatch envelopes, runner claims, and Loom stdin are ed25519-signed; nonces prevent replay; the audit chain is hash-linked so tampering is detectable. The current written model lives at [docs/spec/phase-2.9/THREATMODEL.md](docs/spec/phase-2.9/THREATMODEL.md).
+The threat model is explicit: the hub is trusted; runners, dispatchers, and the network are not. Dispatch envelopes, runner claims, and Loom stdin are ed25519-signed; nonces prevent replay; the audit chain is hash-linked so tampering is detectable. The current written model lives at [docs/spec/phase-2.9/THREATMODEL.md](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/docs/spec/phase-2.9/THREATMODEL.md).
 
 Two operational notes:
 
-- The hub speaks plain HTTP by default. **Put TLS in front of any hub exposed beyond a trusted LAN** — see [docs/operations/tls.md](docs/operations/tls.md).
+- The hub speaks plain HTTP by default. **Put TLS in front of any hub exposed beyond a trusted LAN** — see [docs/operations/tls.md](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/docs/operations/tls.md).
 - The bearer token authorizes dispatch. Treat it like an SSH private key.
 
-Found a vulnerability? Please report it privately via [GitHub Security Advisories](https://github.com/ForgeWireLabs/forgewire-fabric/security/advisories/new) rather than a public issue — see [SECURITY.md](SECURITY.md).
+Found a vulnerability? Please report it privately via [GitHub Security Advisories](https://github.com/ForgeWireLabs/forgewire-fabric/security/advisories/new) rather than a public issue — see [SECURITY.md](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/SECURITY.md).
 
 ---
 
@@ -258,7 +259,9 @@ Fabric is not a VPN, message queue, scheduler, workflow engine, or hosted agent.
 | `install/mcp-configs/` | Ready-to-edit MCP config templates for Claude Code and VS Code. |
 | `scripts/install/` | Windows, systemd, launchd, update, watchdog, and service-management scripts. |
 | `scripts/dr/` | rqlite backup, restore, mirror sync, and chaos-drill tooling. |
-| `vscode/` | VS Code extension: hub connection, hosts/tasks/agents trees, streams, approvals. |
+| `vscode/` | VS Code extension: hub connection, hosts/tasks/agents trees, streams, approvals, human accounts. |
+| `desktop/` | Tauri 2 desktop app: routed workbench, native authenticated transport, human accounts. |
+| `packages/fabric-client-core/` | Shared TypeScript domain/session/command contract consumed by both `vscode/` and `desktop/`. |
 | `docs/` | Quickstarts, positioning, protocol notes, threat model, operations guides. |
 | `tests/` | Protocol, routing, policy, hub, runner, installer, cluster, and cross-language parity tests. |
 
@@ -266,14 +269,15 @@ Fabric is not a VPN, message queue, scheduler, workflow engine, or hosted agent.
 
 ## Documentation
 
-- [docs/QUICKSTART.md](docs/QUICKSTART.md) — fuller hands-on setup path.
-- [docs/POSITIONING.md](docs/POSITIONING.md) — what Fabric is and where it fits.
-- [docs/operations/service-install.md](docs/operations/service-install.md) — long-running service installation.
-- [docs/operations/dr-rqlite-backups.md](docs/operations/dr-rqlite-backups.md) — state backup and restore.
-- [docs/operations/tls.md](docs/operations/tls.md) — TLS and reverse-proxy guidance.
-- [docs/spec/phase-2.9/THREATMODEL.md](docs/spec/phase-2.9/THREATMODEL.md) — threat model.
-- [install/mcp-configs/README.md](install/mcp-configs/README.md) — wiring Claude Code / VS Code via MCP.
-- [vscode/README.md](vscode/README.md) — editor extension guide.
+- [docs/QUICKSTART.md](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/docs/QUICKSTART.md) — fuller hands-on setup path.
+- [docs/POSITIONING.md](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/docs/POSITIONING.md) — what Fabric is and where it fits.
+- [docs/operations/service-install.md](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/docs/operations/service-install.md) — long-running service installation.
+- [docs/operations/dr-rqlite-backups.md](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/docs/operations/dr-rqlite-backups.md) — state backup and restore.
+- [docs/operations/tls.md](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/docs/operations/tls.md) — TLS and reverse-proxy guidance.
+- [docs/spec/phase-2.9/THREATMODEL.md](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/docs/spec/phase-2.9/THREATMODEL.md) — threat model.
+- [install/mcp-configs/README.md](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/install/mcp-configs/README.md) — wiring Claude Code / VS Code via MCP.
+- [vscode/README.md](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/vscode/README.md) — editor extension guide.
+- [desktop/README.md](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/desktop/README.md) — Tauri desktop app guide.
 
 ---
 
@@ -300,4 +304,4 @@ pytest tests/test_installer_assets_in_sync.py -q
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE).
+Apache License 2.0 — see [LICENSE](https://github.com/ForgeWireLabs/forgewire-fabric/blob/main/LICENSE).

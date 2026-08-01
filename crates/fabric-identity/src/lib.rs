@@ -103,20 +103,22 @@ pub fn load(path: &Path) -> Result<IdentityFile, IdentityError> {
     }
     // Fall back to Python/legacy format
     let raw: serde_json::Value = serde_json::from_str(&data)?;
-    let id = raw.get("runner_id")
+    let id = raw
+        .get("runner_id")
         .or_else(|| raw.get("dispatcher_id"))
         .or_else(|| raw.get("id"))
         .and_then(|v| v.as_str())
         .ok_or_else(|| serde_json::from_str::<IdentityFile>("").unwrap_err())?
         .to_owned();
-    let public_key_hex = raw.get("public_key")
+    let public_key_hex = raw
+        .get("public_key")
         .or_else(|| raw.get("public_key_hex"))
         .and_then(|v| v.as_str())
         .ok_or_else(|| serde_json::from_str::<IdentityFile>("").unwrap_err())?
         .to_owned();
-    let secret_key_hex = raw.get("private_key")
-        .or_else(|| raw.get("secret_key_hex")
-        .or_else(|| raw.get("secret_key")))
+    let secret_key_hex = raw
+        .get("private_key")
+        .or_else(|| raw.get("secret_key_hex").or_else(|| raw.get("secret_key")))
         .and_then(|v| v.as_str())
         .ok_or_else(|| serde_json::from_str::<IdentityFile>("").unwrap_err())?
         .to_owned();
@@ -125,18 +127,21 @@ pub fn load(path: &Path) -> Result<IdentityFile, IdentityError> {
         purpose: KeyPurpose::Runner, // Python format doesn't carry purpose; default Runner
         public_key_hex,
         secret_key_hex,
-        hostname: raw.get("hostname").and_then(|v| v.as_str()).map(|s| s.to_owned()),
-        created_at: raw.get("created_at").and_then(|v| v.as_str()).map(|s| s.to_owned()),
+        hostname: raw
+            .get("hostname")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_owned()),
+        created_at: raw
+            .get("created_at")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_owned()),
     };
     validate(&identity)?;
     Ok(identity)
 }
 
 /// Load and validate, also checking that the key purpose matches.
-pub fn load_with_purpose(
-    path: &Path,
-    expected: KeyPurpose,
-) -> Result<IdentityFile, IdentityError> {
+pub fn load_with_purpose(path: &Path, expected: KeyPurpose) -> Result<IdentityFile, IdentityError> {
     let identity = load(path)?;
     if identity.purpose != expected {
         return Err(IdentityError::PurposeMismatch {
@@ -252,10 +257,7 @@ mod tests {
         let path = std::env::temp_dir().join("test_identity_purpose.json");
         save(&path, &id).unwrap();
         let result = load_with_purpose(&path, KeyPurpose::Dispatcher);
-        assert!(matches!(
-            result,
-            Err(IdentityError::PurposeMismatch { .. })
-        ));
+        assert!(matches!(result, Err(IdentityError::PurposeMismatch { .. })));
         let _ = std::fs::remove_file(&path);
     }
 

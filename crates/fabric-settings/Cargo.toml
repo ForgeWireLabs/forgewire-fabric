@@ -1,0 +1,13 @@
+[package]
+name = "fabric-settings"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "Schema-backed three-tier settings resolution for ForgeWire Fabric."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"

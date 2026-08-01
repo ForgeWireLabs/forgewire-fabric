@@ -14,8 +14,8 @@
 
 #![deny(rust_2018_idioms)]
 
-use std::path::Path;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use thiserror::Error;
 
 // ── Error ────────────────────────────────────────────────────────────────────
@@ -119,7 +119,7 @@ impl FabricPolicy {
         if path.exists() {
             let contents = std::fs::read_to_string(path)?;
             let policy: FabricPolicy = serde_yaml::from_str(&contents)?;
-            tracing_or_eprintln(format!("policy loaded from {}", path.display()));
+            tracing_or_eprintln(&format!("policy loaded from {}", path.display()));
             Ok(policy)
         } else {
             let default = FabricPolicy::safe_default();
@@ -131,7 +131,7 @@ impl FabricPolicy {
                 }
             }
             std::fs::write(path, yaml)?;
-            tracing_or_eprintln(format!(
+            tracing_or_eprintln(&format!(
                 "policy.yaml not found — wrote safe default to {}",
                 path.display()
             ));
@@ -159,20 +159,10 @@ impl FabricPolicy {
     pub fn safe_default() -> Self {
         FabricPolicy {
             protected_branches: vec!["main".into(), "release/*".into()],
-            forbidden_paths: vec![
-                ".github/workflows/**".into(),
-                "secrets/**".into(),
-            ],
+            forbidden_paths: vec![".github/workflows/**".into(), "secrets/**".into()],
             max_diff_lines: Some(2000),
-            require_approval: vec![
-                "merge".into(),
-                "push".into(),
-                "network_egress".into(),
-            ],
-            egress_allowlist: vec![
-                "pypi.org".into(),
-                "github.com".into(),
-            ],
+            require_approval: vec!["merge".into(), "push".into(), "network_egress".into()],
+            egress_allowlist: vec!["pypi.org".into(), "github.com".into()],
             daily_budget_usd: Some(5.00),
             weekly_budget_usd: Some(25.00),
             ..Default::default()
@@ -230,7 +220,7 @@ weekly_budget_usd: 25.00
     }
 }
 
-fn tracing_or_eprintln(msg: String) {
+fn tracing_or_eprintln(msg: &str) {
     // Use eprintln as fallback — tracing may not be initialised in test contexts.
     eprintln!("[fabric-policy] {msg}");
 }
@@ -289,13 +279,28 @@ pub struct PolicyDecision {
 
 impl PolicyDecision {
     pub fn allow() -> Self {
-        Self { allowed: true, denied: false, needs_approval: false, reasons: vec![] }
+        Self {
+            allowed: true,
+            denied: false,
+            needs_approval: false,
+            reasons: vec![],
+        }
     }
     pub fn deny(reason: impl Into<String>) -> Self {
-        Self { allowed: false, denied: true, needs_approval: false, reasons: vec![reason.into()] }
+        Self {
+            allowed: false,
+            denied: true,
+            needs_approval: false,
+            reasons: vec![reason.into()],
+        }
     }
     pub fn require_approval(reason: impl Into<String>) -> Self {
-        Self { allowed: false, denied: false, needs_approval: true, reasons: vec![reason.into()] }
+        Self {
+            allowed: false,
+            denied: false,
+            needs_approval: true,
+            reasons: vec![reason.into()],
+        }
     }
 }
 
@@ -338,18 +343,14 @@ impl PolicyEngine {
             // Hard-blocked branches
             for blocked in &p.blocked_branches {
                 if glob_match(blocked, branch) {
-                    return PolicyDecision::deny(format!(
-                        "branch '{branch}' is blocked by policy"
-                    ));
+                    return PolicyDecision::deny(format!("branch '{branch}' is blocked by policy"));
                 }
             }
             // Allowlist (if configured)
             if !p.allowed_branches.is_empty()
                 && !p.allowed_branches.iter().any(|a| glob_match(a, branch))
             {
-                return PolicyDecision::deny(format!(
-                    "branch '{branch}' not in allowed list"
-                ));
+                return PolicyDecision::deny(format!("branch '{branch}' not in allowed list"));
             }
             // Protected branches require approval
             for pat in &p.protected_branches {
@@ -366,9 +367,7 @@ impl PolicyEngine {
             // Hard-blocked scopes
             for blocked in &p.blocked_scope_globs {
                 if scopes_overlap(glob, blocked) {
-                    return PolicyDecision::deny(format!(
-                        "scope '{glob}' blocked by policy"
-                    ));
+                    return PolicyDecision::deny(format!("scope '{glob}' blocked by policy"));
                 }
             }
             // Forbidden paths
@@ -395,7 +394,11 @@ impl PolicyEngine {
             if let Some(ref cwd) = req.cwd {
                 if !cwd.is_empty() {
                     for forbidden in &p.forbidden_paths {
-                        if glob_match(forbidden, cwd) || cwd.starts_with(forbidden.trim_end_matches("/**").trim_end_matches('*')) {
+                        if glob_match(forbidden, cwd)
+                            || cwd.starts_with(
+                                forbidden.trim_end_matches("/**").trim_end_matches('*'),
+                            )
+                        {
                             return PolicyDecision::deny(format!(
                                 "cwd '{cwd}' overlaps forbidden path '{forbidden}'"
                             ));
@@ -465,15 +468,16 @@ pub struct BudgetEnforcer {
 
 impl BudgetEnforcer {
     pub fn new(policy: BudgetPolicy) -> Self {
-        Self { policy, tasks_this_week: 0 }
+        Self {
+            policy,
+            tasks_this_week: 0,
+        }
     }
 
     pub fn check_dispatch(&self) -> PolicyDecision {
         if let Some(cap) = self.policy.weekly_task_cap {
             if self.tasks_this_week >= cap {
-                return PolicyDecision::deny(format!(
-                    "weekly task cap reached ({cap} tasks)"
-                ));
+                return PolicyDecision::deny(format!("weekly task cap reached ({cap} tasks)"));
             }
         }
         PolicyDecision::allow()
@@ -543,9 +547,7 @@ fn glob_parts_match(pat: &[&str], val: &[&str]) -> bool {
     match (pat.first(), val.first()) {
         (None, _) => true,
         (Some(&"**"), _) => true,
-        (Some(p), Some(v)) => {
-            segment_match(p, v) && glob_parts_match(&pat[1..], &val[1..])
-        }
+        (Some(p), Some(v)) => segment_match(p, v) && glob_parts_match(&pat[1..], &val[1..]),
         (Some(_), None) => false,
     }
 }
@@ -598,14 +600,22 @@ mod tests {
 
     #[test]
     fn default_policy_allows_everything() {
-        let d = gate(FabricPolicy::default()).evaluate_dispatch(&req("core/**", Some("agent/test")));
+        let d =
+            gate(FabricPolicy::default()).evaluate_dispatch(&req("core/**", Some("agent/test")));
         assert!(d.allowed);
     }
 
     #[test]
     fn blocked_branch_denied() {
-        let p = FabricPolicy { blocked_branches: vec!["main".into()], ..Default::default() };
-        assert!(gate(p).evaluate_dispatch(&req("core/**", Some("main"))).denied);
+        let p = FabricPolicy {
+            blocked_branches: vec!["main".into()],
+            ..Default::default()
+        };
+        assert!(
+            gate(p)
+                .evaluate_dispatch(&req("core/**", Some("main")))
+                .denied
+        );
     }
 
     #[test]
@@ -640,7 +650,10 @@ mod tests {
 
     #[test]
     fn diff_lines_cap_at_completion() {
-        let p = FabricPolicy { max_diff_lines: Some(100), ..Default::default() };
+        let p = FabricPolicy {
+            max_diff_lines: Some(100),
+            ..Default::default()
+        };
         let engine = PolicyEngine::new(p);
         let d = engine.evaluate_completion(&CompletionRequest {
             task_id: "t1".into(),
@@ -653,7 +666,10 @@ mod tests {
 
     #[test]
     fn diff_lines_at_limit_allowed() {
-        let p = FabricPolicy { max_diff_lines: Some(100), ..Default::default() };
+        let p = FabricPolicy {
+            max_diff_lines: Some(100),
+            ..Default::default()
+        };
         let engine = PolicyEngine::new(p);
         let d = engine.evaluate_completion(&CompletionRequest {
             task_id: "t1".into(),
@@ -687,14 +703,20 @@ mod tests {
 
     #[test]
     fn cost_cap_denies_at_daily() {
-        let b = BudgetPolicy { daily_cost_cap_usd: Some(10.0), ..Default::default() };
+        let b = BudgetPolicy {
+            daily_cost_cap_usd: Some(10.0),
+            ..Default::default()
+        };
         assert!(b.check_cost(10.0, 0.0).denied);
         assert!(b.check_cost(9.99, 0.0).allowed);
     }
 
     #[test]
     fn cost_cap_denies_over_weekly() {
-        let b = BudgetPolicy { weekly_cost_cap_usd: Some(50.0), ..Default::default() };
+        let b = BudgetPolicy {
+            weekly_cost_cap_usd: Some(50.0),
+            ..Default::default()
+        };
         assert!(b.check_cost(0.0, 55.0).denied);
     }
 
@@ -730,7 +752,10 @@ mod tests {
     #[test]
     fn budget_cap_enforced() {
         let p = FabricPolicy {
-            budget: BudgetPolicy { weekly_task_cap: Some(2), ..Default::default() },
+            budget: BudgetPolicy {
+                weekly_task_cap: Some(2),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let mut g = gate(p);
@@ -756,29 +781,59 @@ mod tests {
     fn policy_from_fixture(v: &serde_json::Value) -> FabricPolicy {
         let obj = v.as_object().expect("policy must be an object");
         FabricPolicy {
-            protected_branches: obj.get("protected_branches")
+            protected_branches: obj
+                .get("protected_branches")
                 .and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default(),
-            blocked_branches: obj.get("blocked_branches")
+            blocked_branches: obj
+                .get("blocked_branches")
                 .and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default(),
-            allowed_branches: obj.get("allowed_branches")
+            allowed_branches: obj
+                .get("allowed_branches")
                 .and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default(),
-            forbidden_paths: obj.get("forbidden_paths")
+            forbidden_paths: obj
+                .get("forbidden_paths")
                 .and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default(),
-            blocked_scope_globs: obj.get("blocked_scope_globs")
+            blocked_scope_globs: obj
+                .get("blocked_scope_globs")
                 .and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default(),
-            require_approval_for_scopes: obj.get("require_approval_for_scopes")
+            require_approval_for_scopes: obj
+                .get("require_approval_for_scopes")
                 .and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default(),
             ..Default::default()
         }
@@ -787,8 +842,13 @@ mod tests {
     fn request_from_fixture(v: &serde_json::Value) -> DispatchRequest {
         DispatchRequest {
             task_id: "fixture".into(),
-            scope_globs: v["scope_globs"].as_array()
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            scope_globs: v["scope_globs"]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default(),
             target_branch: v["target_branch"].as_str().map(String::from),
             dispatcher_id: None,

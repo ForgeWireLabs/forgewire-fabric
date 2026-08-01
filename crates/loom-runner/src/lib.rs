@@ -17,15 +17,38 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use fabric_client::{ClaimPayload, ClaimResponse, HeartbeatStats, HubClient, RegisterPayload, TaskResult};
+use fabric_client::{
+    ClaimPayload, ClaimResponse, HeartbeatStats, HubClient, RegisterPayload, TaskResult,
+};
+use fabric_egress::{EgressProxy, SAFE_CHILD_ENV_VARS};
 use fabric_identity::IdentityFile;
 use fabric_types::KeyPurpose;
-use sha2::{Digest, Sha256};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::watch;
 use tracing::{debug, error, info, warn};
+
+/// Platform-appropriate default state directory: `%PROGRAMDATA%\forgewire`
+/// on Windows, `~/Library/Application Support/forgewire` on macOS,
+/// `/var/lib/forgewire` on Linux (the FHS convention for a system-service
+/// daemon, which this runner is per its systemd unit file -- not a bug to
+/// fix here, unlike Windows/macOS). Only consulted as a fallback: every
+/// shipped installer already passes FORGEWIRE_HUB_TOKEN_FILE/
+/// FORGEWIRE_RUNNER_IDENTITY explicitly, so this default never relocates
+/// an already-configured installation.
+fn default_state_dir() -> PathBuf {
+    if cfg!(windows) {
+        PathBuf::from(r"C:\ProgramData\forgewire")
+    } else if cfg!(target_os = "macos") {
+        std::env::var("HOME")
+            .map(|home| PathBuf::from(home).join("Library/Application Support/forgewire"))
+            .unwrap_or_else(|_| PathBuf::from("/var/lib/forgewire"))
+    } else {
+        PathBuf::from("/var/lib/forgewire")
+    }
+}
 
 pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 pub const POLL_INTERVAL: Duration = Duration::from_secs(5);
@@ -56,11 +79,10 @@ impl LoomConfig {
             .and_then(|v| v.parse().ok())
             .unwrap_or(fabric_beacon::DEFAULT_BEACON_PORT);
         let token_file = std::env::var("FORGEWIRE_HUB_TOKEN_FILE").unwrap_or_else(|_| {
-            if cfg!(windows) {
-                r"C:\ProgramData\forgewire\hub.token".to_owned()
-            } else {
-                "/var/lib/forgewire/hub.token".to_owned()
-            }
+            default_state_dir()
+                .join("hub.token")
+                .to_string_lossy()
+                .into_owned()
         });
         let token = std::fs::read_to_string(&token_file)
             .map_err(|e| format!("cannot read token file {token_file}: {e}"))?
@@ -68,13 +90,7 @@ impl LoomConfig {
             .to_owned();
         let identity_path = std::env::var("FORGEWIRE_RUNNER_IDENTITY")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                if cfg!(windows) {
-                    PathBuf::from(r"C:\ProgramData\forgewire\loom_runner_identity.json")
-                } else {
-                    PathBuf::from("/var/lib/forgewire/loom_runner_identity.json")
-                }
-            });
+            .unwrap_or_else(|_| default_state_dir().join("loom_runner_identity.json"));
         let max_concurrent = std::env::var("FORGEWIRE_RUNNER_MAX_CONCURRENT")
             .ok()
             .and_then(|v| v.parse().ok())
@@ -274,7 +290,12 @@ pub async fn claim_loop(
     }
 }
 
-async fn run_one_task(client: Arc<HubClient>, identity: Arc<IdentityFile>, config: Arc<LoomConfig>, task: &Value) {
+async fn run_one_task(
+    client: Arc<HubClient>,
+    identity: Arc<IdentityFile>,
+    config: Arc<LoomConfig>,
+    task: &Value,
+) {
     let task_id = task["id"].as_i64().unwrap_or(0);
     let runner_id = identity.id.clone();
 
@@ -290,7 +311,7 @@ async fn run_one_task(client: Arc<HubClient>, identity: Arc<IdentityFile>, confi
     // signed digest and it doesn't match the stored env map, refuse to run —
     // defense-in-depth even though the runner trusts the hub.
     if let Some(signed_digest) = task["loom_env_digest"].as_str() {
-        let env_obj = task["env"].as_object().map(|o| o.clone()).unwrap_or_default();
+        let env_obj = task["env"].as_object().cloned().unwrap_or_default();
         let actual_digest = compute_env_digest(&env_obj);
         if actual_digest != signed_digest {
             error!(
@@ -299,7 +320,13 @@ async fn run_one_task(client: Arc<HubClient>, identity: Arc<IdentityFile>, confi
                 actual = %actual_digest,
                 "loom env digest mismatch — refusing to spawn; brief may have been tampered"
             );
-            submit_failed(&client, task_id, &runner_id, "env digest mismatch: refusing spawn".into()).await;
+            submit_failed(
+                &client,
+                task_id,
+                &runner_id,
+                "env digest mismatch: refusing spawn".into(),
+            )
+            .await;
             return;
         }
     }
@@ -340,9 +367,23 @@ async fn run_one_task(client: Arc<HubClient>, identity: Arc<IdentityFile>, confi
         } else {
             format!("{} {}", program, args.join(" "))
         };
-        let cwd_opt = if cwd.is_empty() { None } else { Some(cwd.as_str()) };
+        let cwd_opt = if cwd.is_empty() {
+            None
+        } else {
+            Some(cwd.as_str())
+        };
         match client
-            .post_intent(task_id, &runner_id, "shell_exec", &[], &[], Some(command_str.as_str()), cwd_opt, None, None)
+            .post_intent(
+                task_id,
+                &runner_id,
+                "shell_exec",
+                &[],
+                &[],
+                Some(command_str.as_str()),
+                cwd_opt,
+                None,
+                None,
+            )
             .await
         {
             Ok(resp) => {
@@ -381,6 +422,22 @@ async fn run_one_task(client: Arc<HubClient>, identity: Arc<IdentityFile>, confi
         }
     }
 
+    let egress_proxy = match EgressProxy::start_for_task(task_id, task.get("network_egress")).await
+    {
+        Ok(proxy) => proxy,
+        Err(e) => {
+            error!(task_id, error = %e, "loom egress policy rejected; refusing spawn");
+            submit_failed(
+                &client,
+                task_id,
+                &runner_id,
+                format!("invalid network_egress policy: {e}"),
+            )
+            .await;
+            return;
+        }
+    };
+
     let mut cmd = Command::new(&program);
     cmd.args(&args)
         .stdin(std::process::Stdio::piped())
@@ -391,12 +448,7 @@ async fn run_one_task(client: Arc<HubClient>, identity: Arc<IdentityFile>, confi
     // service's ambient env (which carries FORGEWIRE_HUB_TOKEN, key paths, etc.).
     // Build the process env from an explicit allowlist plus the brief's loom_env.
     cmd.env_clear();
-    for var in &[
-        "PATH", "HOME", "USERPROFILE", "SYSTEMROOT", "SYSTEMDRIVE",
-        "TEMP", "TMP", "TMPDIR",
-        "LANG", "LC_ALL", "LC_CTYPE", "TZ",
-        "COMPUTERNAME", "USERNAME",
-    ] {
+    for var in SAFE_CHILD_ENV_VARS {
         if let Ok(val) = std::env::var(var) {
             cmd.env(var, val);
         }
@@ -415,6 +467,13 @@ async fn run_one_task(client: Arc<HubClient>, identity: Arc<IdentityFile>, confi
         }
     }
 
+    // The task-local proxy wins over signed env overrides. `network_egress` is
+    // an out-of-band bearer-gated v2 field; the frozen signed command/cwd/env
+    // bytes remain unchanged.
+    if let Some(proxy) = egress_proxy.as_ref() {
+        cmd.envs(proxy.proxy_env());
+    }
+
     let result = match cmd.spawn() {
         Ok(mut child) => {
             let stdin = child.stdin.take();
@@ -424,16 +483,12 @@ async fn run_one_task(client: Arc<HubClient>, identity: Arc<IdentityFile>, confi
             let stdout_handle = {
                 let c = client.clone();
                 let rid = runner_id.clone();
-                tokio::spawn(async move {
-                    pump_pipe(c, task_id, &rid, "stdout", stdout).await
-                })
+                tokio::spawn(async move { pump_pipe(c, task_id, &rid, "stdout", stdout).await })
             };
             let stderr_handle = {
                 let c = client.clone();
                 let rid = runner_id.clone();
-                tokio::spawn(async move {
-                    pump_pipe(c, task_id, &rid, "stderr", stderr).await
-                })
+                tokio::spawn(async move { pump_pipe(c, task_id, &rid, "stderr", stderr).await })
             };
 
             // M2.9.4 (F4): poll the signed-stdin route and write to the process pipe.
@@ -457,7 +512,11 @@ async fn run_one_task(client: Arc<HubClient>, identity: Arc<IdentityFile>, confi
                     }
                 }
             } else {
-                child.wait().await.map(|s| s.code().unwrap_or(-1)).unwrap_or(-1)
+                child
+                    .wait()
+                    .await
+                    .map(|s| s.code().unwrap_or(-1))
+                    .unwrap_or(-1)
             };
 
             stdin_handle.abort();
@@ -472,7 +531,10 @@ async fn run_one_task(client: Arc<HubClient>, identity: Arc<IdentityFile>, confi
             let tail = log_lines[tail_start..].join("\n");
 
             let (status, error) = if rc == -124 {
-                ("timed_out".into(), Some(format!("command timed out after {timeout_secs}s")))
+                (
+                    "timed_out".into(),
+                    Some(format!("command timed out after {timeout_secs}s")),
+                )
             } else if rc == 0 {
                 ("done".into(), None)
             } else {
@@ -503,6 +565,27 @@ async fn run_one_task(client: Arc<HubClient>, identity: Arc<IdentityFile>, confi
             exit_code: None,
         },
     };
+
+    if let Some(proxy) = egress_proxy {
+        let denials = proxy.shutdown().await;
+        let denial_count = denials.len();
+        for denial in denials {
+            let details = serde_json::to_value(&denial).unwrap_or(Value::Null);
+            if let Err(error) = client
+                .append_progress_event(
+                    task_id,
+                    &result.worker_id,
+                    "task egress policy denied a connection",
+                    "egress_denied",
+                    &details,
+                )
+                .await
+            {
+                error!(task_id, error = %error, "failed to audit loom egress denial");
+            }
+        }
+        info!(task_id, denial_count, "loom task egress proxy stopped");
+    }
 
     info!(task_id, status = %result.status, "loom task completed");
     if let Err(e) = client.submit_result(task_id, &result).await {
@@ -614,7 +697,12 @@ fn resolve_command(task: &Value) -> (String, Vec<String>, String, u64) {
     let cwd = task["cwd"].as_str().unwrap_or("").to_owned();
     let timeout = task["timeout_seconds"].as_u64().unwrap_or(0);
     if cfg!(windows) {
-        ("cmd".to_owned(), vec!["/c".to_owned(), prompt], cwd, timeout)
+        (
+            "cmd".to_owned(),
+            vec!["/c".to_owned(), prompt],
+            cwd,
+            timeout,
+        )
     } else {
         ("sh".to_owned(), vec!["-c".to_owned(), prompt], cwd, timeout)
     }
@@ -702,18 +790,20 @@ fn build_claim_payload(config: &LoomConfig) -> ClaimPayload {
 }
 
 pub fn detect_tools() -> Vec<String> {
-    ["git", "python", "python3", "node", "npm", "cargo", "rustc", "pytest", "make"]
-        .iter()
-        .filter(|tool| {
-            std::process::Command::new(tool)
-                .arg("--version")
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .is_ok()
-        })
-        .map(|s| (*s).to_owned())
-        .collect()
+    [
+        "git", "python", "python3", "node", "npm", "cargo", "rustc", "pytest", "make",
+    ]
+    .iter()
+    .filter(|tool| {
+        std::process::Command::new(tool)
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok()
+    })
+    .map(|s| (*s).to_owned())
+    .collect()
 }
 
 fn gethostname() -> String {

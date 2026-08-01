@@ -11,6 +11,18 @@ use serde_json::{json, Value};
 use crate::state::HubState;
 use crate::utils::{check_skew, utc_now, verify_sig};
 
+owned_router! {
+    pub fn router, ROUTES {
+        "GET" get "/runners" => list_runners;
+        "POST" post "/runners/register" => register_runner;
+        "POST" post "/runners/{runner_id}/heartbeat" => heartbeat_runner;
+        "POST" post "/runners/{runner_id}/drain" => drain_runner;
+        "POST" post "/runners/{runner_id}/drain-by-dispatcher" => drain_runner_by_dispatcher;
+        "POST" post "/runners/{runner_id}/undrain-by-dispatcher" => undrain_runner_by_dispatcher;
+        "DELETE" delete "/runners/{runner_id}" => deregister_runner;
+    }
+}
+
 // Protocol version bounds (matching Python PROTOCOL_VERSION / MIN_COMPATIBLE).
 //
 // PROTOCOL_VERSION marks the current wire era (v4 = M2.9 signed-Loom-brief era).
@@ -70,8 +82,12 @@ pub struct RegisterPayload {
     pub signature: String,
 }
 
-fn default_max_concurrent() -> i64 { 1 }
-fn default_kinds() -> Vec<String> { vec!["agent".to_owned()] }
+fn default_max_concurrent() -> i64 {
+    1
+}
+fn default_kinds() -> Vec<String> {
+    vec!["agent".to_owned()]
+}
 
 #[derive(Deserialize)]
 pub struct HeartbeatPayload {
@@ -105,21 +121,41 @@ pub async fn list_runners(
     State(state): State<Arc<HubState>>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let labels = state.store.get_labels().await.unwrap_or(json!({}));
-    let aliases = labels["runner_aliases"].as_object().cloned().unwrap_or_default();
-    let host_aliases = labels["host_aliases"].as_object().cloned().unwrap_or_default();
-    let mut runners = state.store.list_runners().await
+    let aliases = labels["runner_aliases"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let host_aliases = labels["host_aliases"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let mut runners = state
+        .store
+        .list_runners()
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let runners_val: Vec<Value> = runners.iter_mut().map(|r| {
-        let hostname = r.hostname.to_lowercase();
-        let host_alias = host_aliases.get(&hostname).and_then(|v| v.as_str()).unwrap_or("").to_owned();
-        let alias = aliases.get(&r.runner_id).and_then(|v| v.as_str()).unwrap_or(&host_alias).to_owned();
-        let mut v = serde_json::to_value(&*r).unwrap_or(Value::Null);
-        if let Some(obj) = v.as_object_mut() {
-            obj.insert("alias".into(), json!(alias));
-            obj.insert("host_alias".into(), json!(host_alias));
-        }
-        v
-    }).collect();
+    let runners_val: Vec<Value> = runners
+        .iter_mut()
+        .map(|r| {
+            let hostname = r.hostname.to_lowercase();
+            let host_alias = host_aliases
+                .get(&hostname)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_owned();
+            let alias = aliases
+                .get(&r.runner_id)
+                .and_then(|v| v.as_str())
+                .unwrap_or(&host_alias)
+                .to_owned();
+            let mut v = serde_json::to_value(&*r).unwrap_or(Value::Null);
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("alias".into(), json!(alias));
+                obj.insert("host_alias".into(), json!(host_alias));
+            }
+            v
+        })
+        .collect();
     let hub_name = labels["hub_name"].as_str().unwrap_or("").to_owned();
     Ok(Json(json!({
         "hub_protocol_version": state.protocol_version,
@@ -136,14 +172,22 @@ pub async fn register_runner(
 ) -> Result<Json<Value>, (StatusCode, String)> {
     // Protocol version check
     if payload.protocol_version < MIN_COMPATIBLE {
-        return Err((StatusCode::UPGRADE_REQUIRED, format!(
-            "runner protocol_version={} is older than hub minimum {MIN_COMPATIBLE}", payload.protocol_version
-        )));
+        return Err((
+            StatusCode::UPGRADE_REQUIRED,
+            format!(
+                "runner protocol_version={} is older than hub minimum {MIN_COMPATIBLE}",
+                payload.protocol_version
+            ),
+        ));
     }
     if payload.protocol_version > PROTOCOL_VERSION {
-        return Err((StatusCode::UPGRADE_REQUIRED, format!(
-            "runner protocol_version={} is newer than hub {PROTOCOL_VERSION}", payload.protocol_version
-        )));
+        return Err((
+            StatusCode::UPGRADE_REQUIRED,
+            format!(
+                "runner protocol_version={} is newer than hub {PROTOCOL_VERSION}",
+                payload.protocol_version
+            ),
+        ));
     }
 
     check_skew(payload.timestamp).map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
@@ -184,10 +228,14 @@ pub async fn register_runner(
         "mcp_manifest": payload.mcp_manifest,
     });
 
-    let record = state.store.upsert_runner(record_data).await.map_err(|e| match e {
-        fabric_store::StoreError::PermissionDenied(m) => (StatusCode::CONFLICT, m),
-        other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
-    })?;
+    let record = state
+        .store
+        .upsert_runner(record_data)
+        .await
+        .map_err(|e| match e {
+            fabric_store::StoreError::PermissionDenied(m) => (StatusCode::CONFLICT, m),
+            other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+        })?;
 
     // Project the advertised mcp_manifest into the normalized capability index
     // so skill/tool routing and `capability_index_rows` reflect this runner.
@@ -207,13 +255,24 @@ pub async fn register_runner(
 
     // Register host role — Loom (command-only) runners are host runners, Fabric
     // (agent) runners are agent runners.
-    let is_command_only = payload.kinds.iter().any(|k| k == "command")
-        && !payload.kinds.iter().any(|k| k == "agent");
-    let role = if is_command_only { "host_runner" } else { "agent_runner" };
-    let _ = state.store.set_host_role(
-        &payload.hostname, role, true, Some("registered"),
-        json!({"runner_id": payload.runner_id}), &now,
-    ).await;
+    let is_command_only =
+        payload.kinds.iter().any(|k| k == "command") && !payload.kinds.iter().any(|k| k == "agent");
+    let role = if is_command_only {
+        "host_runner"
+    } else {
+        "agent_runner"
+    };
+    let _ = state
+        .store
+        .set_host_role(
+            &payload.hostname,
+            role,
+            true,
+            Some("registered"),
+            json!({"runner_id": payload.runner_id}),
+            &now,
+        )
+        .await;
 
     Ok(Json(json!({
         "hub_protocol_version": state.protocol_version,
@@ -234,7 +293,10 @@ pub async fn heartbeat_runner(
 
     check_skew(payload.timestamp).map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
 
-    let public_key = state.store.runner_public_key(&runner_id).await
+    let public_key = state
+        .store
+        .runner_public_key(&runner_id)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "runner not registered".into()))?;
 
@@ -261,11 +323,17 @@ pub async fn heartbeat_runner(
         "heartbeat_failures_total": payload.heartbeat_failures_total,
     });
 
-    let record = state.store.heartbeat_runner(&runner_id, data, &now).await.map_err(|e| match e {
-        fabric_store::StoreError::NotFound(_) => (StatusCode::NOT_FOUND, "runner not registered".into()),
-        fabric_store::StoreError::PermissionDenied(m) => (StatusCode::CONFLICT, m),
-        other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
-    })?;
+    let record = state
+        .store
+        .heartbeat_runner(&runner_id, data, &now)
+        .await
+        .map_err(|e| match e {
+            fabric_store::StoreError::NotFound(_) => {
+                (StatusCode::NOT_FOUND, "runner not registered".into())
+            }
+            fabric_store::StoreError::PermissionDenied(m) => (StatusCode::CONFLICT, m),
+            other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+        })?;
 
     Ok(Json(serde_json::to_value(record).unwrap_or(Value::Null)))
 }
@@ -282,7 +350,10 @@ pub async fn drain_runner(
     }
     check_skew(payload.timestamp).map_err(|e| (StatusCode::UNPROCESSABLE_ENTITY, e))?;
 
-    let public_key = state.store.runner_public_key(&runner_id).await
+    let public_key = state
+        .store
+        .runner_public_key(&runner_id)
+        .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "runner not registered".into()))?;
 
@@ -295,10 +366,16 @@ pub async fn drain_runner(
     verify_sig(&public_key, &envelope, &payload.signature)
         .map_err(|e| (StatusCode::FORBIDDEN, e))?;
 
-    let record = state.store.request_drain(&runner_id).await.map_err(|e| match e {
-        fabric_store::StoreError::NotFound(_) => (StatusCode::NOT_FOUND, "runner not registered".into()),
-        other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
-    })?;
+    let record = state
+        .store
+        .request_drain(&runner_id)
+        .await
+        .map_err(|e| match e {
+            fabric_store::StoreError::NotFound(_) => {
+                (StatusCode::NOT_FOUND, "runner not registered".into())
+            }
+            other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+        })?;
     Ok(Json(serde_json::to_value(record).unwrap_or(Value::Null)))
 }
 
@@ -308,10 +385,16 @@ pub async fn drain_runner_by_dispatcher(
     State(state): State<Arc<HubState>>,
     Path(runner_id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    let record = state.store.request_drain(&runner_id).await.map_err(|e| match e {
-        fabric_store::StoreError::NotFound(_) => (StatusCode::NOT_FOUND, "runner not registered".into()),
-        other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
-    })?;
+    let record = state
+        .store
+        .request_drain(&runner_id)
+        .await
+        .map_err(|e| match e {
+            fabric_store::StoreError::NotFound(_) => {
+                (StatusCode::NOT_FOUND, "runner not registered".into())
+            }
+            other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+        })?;
     Ok(Json(serde_json::to_value(record).unwrap_or(Value::Null)))
 }
 
@@ -321,10 +404,16 @@ pub async fn undrain_runner_by_dispatcher(
     State(state): State<Arc<HubState>>,
     Path(runner_id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    let record = state.store.request_undrain(&runner_id).await.map_err(|e| match e {
-        fabric_store::StoreError::NotFound(_) => (StatusCode::NOT_FOUND, "runner not registered".into()),
-        other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
-    })?;
+    let record = state
+        .store
+        .request_undrain(&runner_id)
+        .await
+        .map_err(|e| match e {
+            fabric_store::StoreError::NotFound(_) => {
+                (StatusCode::NOT_FOUND, "runner not registered".into())
+            }
+            other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+        })?;
     Ok(Json(serde_json::to_value(record).unwrap_or(Value::Null)))
 }
 
@@ -334,9 +423,15 @@ pub async fn deregister_runner(
     State(state): State<Arc<HubState>>,
     Path(runner_id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    let record = state.store.delete_runner(&runner_id).await.map_err(|e| match e {
-        fabric_store::StoreError::NotFound(_) => (StatusCode::NOT_FOUND, "runner not registered".into()),
-        other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
-    })?;
+    let record = state
+        .store
+        .delete_runner(&runner_id)
+        .await
+        .map_err(|e| match e {
+            fabric_store::StoreError::NotFound(_) => {
+                (StatusCode::NOT_FOUND, "runner not registered".into())
+            }
+            other => (StatusCode::INTERNAL_SERVER_ERROR, other.to_string()),
+        })?;
     Ok(Json(serde_json::to_value(record).unwrap_or(Value::Null)))
 }

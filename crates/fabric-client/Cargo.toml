@@ -6,9 +6,9 @@ license.workspace = true
 description = "Typed HTTP client for the ForgeWire Fabric hub API."
 
 [dependencies]
-fabric-types = { path = "../fabric-types" }
-fabric-protocol = { path = "../fabric-protocol" }
-fabric-identity = { path = "../fabric-identity" }
+fabric-types = { package = "forgewire-fabric-types", path = "../fabric-types", version = "0.10.0" }
+fabric-protocol = { path = "../fabric-protocol", version = "0.10.0" }
+fabric-identity = { path = "../fabric-identity", version = "0.10.0" }
 serde.workspace = true
 serde_json.workspace = true
 hex.workspace = true
@@ -17,6 +17,15 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 tokio = { version = "1", features = ["time"] }
 tracing = "0.1"
 rand.workspace = true
+sha2.workspace = true
+percent-encoding = "2.3"
+
+[dev-dependencies]
+# Test-only: `#[tokio::test]` for the human-accounts transport tests
+# (crates/fabric-client/tests/human_accounts_transport.rs), which drive the
+# real client methods against a raw-socket mock server on its own OS thread
+# (no async needed server-side, so no extra runtime features required there).
+tokio = { version = "1", features = ["rt", "macros"] }
 
 [lints]
 workspace = true

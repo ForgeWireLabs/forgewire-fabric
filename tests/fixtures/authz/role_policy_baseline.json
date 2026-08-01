@@ -1,0 +1,101 @@
+{
+  "_comment": [
+    "Golden baseline of the MACHINE authorization surface as it stands before 114C.",
+    "",
+    "114C adds human principals and sessions on top of this. Its binding architecture",
+    "says the four identity layers stay separate and that signed interactive mutations",
+    "must require human authorization 'without weakening existing signature/policy/",
+    "approval gates'. Nothing pinned those gates: VALID_ROLES appeared only in auth.rs,",
+    "and ENDPOINT_AUTH_MATRIX.md is referenced from //! doc comments that assert routes",
+    "'map 1:1' to it while no test reads the file.",
+    "",
+    "This fixture is the regression baseline 114C.0 owes. A change here is a change to",
+    "who may do what on the cluster, and must be deliberate.",
+    "",
+    "Source of truth: crates/fabric-hub/src/auth.rs (VALID_ROLES, LEGACY_COMPAT_ROLES,",
+    "required_roles). Regenerate only when the policy is intentionally changed.",
+    "",
+    "The /settings routes are NOT pinned here anymore: settings reads, and writes to",
+    "the auth.* subtree, now also admit the human-only `admin` role (114D groundwork),",
+    "which this machine-surface fixture's every_baseline_role_is_a_valid_role guard",
+    "rejects by design. Their policy lives in human_account_route_policy_baseline.json."
+  ],
+  "captured": "2026-07-17",
+  "source": "crates/fabric-hub/src/auth.rs",
+  "work_item": "114",
+
+  "valid_roles": ["dispatcher", "runner", "observer", "approver", "reviewer"],
+  "legacy_compat_roles": ["dispatcher", "runner", "observer"],
+
+  "_roles_comment": [
+    "'runner' is machine-only. 114C forbids assigning it to a human account;",
+    "that invariant is meaningless unless this vocabulary is fixed."
+  ],
+
+  "route_policy": [
+    { "method": "POST", "path": "/admin/update",              "roles": ["dispatcher", "reviewer"] },
+    { "method": "GET",  "path": "/admin/binaries/hub",        "roles": ["dispatcher", "reviewer"] },
+    { "method": "GET",  "path": "/admin",                     "roles": ["reviewer"] },
+    { "method": "POST", "path": "/admin/anything-else",       "roles": ["reviewer"] },
+
+    { "method": "GET",  "path": "/secrets",                   "roles": ["reviewer"] },
+    { "method": "POST", "path": "/secrets/name",              "roles": ["reviewer"] },
+
+    { "method": "GET",  "path": "/labels",                    "roles": ["observer", "reviewer"] },
+    { "method": "POST", "path": "/labels",                    "roles": ["reviewer"] },
+    { "method": "GET",  "path": "/labels/x",                  "roles": ["reviewer"] },
+
+    { "method": "GET",  "path": "/policy",                    "roles": ["observer", "reviewer"] },
+    { "method": "GET",  "path": "/history/status",            "roles": ["observer", "reviewer"] },
+    { "method": "POST", "path": "/hosts/roles",               "roles": ["runner", "dispatcher", "reviewer"] },
+
+    { "method": "GET",  "path": "/tasks",                     "roles": ["observer", "dispatcher", "runner", "reviewer"] },
+    { "method": "POST", "path": "/tasks",                     "roles": ["dispatcher"] },
+    { "method": "GET",  "path": "/tasks/v2",                  "roles": ["observer", "dispatcher", "runner", "reviewer"] },
+    { "method": "POST", "path": "/tasks/v2",                  "roles": ["dispatcher"] },
+    { "method": "GET",  "path": "/tasks/waiting",             "roles": ["observer", "dispatcher", "runner", "reviewer"] },
+    { "method": "POST", "path": "/tasks/claim",               "roles": ["runner"] },
+    { "method": "POST", "path": "/tasks/claim-loom",          "roles": ["runner"] },
+    { "method": "POST", "path": "/tasks/claim-fabric",        "roles": ["runner"] },
+    { "method": "GET",  "path": "/tasks/abc/input",           "roles": ["runner"] },
+    { "method": "POST", "path": "/tasks/abc/input",           "roles": ["dispatcher"] },
+    { "method": "GET",  "path": "/tasks/abc",                 "roles": ["observer", "dispatcher", "runner", "reviewer"] },
+    { "method": "GET",  "path": "/tasks/abc/events",          "roles": ["observer", "dispatcher", "runner", "reviewer"] },
+    { "method": "POST", "path": "/tasks/abc/cancel",          "roles": ["dispatcher"] },
+    { "method": "POST", "path": "/tasks/abc/notes",           "roles": ["runner", "dispatcher"] },
+    { "method": "POST", "path": "/tasks/abc/result",          "roles": ["runner"] },
+
+    { "method": "GET",  "path": "/runners",                   "roles": ["observer", "dispatcher", "runner", "reviewer"] },
+    { "method": "POST", "path": "/runners/x-by-dispatcher",   "roles": ["dispatcher"] },
+    { "method": "DELETE", "path": "/runners/x",               "roles": ["dispatcher", "reviewer"] },
+    { "method": "POST", "path": "/runners/register",          "roles": ["runner"] },
+
+    { "method": "POST", "path": "/dispatchers/register",      "roles": ["dispatcher"] },
+    { "method": "DELETE", "path": "/dispatchers/x",           "roles": ["reviewer"] },
+    { "method": "GET",  "path": "/dispatchers",               "roles": ["observer", "dispatcher", "reviewer"] },
+
+    { "method": "POST", "path": "/approvals",                 "roles": ["approver", "reviewer"] },
+    { "method": "GET",  "path": "/approvals",                 "roles": ["observer", "dispatcher", "approver", "reviewer"] },
+    { "method": "GET",  "path": "/approvals/x",               "roles": ["observer", "dispatcher", "approver", "reviewer"] },
+    { "method": "POST", "path": "/approvals/x/decide",        "roles": ["approver", "reviewer"] },
+
+    { "method": "GET",  "path": "/agents",                    "roles": ["observer", "dispatcher", "reviewer"] },
+    { "method": "GET",  "path": "/capabilities/x",            "roles": ["observer", "dispatcher", "reviewer"] },
+
+    { "method": "GET",  "path": "/cluster/health",            "roles": ["observer", "reviewer"] },
+    { "method": "GET",  "path": "/hosts",                     "roles": ["observer", "reviewer"] },
+    { "method": "GET",  "path": "/audit/chain",               "roles": ["observer", "reviewer"] },
+    { "method": "GET",  "path": "/cost/summary",              "roles": ["observer", "reviewer"] },
+
+    { "method": "GET",  "path": "/whoami",                    "roles": ["dispatcher", "runner", "observer", "approver", "reviewer"] },
+
+    { "method": "GET",  "path": "/unmapped/route",            "roles": ["reviewer"] },
+    { "method": "POST", "path": "/unmapped/route",            "roles": ["reviewer"] }
+  ],
+
+  "_default_comment": [
+    "The final fallthrough is REVIEWER: an unmapped route fails closed to the",
+    "most privileged role rather than defaulting open. The two /unmapped/route",
+    "entries pin that, so a refactor cannot quietly make unknown paths permissive."
+  ]
+}

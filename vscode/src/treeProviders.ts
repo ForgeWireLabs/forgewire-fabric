@@ -15,6 +15,13 @@ import {
   SecretInfo,
   TaskInfo,
 } from "./hubClient";
+import {
+  deriveAuthState,
+  isAuthOperationOfferedInState,
+  type AccountSummaryWireDto,
+  type SessionSecrets,
+  type SessionSummaryWireDto,
+} from "@forgewire/fabric-client-core";
 
 // ---------------------------------------------------------------------------
 // Hub
@@ -43,7 +50,8 @@ export class HubProvider implements vscode.TreeDataProvider<HubNode> {
 
   constructor(
     private readonly client: () => HubClient | undefined,
-    private readonly probe: () => ProbeInfo | undefined = () => undefined
+    private readonly probe: () => ProbeInfo | undefined = () => undefined,
+    private readonly hasJoinToken: () => boolean = () => false
   ) {}
 
   refresh(): void {
@@ -125,9 +133,7 @@ export class HubProvider implements vscode.TreeDataProvider<HubNode> {
 
     // Join token — click to copy for adding new nodes. Shown masked.
     {
-      const tok = (cfg.get<string>("hubToken") ?? "").trim();
-      const masked =
-        tok.length > 14 ? `${tok.slice(0, 6)}…${tok.slice(-4)}` : tok ? "••••••" : "(not set)";
+      const masked = this.hasJoinToken() ? "••••••" : "(not set)";
       nodes.push({
         key: "jointoken",
         label: "Join token",
@@ -738,6 +744,7 @@ export class TasksProvider implements vscode.TreeDataProvider<TaskNode> {
         `- branch: \`${t.branch}\`\n- base: \`${t.base_commit?.slice(0, 12)}\`\n` +
         `- scope: \`${(t.scope_globs ?? []).join(", ")}\`\n` +
         `- worker: ${t.worker_id ?? "_unassigned_"}\n- created: ${t.created_at ?? "?"}\n` +
+        taskProvenanceTooltip(t) +
         (n.stale ? `\n\u26a0\ufe0f **Stale** \u2014 queued for ${staleAge(t.created_at)} with no runner claiming it.\n` : "") +
         (t.result?.error ? `\n**error:** ${t.result.error}\n` : "")
     );
@@ -811,6 +818,7 @@ function renderHistoryTaskItem(t: TaskInfo): vscode.TreeItem {
       (t.started_at ? `- started: ${t.started_at}\n` : "") +
       (t.completed_at ? `- completed: ${t.completed_at}\n` : "") +
       (duration ? `- runtime: ${duration}\n` : "") +
+      taskProvenanceTooltip(t) +
       errorLine +
       (origin ? `\n**origin**\n\n${origin}\n` : "")
   );
@@ -820,6 +828,20 @@ function renderHistoryTaskItem(t: TaskInfo): vscode.TreeItem {
     arguments: [t.id],
   };
   return item;
+}
+
+function taskProvenanceTooltip(t: TaskInfo): string {
+  const actor = [t.dispatched_by_user, t.dispatched_by_agent, t.dispatched_by_host].filter(Boolean).join(" · ");
+  return (
+    (t.dispatched_at ? `- dispatched: ${t.dispatched_at}\n` : "") +
+    (actor ? `- dispatched by: ${actor}\n` : "") +
+    (t.dispatcher_pubkey_fingerprint ? `- dispatcher key: \`${t.dispatcher_pubkey_fingerprint}\`\n` : "") +
+    (t.claimed_by_runner || t.claimed_by_host ? `- claimed by: ${t.claimed_by_runner ?? "?"} @ ${t.claimed_by_host ?? "?"}\n` : "") +
+    (t.wall_seconds != null ? `- measured runtime: ${t.wall_seconds}s wall · ${t.runner_cpu_seconds ?? 0}s CPU\n` : "") +
+    (t.approvals_required != null ? `- approvals: ${t.approvals_received ?? 0}/${t.approvals_required}\n` : "") +
+    (t.exit_reason ? `- exit reason: \`${t.exit_reason}\`\n` : "") +
+    (Array.isArray(t.policy_decisions) ? `- policy decisions: ${t.policy_decisions.length}\n` : "")
+  );
 }
 
 /**
@@ -2200,6 +2222,198 @@ export class SecretsProvider implements vscode.TreeDataProvider<SecretNode> {
 }
 
 // ---------------------------------------------------------------------------
+// Account (114C.7 Slice 4a/4b/4c -- forgewire.account)
+// ---------------------------------------------------------------------------
+// Renders the signed-in human's own account: profile, status, roles, and
+// active sessions, read via the stored human-session access secret (114C.7
+// Slice 1/2's HubClient.authMe / listAuthSessions). When no session is
+// stored it offers a sign-in affordance instead. Non-current sessions carry
+// a revoke context action (4b). When the signed-in human is an admin, an
+// "Administration" section lists every account (4c) -- the same
+// requiresHumanRole:"admin" decision the createAccount command gates on;
+// a non-admin, or a list failure, simply omits the section. Per-account
+// admin mutations (disable/enable/delete/role) land in a 4c follow-up.
+//
+// Node ids mirror `buildAccountSection` in fabric-client-core (Slice 3) so
+// the VSIX reference and the Desktop shared-core renderer produce identical
+// stable ids for this view (the parity ledger's "identical stable node IDs"
+// acceptance test).
+//
+// Kept isolated like `SecretsProvider`: all fetch errors are caught inside
+// `getChildren` and surfaced as a placeholder node, never thrown, so an
+// account-specific failure cannot cascade into the global connection status
+// (which `updateStatus()`/`probeAndRefresh()` own and this provider never
+// touches). It also publishes the `forgewire.signedIn` context key so the
+// view-title Sign Out action appears only when a human session exists.
+
+export type AccountNode =
+  | { kind: "signin" }
+  | { kind: "info"; id: string; label: string; description?: string; icon: string; warn?: boolean }
+  | { kind: "sessionsRoot"; sessions: readonly SessionSummaryWireDto[] }
+  | { kind: "session"; session: SessionSummaryWireDto }
+  | { kind: "adminRoot"; accounts: readonly AccountSummaryWireDto[] }
+  | { kind: "adminAccount"; account: AccountSummaryWireDto }
+  | { kind: "placeholder"; label: string; description?: string; icon: string };
+
+export class AccountProvider implements vscode.TreeDataProvider<AccountNode> {
+  private readonly _onDidChange = new vscode.EventEmitter<AccountNode | undefined | void>();
+  readonly onDidChangeTreeData = this._onDidChange.event;
+
+  constructor(
+    private readonly client: () => HubClient | undefined,
+    private readonly loadSession: () => Promise<SessionSecrets | undefined>,
+    // 114C.7 Slice 6e (AC-114B-5): the real human_accounts advertisement
+    // signal (extension.ts's commandFeatures, fed by the auth-policy probe
+    // in refreshGatingState) -- a getter, matching client/loadSession above,
+    // so this always reads the live value rather than one captured at
+    // construction time.
+    private readonly humanAccountsSupported: () => boolean,
+  ) {}
+
+  refresh(): void {
+    this._onDidChange.fire();
+  }
+
+  async getChildren(element?: AccountNode): Promise<AccountNode[]> {
+    if (element) {
+      if (element.kind === "sessionsRoot") return element.sessions.map((session) => ({ kind: "session" as const, session }));
+      if (element.kind === "adminRoot") return element.accounts.map((account) => ({ kind: "adminAccount" as const, account }));
+      return [];
+    }
+    const session = await this.loadSession();
+    // Drive the view-title Sign Out visibility off real session presence.
+    void vscode.commands.executeCommand("setContext", "forgewire.signedIn", Boolean(session));
+    // 114C.7 Slice 6e (AC-114B-5): adopts auth.ts's shared state machine as
+    // the source of truth for whether sign-in is offered, mirroring
+    // Desktop's AccountPage. `humanAccountsSupported()` reads the real
+    // human_accounts advertisement probe (extension.ts's commandFeatures).
+    const authState = deriveAuthState({ humanAccountsSupported: this.humanAccountsSupported(), signedIn: Boolean(session) });
+    if (!isAuthOperationOfferedInState("auth.signIn", authState)) {
+      return [{ kind: "placeholder", label: "Human accounts unavailable", description: "The connected hub does not currently offer human-account sign-in.", icon: "warning" }];
+    }
+    if (!session) {
+      return [{ kind: "signin" }];
+    }
+    const c = this.client();
+    if (!c) {
+      return [{ kind: "placeholder", label: "Not connected", description: "connect to a hub to load your account", icon: "debug-disconnect" }];
+    }
+    try {
+      const [me, sessions] = await Promise.all([
+        c.authMe(session.accessSecret),
+        c.listAuthSessions(session.accessSecret),
+      ]);
+      // Administration section only for a signed-in admin. The account list
+      // is fetched with the admin's own session secret; a non-admin (or a
+      // list failure) simply omits the section rather than erroring the whole
+      // view. This mirrors the requiresHumanRole:"admin" command gate.
+      let accounts: readonly AccountSummaryWireDto[] | undefined;
+      if (me.roles.includes("admin")) {
+        accounts = (await c.listAccounts(session.accessSecret)).accounts;
+      }
+      return this.profileNodes(me, sessions.sessions, accounts);
+    } catch (err) {
+      // Isolated, like SecretsProvider: never rethrow into global status.
+      return [{ kind: "placeholder", label: "Account unavailable", description: err instanceof Error ? err.message : String(err), icon: "warning" }];
+    }
+  }
+
+  private profileNodes(
+    me: AccountSummaryWireDto,
+    sessions: readonly SessionSummaryWireDto[],
+    accounts?: readonly AccountSummaryWireDto[],
+  ): AccountNode[] {
+    const nodes: AccountNode[] = [
+      { kind: "info", id: `account:${me.account_id}:profile`, label: me.display_name, description: me.username, icon: "account" },
+      { kind: "info", id: `account:${me.account_id}:status`, label: "Status", description: me.status, icon: "account", warn: me.status !== "active" },
+      { kind: "info", id: `account:${me.account_id}:roles`, label: "Roles", description: me.roles.length > 0 ? me.roles.join(", ") : "none", icon: "account" },
+      { kind: "sessionsRoot", sessions },
+    ];
+    if (accounts !== undefined) nodes.push({ kind: "adminRoot", accounts });
+    return nodes;
+  }
+
+  getTreeItem(n: AccountNode): vscode.TreeItem {
+    if (n.kind === "signin") {
+      const item = new vscode.TreeItem("Sign in with a passkey", vscode.TreeItemCollapsibleState.None);
+      item.description = "manage your account, sessions, and passkeys";
+      item.iconPath = new vscode.ThemeIcon("account");
+      item.command = { command: "forgewire.auth.signInWithPasskey", title: "Sign In with Passkey" };
+      item.contextValue = "account.signin";
+      return item;
+    }
+    if (n.kind === "sessionsRoot") {
+      const item = new vscode.TreeItem("Sessions", vscode.TreeItemCollapsibleState.Expanded);
+      item.description = String(n.sessions.length);
+      item.iconPath = new vscode.ThemeIcon("account");
+      item.contextValue = "account.sessions";
+      return item;
+    }
+    if (n.kind === "adminRoot") {
+      const item = new vscode.TreeItem("Administration", vscode.TreeItemCollapsibleState.Collapsed);
+      item.description = String(n.accounts.length);
+      item.iconPath = new vscode.ThemeIcon("organization");
+      // "account.admin" so the view-title Create Account action can also be
+      // reached as a context action here (4c) and future per-account admin
+      // actions (disable/enable/role) gate on the adminAccount item (4c-2).
+      item.contextValue = "account.admin";
+      return item;
+    }
+    if (n.kind === "adminAccount") {
+      const a = n.account;
+      const item = new vscode.TreeItem(a.display_name, vscode.TreeItemCollapsibleState.None);
+      item.id = `account:admin:${a.account_id}`;
+      item.description = `${a.username} · ${a.status}`;
+      item.iconPath = new vscode.ThemeIcon(a.status === "active" ? "account" : "warning");
+      item.tooltip = new vscode.MarkdownString(
+        `**${a.display_name}** (\`${a.username}\`)\n\n` +
+          `- status: ${a.status}\n` +
+          `- roles: ${a.roles.length > 0 ? a.roles.join(", ") : "none"}\n` +
+          `- revision: ${a.revision}`
+      ).value;
+      // Status is folded into the contextValue so per-account admin menus can
+      // gate by it -- Disable on `.active`, Enable on `.disabled` -- while
+      // role grant/revoke match any `account.adminAccount.*` via regex (4c-2).
+      item.contextValue = `account.adminAccount.${a.status}`;
+      return item;
+    }
+    if (n.kind === "session") {
+      const s = n.session;
+      const item = new vscode.TreeItem(s.client_label ?? s.client_kind, vscode.TreeItemCollapsibleState.None);
+      item.id = `account:session:${s.session_id}`;
+      item.description = s.current ? "current" : s.assurance_level;
+      item.iconPath = new vscode.ThemeIcon(s.current ? "pass" : "account");
+      item.tooltip = new vscode.MarkdownString(
+        `**${s.client_label ?? s.client_kind}**\n\n` +
+          `- session: \`${s.session_id}\`\n` +
+          `- assurance: ${s.assurance_level}\n` +
+          `- authenticated: ${s.authenticated_at}\n` +
+          `- idle expires: ${s.idle_expires_at}\n` +
+          (s.current ? "\n_This is the session this window is using._" : "")
+      ).value;
+      // "account.session" (+ ".current" marker) so a 4b revoke action can gate
+      // its context-menu on a non-current session via `viewItem`.
+      item.contextValue = s.current ? "account.session.current" : "account.session";
+      return item;
+    }
+    if (n.kind === "placeholder") {
+      const item = new vscode.TreeItem(n.label, vscode.TreeItemCollapsibleState.None);
+      item.description = n.description;
+      item.iconPath = new vscode.ThemeIcon(n.icon);
+      item.contextValue = "account.placeholder";
+      return item;
+    }
+    // n.kind === "info"
+    const item = new vscode.TreeItem(n.label, vscode.TreeItemCollapsibleState.None);
+    item.id = n.id;
+    item.description = n.description;
+    item.iconPath = n.warn ? new vscode.ThemeIcon(n.icon, new vscode.ThemeColor("charts.yellow")) : new vscode.ThemeIcon(n.icon);
+    item.contextValue = "account.info";
+    return item;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------
 // A sidebar tree that exposes every ForgeWire VS Code setting grouped by
@@ -2208,7 +2422,7 @@ export class SecretsProvider implements vscode.TreeDataProvider<SecretNode> {
 
 export type SettingNode =
   | { kind: "category"; id: string; label: string; icon: string }
-  | { kind: "setting"; key: string; label: string; description: string; tooltip: string };
+  | { kind: "setting"; key: string; label: string; description: string; tooltip: string; source?: "vscode" | "hub" };
 
 interface SettingDef {
   key: string;           // the forgewire.* key (without "forgewire." prefix)
@@ -2238,6 +2452,7 @@ const SETTING_CATEGORIES: Array<{ id: string; label: string; icon: string; setti
       { key: "hubCandidates",     label: "Candidates",         tooltip: "Ordered list of hub URLs probed for failover." },
       { key: "runnerAliases",     label: "Runner aliases",     tooltip: "Map of runner_id → friendly display name." },
       { key: "refreshIntervalSeconds", label: "Refresh interval (s)", tooltip: "How often the sidebar refreshes runners and tasks." },
+      { key: "beaconPort",            label: "Discovery beacon port", tooltip: "UDP port used for LAN hub discovery." },
     ],
   },
   {
@@ -2270,6 +2485,7 @@ const SETTING_CATEGORIES: Array<{ id: string; label: string; icon: string; setti
       { key: "dr.chaos.drills",               label: "Chaos drill set",              tooltip: "Comma-separated drills: kill-leader, lose-quorum, partition-recovery." },
       { key: "dr.chaos.retentionDays",        label: "Chaos log retention (days)",   tooltip: "Days of chaos JSONL logs to keep. 0 = use cluster.yaml default (30)." },
       { key: "dr.chaos.principal",            label: "Chaos task principal",         tooltip: "Windows principal the chaos scheduled task runs as (SYSTEM recommended)." },
+      { key: "dr.chaos.force",                label: "Force chaos task install",      tooltip: "Bypass the single-driver guard. Leave disabled unless explicitly required." },
     ],
   },
   {
@@ -2286,23 +2502,54 @@ export class SettingsProvider implements vscode.TreeDataProvider<SettingNode> {
   private readonly _onDidChange = new vscode.EventEmitter<SettingNode | undefined | void>();
   readonly onDidChangeTreeData = this._onDidChange.event;
 
+  constructor(private readonly hasSecretToken: () => boolean = () => false) {}
+
+  private hubSettings: Record<string, unknown> | null = null;
+  private historyStatus: Record<string, unknown> | null = null;
+
+  setHubState(settings: Record<string, unknown> | null, history: Record<string, unknown> | null): void {
+    this.hubSettings = settings;
+    this.historyStatus = history;
+    this.refresh();
+  }
+
   refresh(): void { this._onDidChange.fire(); }
 
   getChildren(element?: SettingNode): SettingNode[] {
     if (!element) {
-      return SETTING_CATEGORIES.map((c) => ({
+      return [
+        { kind: "category" as const, id: "hub-control", label: "Hub control plane", icon: "server-environment" },
+        ...SETTING_CATEGORIES.map((c) => ({
         kind: "category" as const,
         id: c.id,
         label: c.label,
         icon: c.icon,
-      }));
+        })),
+      ];
     }
     if (element.kind !== "category") { return []; }
+    if (element.id === "hub-control") {
+      const effective = this.hubSettings?.effective;
+      const revision = this.hubSettings?.revision ?? 0;
+      const rows = flattenHubSettings(effective && typeof effective === "object" ? effective as Record<string, unknown> : {});
+      rows.unshift({ key: "revision", value: revision });
+      if (this.historyStatus) {
+        rows.push({ key: "history.export_health", value: this.historyStatus.health ?? "unknown" });
+      }
+      return rows.map(({ key, value }) => ({
+        kind: "setting" as const,
+        key: `hub.${key}`,
+        label: key,
+        description: value === null ? "null" : typeof value === "object" ? JSON.stringify(value) : String(value),
+        tooltip: `**Hub setting** \`${key}\`\n\nSchema-validated rqlite authority. Sensitive values are redacted by the hub.`,
+        source: "hub" as const,
+      }));
+    }
     const cat = SETTING_CATEGORIES.find((c) => c.id === element.id);
     if (!cat) { return []; }
     const cfg = vscode.workspace.getConfiguration("forgewire");
     return cat.settings.map((s) => {
-      const raw = cfg.get(s.key);
+      const raw = s.key === "hubToken" && this.hasSecretToken() ? "secret-storage" : cfg.get(s.key);
       let valueStr: string;
       if (s.sensitive) {
         valueStr = raw ? "••••••" : "(not set)";
@@ -2320,6 +2567,7 @@ export class SettingsProvider implements vscode.TreeDataProvider<SettingNode> {
         label: s.label,
         description: valueStr,
         tooltip: `**${s.label}**\n\n${s.tooltip}\n\nKey: \`forgewire.${s.key}\``,
+        source: "vscode" as const,
       };
     });
   }
@@ -2338,13 +2586,32 @@ export class SettingsProvider implements vscode.TreeDataProvider<SettingNode> {
     item.iconPath = new vscode.ThemeIcon("gear");
     item.tooltip = new vscode.MarkdownString(n.tooltip);
     item.contextValue = "settings.item";
-    item.command = {
-      command: "workbench.action.openSettings",
-      title: "Open Setting",
-      arguments: [n.key],
-    };
+    if (n.source !== "hub") {
+      item.command = {
+        command: "workbench.action.openSettings",
+        title: "Open Setting",
+        arguments: [n.key],
+      };
+    }
     return item;
   }
+}
+
+function flattenHubSettings(
+  value: Record<string, unknown>,
+  prefix = "",
+): Array<{ key: string; value: unknown }> {
+  const result: Array<{ key: string; value: unknown }> = [];
+  for (const key of Object.keys(value).sort()) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    const child = value[key];
+    if (child && typeof child === "object" && !Array.isArray(child)) {
+      result.push(...flattenHubSettings(child as Record<string, unknown>, path));
+    } else {
+      result.push({ key: path, value: child });
+    }
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------

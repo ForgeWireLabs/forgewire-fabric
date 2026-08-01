@@ -267,7 +267,13 @@ class BlackboardClient:
         return response.content, dict(response.headers)
 
     async def import_snapshot(self, blob: bytes, *, force: bool = False) -> dict[str, Any]:
-        headers = {"x-force": "1"} if force else {}
+        import hashlib
+
+        headers = {
+            "x-forgewire-import-confirmation": f"sha256:{hashlib.sha256(blob).hexdigest()}"
+        }
+        if force:
+            headers["x-force"] = "1"
         response = await self._client.request(
             "POST", "/state/import", content=blob, headers=headers
         )

@@ -159,6 +159,7 @@ $scope     = if ($ScopePrefixes) { $ScopePrefixes } else { $WorkspaceRoot }
 $envExtra  = @(
     "FORGEWIRE_HUB_URL=$HubUrl",
     "FORGEWIRE_HUB_TOKEN_FILE=$TokenFile",
+    "FORGEWIRE_RUNNER_IDENTITY=$IdentityFile",
     "FORGEWIRE_RUNNER_IDENTITY_PATH=$IdentityFile",
     "FORGEWIRE_RUNNER_WORKSPACE_ROOT=$WorkspaceRoot",
     "FORGEWIRE_RUNNER_SCOPE_PREFIXES=$scope",

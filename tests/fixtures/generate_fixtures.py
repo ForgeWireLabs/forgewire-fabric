@@ -947,7 +947,7 @@ Rolling back from Rust hub to Python hub after Rust writes is safe if:
 3. Rust wrote valid UTF-8 JSON in all TEXT JSON columns.
 4. Rust did not insert NULLs into NOT NULL columns.
 
-**Before rolling back:** run `python -m forgewire_fabric.hub.server --check-schema` to
+**Before rolling back:** run the Rust store compatibility tests to
 verify schema integrity.
 
 ## UTC timestamp contract

@@ -1,0 +1,23 @@
+[package]
+name = "fabric-compute-lanes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "114F compute-lane capability projection: maps the ForgeCoreBackendMatrix and host CPU topology into redacted, Loom-safe capability descriptors."
+
+[dependencies]
+# The 108-owned capability schema, consumed unchanged from crates.io. Using a
+# registry dependency (not a path into ../../forgewire-runtime/) is deliberate:
+# forgewire-fabric is published to a public mirror as a filtered subtree copy,
+# and a path dependency reaching outside that subtree would produce a mirror
+# whose Cargo.toml points at a directory that does not exist. See decision 0005.
+forgewire-capability = "0.1.0"
+fabric-topology = { path = "../fabric-topology", version = "0.10.0" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+sha2.workspace = true
+hex.workspace = true
+
+[lints]
+workspace = true

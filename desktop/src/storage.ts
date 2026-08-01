@@ -1,18 +1,16 @@
-import type { FabricContext, HubConfig } from "./types";
 import { invoke } from "@tauri-apps/api/core";
-import type { GuiConfig } from "./types";
+import type { FabricContext, GuiConfig, HubConfig } from "./types";
 
 const CONFIG_KEY = "forgewire.fabric.desktop.hub";
-const TOKEN_KEY = "forgewire.fabric.desktop.token";
 
 export function loadInitialHubConfig(): HubConfig {
-  const fallback: HubConfig = { hubUrl: "http://127.0.0.1:8765", token: "" };
+  const fallback: HubConfig = { hubUrl: "http://127.0.0.1:8765", tokenPresent: false };
   try {
     const raw = window.localStorage.getItem(CONFIG_KEY);
-    const parsed = raw ? (JSON.parse(raw) as Partial<HubConfig>) : {};
+    const parsed = raw ? (JSON.parse(raw) as { hubUrl?: unknown }) : {};
     return {
       hubUrl: typeof parsed.hubUrl === "string" ? parsed.hubUrl : fallback.hubUrl,
-      token: window.localStorage.getItem(TOKEN_KEY) ?? fallback.token
+      tokenPresent: false
     };
   } catch {
     return fallback;
@@ -22,7 +20,7 @@ export function loadInitialHubConfig(): HubConfig {
 export function hubConfigFromContext(context: FabricContext, fallback: HubConfig): HubConfig {
   return {
     hubUrl: typeof context.hub_url === "string" && context.hub_url ? context.hub_url : fallback.hubUrl,
-    token: typeof context.token === "string" ? context.token : fallback.token
+    tokenPresent: context.token_present === true
   };
 }
 
@@ -37,14 +35,12 @@ export async function loadFabricContext(): Promise<FabricContext | null> {
 export async function loadHubConfig(): Promise<HubConfig> {
   const fallback = loadInitialHubConfig();
   const context = await loadFabricContext();
-  if (context) {
-    return hubConfigFromContext(context, fallback);
-  }
+  if (context) return hubConfigFromContext(context, fallback);
   try {
     const guiConfig = await invoke<GuiConfig>("load_gui_config");
     return {
       hubUrl: typeof guiConfig.hub_url === "string" && guiConfig.hub_url ? guiConfig.hub_url : fallback.hubUrl,
-      token: fallback.token
+      tokenPresent: fallback.tokenPresent
     };
   } catch {
     return fallback;
@@ -54,16 +50,17 @@ export async function loadHubConfig(): Promise<HubConfig> {
 export async function saveHubConfig(config: HubConfig): Promise<void> {
   const hubUrl = config.hubUrl.trim().replace(/\/+$/, "");
   window.localStorage.setItem(CONFIG_KEY, JSON.stringify({ hubUrl }));
-  window.localStorage.removeItem(TOKEN_KEY);
-
+  let current: GuiConfig = { hub_url: hubUrl, hub_candidates: [], hub_pin: null, refresh_interval_seconds: 10 };
+  try {
+    current = await invoke<GuiConfig>("load_gui_config");
+  } catch {
+    // Browser-only preview retains only the non-sensitive URL fallback.
+  }
   try {
     await invoke<GuiConfig>("save_gui_config", {
-      config: {
-        hub_url: hubUrl,
-        hub_candidates: []
-      }
+      config: { ...current, hub_url: hubUrl }
     });
   } catch {
-    // Browser-only dev mode falls back to localStorage.
+    // Browser-only preview retains only the non-sensitive URL fallback.
   }
 }

@@ -28,8 +28,8 @@
 
 #![deny(rust_2018_idioms)]
 
-use sha2::{Digest, Sha256};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 /// The chain's genesis hash — 64 ASCII zeros.
@@ -121,9 +121,9 @@ fn write_canonical(value: &Value, out: &mut Vec<u8>) {
 pub fn audit_event_hash(prev_hash: &str, kind: &str, payload: &Value) -> String {
     let mut hasher = Sha256::new();
     hasher.update(prev_hash.as_bytes()); // ascii(prev_hash)
-    hasher.update([SEPARATOR]);          // b"|"
-    hasher.update(kind.as_bytes());      // utf8(kind)
-    hasher.update([SEPARATOR]);          // b"|"
+    hasher.update([SEPARATOR]); // b"|"
+    hasher.update(kind.as_bytes()); // utf8(kind)
+    hasher.update([SEPARATOR]); // b"|"
     hasher.update(audit_canonical_json(payload)); // audit_canonical_json(payload)
     hex::encode(hasher.finalize())
 }
@@ -153,8 +153,7 @@ pub fn verify_chain(events: &[AuditEvent<'_>]) -> Result<(), AuditError> {
                 });
             }
         }
-        let recomputed =
-            audit_event_hash(event.prev_event_id_hash, event.kind, event.payload);
+        let recomputed = audit_event_hash(event.prev_event_id_hash, event.kind, event.payload);
         if recomputed != event.event_id_hash {
             return Err(AuditError::HashMismatch {
                 index: i,

@@ -1,4 +1,4 @@
-﻿//! Stream-sequence accounting and bounded write buffering for ForgeWire task streams.
+//! Stream-sequence accounting and bounded write buffering for ForgeWire task streams.
 //!
 //! # StreamCounter
 //!
@@ -56,7 +56,12 @@ pub enum DurabilityProfile {
 impl DurabilityProfile {
     /// Parse from an env-var value (case-insensitive). Returns `Strict` for
     /// unrecognised values so the default is always the safest option.
-    pub fn from_str(s: &str) -> Self {
+    ///
+    /// Named `from_profile_str`, not `from_str`, so it can never be confused
+    /// with `std::str::FromStr::from_str` (which returns a `Result` -- this
+    /// deliberately does not, since an unrecognised value here is not an
+    /// error, it is the documented safe-default behavior).
+    pub fn from_profile_str(s: &str) -> Self {
         match s.to_ascii_lowercase().as_str() {
             "balanced" => Self::Balanced,
             "throughput" => Self::Throughput,
@@ -192,7 +197,13 @@ impl StreamBuffer {
         line: String,
         ts: String,
     ) -> Option<Vec<PendingEntry>> {
-        let entry = PendingEntry { task_id, worker_id, channel, line, ts };
+        let entry = PendingEntry {
+            task_id,
+            worker_id,
+            channel,
+            line,
+            ts,
+        };
         let mut g = self.pending.lock();
         let q = g.entry(task_id).or_default();
         q.push_back(entry);
@@ -205,11 +216,7 @@ impl StreamBuffer {
     }
 
     /// Push a batch of lines. Returns `Some(batch)` when the threshold is hit.
-    pub fn push_bulk(
-        &self,
-        task_id: i64,
-        entries: Vec<PendingEntry>,
-    ) -> Option<Vec<PendingEntry>> {
+    pub fn push_bulk(&self, task_id: i64, entries: Vec<PendingEntry>) -> Option<Vec<PendingEntry>> {
         if entries.is_empty() {
             return None;
         }
@@ -241,7 +248,11 @@ impl StreamBuffer {
 
     /// Number of tasks with a non-empty pending buffer. Diagnostic.
     pub fn buffered_task_count(&self) -> usize {
-        self.pending.lock().values().filter(|q| !q.is_empty()).count()
+        self.pending
+            .lock()
+            .values()
+            .filter(|q| !q.is_empty())
+            .count()
     }
 
     /// Total buffered lines across all tasks. Diagnostic.
@@ -339,11 +350,26 @@ mod tests {
 
     #[test]
     fn profile_from_str() {
-        assert_eq!(DurabilityProfile::from_str("strict"), DurabilityProfile::Strict);
-        assert_eq!(DurabilityProfile::from_str("BALANCED"), DurabilityProfile::Balanced);
-        assert_eq!(DurabilityProfile::from_str("throughput"), DurabilityProfile::Throughput);
-        assert_eq!(DurabilityProfile::from_str("unknown"), DurabilityProfile::Strict);
-        assert_eq!(DurabilityProfile::from_str(""), DurabilityProfile::Strict);
+        assert_eq!(
+            DurabilityProfile::from_profile_str("strict"),
+            DurabilityProfile::Strict
+        );
+        assert_eq!(
+            DurabilityProfile::from_profile_str("BALANCED"),
+            DurabilityProfile::Balanced
+        );
+        assert_eq!(
+            DurabilityProfile::from_profile_str("throughput"),
+            DurabilityProfile::Throughput
+        );
+        assert_eq!(
+            DurabilityProfile::from_profile_str("unknown"),
+            DurabilityProfile::Strict
+        );
+        assert_eq!(
+            DurabilityProfile::from_profile_str(""),
+            DurabilityProfile::Strict
+        );
     }
 
     #[test]
@@ -380,7 +406,13 @@ mod tests {
         let buf = StreamBuffer::new(DurabilityProfile::Balanced);
         let threshold = DurabilityProfile::Balanced.flush_threshold(); // 50
         for i in 0..(threshold - 1) {
-            let r = buf.push(1, "w".into(), "stdout".into(), format!("line {i}"), "ts".into());
+            let r = buf.push(
+                1,
+                "w".into(),
+                "stdout".into(),
+                format!("line {i}"),
+                "ts".into(),
+            );
             assert!(r.is_none(), "should buffer at index {i}");
         }
         // 50th push triggers flush
@@ -424,10 +456,13 @@ mod tests {
     fn cap_triggers_early_flush() {
         let buf = StreamBuffer::new(DurabilityProfile::Balanced);
         let cap = DurabilityProfile::Balanced.cap(); // 500
-        // Push cap lines one at a time; threshold is 50 so multiple flushes occur
+                                                     // Push cap lines one at a time; threshold is 50 so multiple flushes occur
         let mut flush_count = 0;
         for i in 0..cap {
-            if buf.push(1, "w".into(), "stdout".into(), format!("l{i}"), "ts".into()).is_some() {
+            if buf
+                .push(1, "w".into(), "stdout".into(), format!("l{i}"), "ts".into())
+                .is_some()
+            {
                 flush_count += 1;
             }
         }
@@ -438,7 +473,9 @@ mod tests {
     #[test]
     fn push_bulk_triggers_flush_at_threshold() {
         let buf = StreamBuffer::new(DurabilityProfile::Balanced);
-        let entries: Vec<PendingEntry> = (0..50).map(|i| entry(2, "stdout", &format!("l{i}"))).collect();
+        let entries: Vec<PendingEntry> = (0..50)
+            .map(|i| entry(2, "stdout", &format!("l{i}")))
+            .collect();
         let result = buf.push_bulk(2, entries);
         assert!(result.is_some());
         assert_eq!(result.unwrap().len(), 50);

@@ -9,6 +9,9 @@ export default defineConfig({
     strictPort: true
   },
   envPrefix: ["VITE_", "TAURI_"],
+  optimizeDeps: {
+    exclude: ["@forgewire/fabric-client-core"]
+  },
   build: {
     target: "es2022",
     minify: "esbuild",

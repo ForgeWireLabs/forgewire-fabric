@@ -1,6 +1,6 @@
 [package]
 name = "fabric-hub"
-version.workspace = true
+version = "0.11.0"
 edition.workspace = true
 license.workspace = true
 description = "Native Rust hub daemon for ForgeWire Fabric — v2 API parity."
@@ -10,29 +10,51 @@ name = "forgewire-hub"
 path = "src/main.rs"
 
 [dependencies]
-fabric-types = { path = "../fabric-types" }
-fabric-protocol = { path = "../fabric-protocol" }
-fabric-identity = { path = "../fabric-identity" }
-fabric-audit = { path = "../fabric-audit" }
-fabric-store = { path = "../fabric-store" }
-fabric-store-rqlite = { path = "../fabric-store-rqlite" }
-fabric-policy = { path = "../fabric-policy" }
-fabric-claim-router = { path = "../fabric-claim-router" }
-fabric-streams = { path = "../fabric-streams" }
-fabric-beacon = { path = "../fabric-beacon" }
+fabric-types = { package = "forgewire-fabric-types", path = "../fabric-types", version = "0.10.0" }
+fabric-protocol = { path = "../fabric-protocol", version = "0.10.0" }
+fabric-identity = { path = "../fabric-identity", version = "0.10.0" }
+fabric-audit = { path = "../fabric-audit", version = "0.10.0" }
+fabric-store = { path = "../fabric-store", version = "0.10.0" }
+fabric-store-rqlite = { path = "../fabric-store-rqlite", version = "0.10.0" }
+fabric-accounts = { path = "../fabric-accounts", version = "0.10.0" }
+fabric-policy = { path = "../fabric-policy", version = "0.10.0" }
+fabric-claim-router = { path = "../fabric-claim-router", version = "0.10.0" }
+fabric-streams = { path = "../fabric-streams", version = "0.10.0" }
+fabric-beacon = { path = "../fabric-beacon", version = "0.10.0" }
+fabric-secrets = { path = "../fabric-secrets", version = "0.10.0" }
+fabric-settings = { path = "../fabric-settings", version = "0.10.0" }
+fabric-history = { path = "../fabric-history", version = "0.10.0" }
+async-trait = "0.1"
 serde.workspace = true
 serde_json.workspace = true
 hex.workspace = true
 sha2 = "0.10"
+rand.workspace = true
 thiserror.workspace = true
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "blocking"] }
 anyhow = "1"
 axum = { version = "0.8", features = ["json"] }
+async-stream = "0.3"
+futures-core = "0.3"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["cors"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zeroize.workspace = true
+# 114C.6: `webauthn-rs-core` (a hard transitive dependency, not feature-
+# gated) links native OpenSSL via `openssl-sys`. On a Windows/MSVC dev
+# machine with no system OpenSSL, this requires vcpkg:
+#   git clone https://github.com/microsoft/vcpkg C:\vcpkg
+#   C:\vcpkg\bootstrap-vcpkg.bat
+#   C:\vcpkg\vcpkg.exe install openssl:x64-windows-static-md
+#   setx VCPKG_ROOT C:\vcpkg   (new shells only -- export/set it manually in
+#                               an already-open one)
+# CI/other machines building this crate need the same one-time setup.
+webauthn-rs = { version = "0.5", default-features = false, features = [
+  "danger-allow-state-serialisation",
+] }
+uuid = { version = "1.24.0", features = ["v5"] }
 
 [lints]
 workspace = true

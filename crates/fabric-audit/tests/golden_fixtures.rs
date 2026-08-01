@@ -2,7 +2,9 @@
 //! every hash against the Rust implementation. If both this and the Python
 //! test_fixtures.py pass, byte-level cross-language parity is proven.
 
-use fabric_audit::{audit_canonical_json, audit_event_hash, verify_chain, AuditEvent, AUDIT_GENESIS_HASH};
+use fabric_audit::{
+    audit_canonical_json, audit_event_hash, verify_chain, AuditEvent, AUDIT_GENESIS_HASH,
+};
 use serde_json::Value;
 use std::path::PathBuf;
 

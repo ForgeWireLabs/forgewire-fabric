@@ -9,7 +9,9 @@ import contextlib
 import json
 import os
 import secrets
+import shutil
 import signal
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -29,7 +31,7 @@ def hub() -> None:
     pass
 
 
-@hub.command("start", help="Start the ForgeWire hub (uvicorn).")
+@hub.command("start", help="Start the native ForgeWire Rust hub.")
 @click.option("--host", default=None, help="Bind host (default: 127.0.0.1 or $FORGEWIRE_HUB_HOST).")
 @click.option("--port", type=int, default=None, help="Bind port (default: 8765 or $FORGEWIRE_HUB_PORT).")
 @click.option("--token-file", default=None, help="File containing the hub token.")
@@ -50,25 +52,33 @@ def hub_start(
     rqlite_port: int | None,
     rqlite_consistency: str | None,
 ) -> None:
-    from forgewire_fabric.hub.server import main as hub_main
-
-    argv: list[str] = []
+    env = os.environ.copy()
     if host:
-        argv += ["--host", host]
+        env["FORGEWIRE_HUB_HOST"] = host
     if port is not None:
-        argv += ["--port", str(port)]
+        env["FORGEWIRE_HUB_PORT"] = str(port)
     if token_file:
-        argv += ["--token-file", token_file]
-    if mdns:
-        argv += ["--mdns"]
-    argv += ["--log-level", log_level]
+        env["FORGEWIRE_HUB_TOKEN_FILE"] = token_file
+    if not mdns:
+        env["FORGEWIRE_BEACON_DISABLE"] = "1"
+    env["RUST_LOG"] = log_level
     if rqlite_host:
-        argv += ["--rqlite-host", rqlite_host]
+        env["FORGEWIRE_HUB_RQLITE_HOST"] = rqlite_host
     if rqlite_port is not None:
-        argv += ["--rqlite-port", str(rqlite_port)]
+        env["FORGEWIRE_HUB_RQLITE_PORT"] = str(rqlite_port)
     if rqlite_consistency:
-        argv += ["--rqlite-consistency", rqlite_consistency]
-    hub_main(argv)
+        env["FORGEWIRE_HUB_RQLITE_CONSISTENCY"] = rqlite_consistency
+    candidates = [
+        os.environ.get("FORGEWIRE_HUB_BINARY"),
+        shutil.which("forgewire-hub"),
+        r"C:\ProgramData\forgewire\bin\forgewire-hub.exe" if sys.platform.startswith("win") else None,
+    ]
+    binary = next((candidate for candidate in candidates if candidate and Path(candidate).is_file()), None)
+    if binary is None:
+        raise click.ClickException(
+            "native forgewire-hub binary not found; install the signed release bundle or set FORGEWIRE_HUB_BINARY"
+        )
+    raise SystemExit(subprocess.run([binary], env=env, check=False).returncode)
 
 
 @hub.command("healthz", help="Ping the hub /healthz endpoint.")

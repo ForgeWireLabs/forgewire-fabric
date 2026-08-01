@@ -1,0 +1,51 @@
+{
+  "$schema": "../schemas/settings.schema.json",
+  "schema_version": 1,
+  "budget": {
+    "daily_usd": null,
+    "weekly_usd": null,
+    "warning_fraction": 0.8
+  },
+  "runner": {
+    "default_capability_tags": [],
+    "heartbeat_seconds": 10
+  },
+  "secrets": {
+    "key_provider": "file",
+    "key_file": null
+  },
+  "ha": {
+    "mode": "active-passive",
+    "require_voter_loss_tolerance": false
+  },
+  "history": {
+    "mode": "thin",
+    "external_db": {
+      "dsn": null,
+      "autodetect": false,
+      "provision": false,
+      "connect_timeout_seconds": 5,
+      "retry_seconds": 30
+    }
+  },
+  "desktop": {
+    "update_channel": "stable",
+    "updater_endpoint": null
+  },
+  "auth": {
+    "bootstrap": {
+      "local_only": true
+    },
+    "sessions": {
+      "idle_timeout_minutes": 60,
+      "absolute_timeout_hours": 24,
+      "step_up_freshness_minutes": 10
+    },
+    "passkeys": {
+      "enabled": false,
+      "rp_id": null,
+      "rp_name": "ForgeWire Fabric",
+      "allowed_origins": []
+    }
+  }
+}

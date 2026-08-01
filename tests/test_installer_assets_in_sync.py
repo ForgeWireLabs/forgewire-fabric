@@ -151,3 +151,19 @@ def test_watchdogs_use_system_reachable_pwsh_host() -> None:
             "when pwsh comes from the Microsoft Store."
         )
 
+
+
+def test_native_and_python_runner_identity_paths_are_exported() -> None:
+    """Windows service installers must support both runner runtimes."""
+    installer = (SOURCE_DIR / "nssm-install-runner.ps1").read_text(encoding="utf-8")
+    migration = (
+        REPO_ROOT / "scripts" / "install" / "switch-to-rust-services.ps1"
+    ).read_text(encoding="utf-8")
+
+    for name, body in (("installer", installer), ("migration", migration)):
+        assert "FORGEWIRE_RUNNER_IDENTITY=$IdentityFile" in body, (
+            f"{name}: native Rust runners require FORGEWIRE_RUNNER_IDENTITY"
+        )
+        assert "FORGEWIRE_RUNNER_IDENTITY_PATH=$IdentityFile" in body, (
+            f"{name}: Python runners require FORGEWIRE_RUNNER_IDENTITY_PATH"
+        )

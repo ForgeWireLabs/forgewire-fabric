@@ -132,6 +132,7 @@ Switch-NssmService `
     -EnvExtra @(
         "FORGEWIRE_HUB_URL=$HubUrl",
         "FORGEWIRE_HUB_TOKEN_FILE=$TokenFile",
+        "FORGEWIRE_RUNNER_IDENTITY=$IdentityFile",
         "FORGEWIRE_RUNNER_IDENTITY_PATH=$IdentityFile",
         "FORGEWIRE_RUNNER_WORKSPACE_ROOT=$WorkspaceRoot",
         "FORGEWIRE_RUNNER_MAX_CONCURRENT=1",

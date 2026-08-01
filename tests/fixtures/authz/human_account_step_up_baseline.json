@@ -1,0 +1,46 @@
+{
+  "_comment": [
+    "Golden baseline of the 114C.6 administrative step-up policy -- which",
+    "routes require a recent high-assurance (Aal2) authentication, layered on",
+    "TOP of the role gate in human_account_route_policy_baseline.json (a route",
+    "can be both admin-gated AND step-up-gated). Pins crate::auth::requires_step_up.",
+    "",
+    "Passkey *registration* is deliberately absent even though the plan's",
+    "sensitive-action list names it: gating an account's FIRST passkey on",
+    "step-up would deadlock (step-up itself needs a passkey). That route",
+    "enforces step-up handler-side with a first-passkey exemption instead --",
+    "see crate::auth::requires_step_up's doc comment. The step-up ceremony",
+    "routes (/auth/step-up/*) are absent because a not-yet-Aal2 session must",
+    "be able to reach them to step up at all.",
+    "",
+    "Source of truth: crates/fabric-hub/src/auth.rs (requires_step_up)."
+  ],
+  "captured": "2026-07-18",
+  "source": "crates/fabric-hub/src/auth.rs",
+  "work_item": "114",
+
+  "step_up_required": [
+    { "method": "POST",   "path": "/accounts/acct-1/membership" },
+    { "method": "DELETE", "path": "/accounts/acct-1/membership/admin" },
+    { "method": "POST",   "path": "/accounts/acct-1/disable" },
+    { "method": "POST",   "path": "/accounts/acct-1/delete" },
+    { "method": "POST",   "path": "/accounts/acct-1/tombstone" },
+    { "method": "POST",   "path": "/accounts/acct-1/recovery-codes" },
+    { "method": "POST",   "path": "/accounts/acct-1/recovery/complete" },
+    { "method": "GET",    "path": "/accounts/export" },
+    { "method": "POST",   "path": "/accounts/import" },
+    { "method": "DELETE", "path": "/auth/passkeys/cred-1" }
+  ],
+
+  "step_up_not_required": [
+    { "method": "GET",    "path": "/accounts/acct-1" },
+    { "method": "GET",    "path": "/accounts/acct-1/security-history" },
+    { "method": "POST",   "path": "/accounts/acct-1/enable" },
+    { "method": "POST",   "path": "/auth/step-up/options" },
+    { "method": "POST",   "path": "/auth/step-up/verify" },
+    { "method": "POST",   "path": "/auth/passkeys/register/options" },
+    { "method": "POST",   "path": "/auth/passkeys/register/verify" },
+    { "method": "GET",    "path": "/auth/me" },
+    { "method": "POST",   "path": "/auth/logout" }
+  ]
+}

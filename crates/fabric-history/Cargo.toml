@@ -1,0 +1,21 @@
+[package]
+name = "fabric-history"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+description = "Optional absence-tolerant Tier-2 history export for ForgeWire Fabric."
+
+[dependencies]
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "time"] }
+tokio-postgres = { version = "0.7", features = ["runtime", "with-serde_json-1"] }
+postgres-native-tls = "0.5"
+native-tls = "0.2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }

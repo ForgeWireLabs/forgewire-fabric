@@ -6,8 +6,8 @@ license.workspace = true
 description = "Durable ed25519 identity management for ForgeWire Fabric nodes."
 
 [dependencies]
-fabric-types = { path = "../fabric-types" }
-fabric-protocol = { path = "../fabric-protocol" }
+fabric-types = { package = "forgewire-fabric-types", path = "../fabric-types", version = "0.10.0" }
+fabric-protocol = { path = "../fabric-protocol", version = "0.10.0" }
 serde.workspace = true
 serde_json.workspace = true
 ed25519-dalek = { workspace = true, features = ["std", "fast", "rand_core"] }

@@ -9,7 +9,6 @@ Two goals:
 
 from __future__ import annotations
 
-import importlib
 import inspect
 
 
@@ -32,7 +31,6 @@ def test_loom_runner_mcp_has_test_only_banner() -> None:
 def test_loom_runner_mcp_no_stdin_buffer_field() -> None:
     """ProcessHandle must not expose the dead stdin_buffer field (F6 cleanup)."""
     from forgewire_fabric.hub.loom_runner_mcp import ProcessHandle
-    import asyncio, subprocess
 
     # Build a minimal ProcessHandle without actually spawning anything.
     class _FakeProc:

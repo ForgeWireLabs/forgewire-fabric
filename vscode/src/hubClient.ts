@@ -13,6 +13,54 @@ import * as path from "path";
 import * as dgram from "dgram";
 import * as crypto from "crypto";
 import * as vscode from "vscode";
+import {
+  isTypedAuthErrorCode,
+  type AccountSummaryWireDto,
+  type SessionSummaryWireDto,
+  type TypedAuthErrorCode,
+} from "@forgewire/fabric-client-core";
+
+let secretStorageToken = "";
+
+/**
+ * Thrown by {@link HubClient.requestAuth} when the hub's response body
+ * parses as a known typed auth error. `code` is exactly the wire value from
+ * `TYPED_AUTH_ERROR_CODES` -- callers switch on this, matching the plan's own
+ * "clients must not infer these states by parsing prose" rule -- `message`
+ * is the hub's own human-readable text for that code, safe to show as-is
+ * (it comes from the same hand-written `ApiError::account` mapping that
+ * already backs every 114C error response, never from user input echoed
+ * back).
+ */
+export class TypedAuthHttpError extends Error {
+  constructor(public readonly code: TypedAuthErrorCode, message: string) {
+    super(message);
+    this.name = "TypedAuthHttpError";
+  }
+}
+
+/**
+ * Turns a non-ok auth-route response into an error, without ever surfacing
+ * the raw response body. The hub's error shape (`crates/fabric-hub/src/
+ * error.rs`'s `ApiError::into_response`) is always `{error:{code,message,
+ * remediation}}` -- if the body doesn't parse that way, or `code` isn't one
+ * of the known typed codes, this is exactly the case the boundary exists
+ * for: something unexpected happened, and printing it verbatim to the user
+ * is the thing being deliberately avoided here.
+ */
+async function typedAuthErrorFrom(res: Response): Promise<Error> {
+  try {
+    const body = (await res.json()) as { error?: { code?: unknown; message?: unknown } };
+    const code = body?.error?.code;
+    if (typeof code === "string" && isTypedAuthErrorCode(code)) {
+      const message = typeof body.error?.message === "string" ? body.error.message : code;
+      return new TypedAuthHttpError(code, message);
+    }
+  } catch {
+    /* body was not JSON, or not the expected shape -- fall through */
+  }
+  return new Error("The hub returned an unexpected error. Try again.");
+}
 
 // LAN discovery beacon (matches crates/fabric-beacon). Zero dependencies — Node
 // has dgram + crypto built in.
@@ -279,6 +327,20 @@ export interface TaskInfo {
   claimed_at?: string | null;
   started_at?: string | null;
   completed_at?: string | null;
+  dispatched_at?: string;
+  dispatched_by_user?: string | null;
+  dispatched_by_host?: string | null;
+  dispatched_by_agent?: string | null;
+  dispatcher_pubkey_fingerprint?: string | null;
+  claimed_by_runner?: string | null;
+  claimed_by_host?: string | null;
+  wall_seconds?: number | null;
+  runner_cpu_seconds?: number | null;
+  policy_decisions?: Array<Record<string, unknown>>;
+  approvals_required?: number;
+  approvals_received?: number;
+  approval_id?: string | null;
+  exit_reason?: string | null;
   required_tags?: string[];
   required_tools?: string[];
   kind?: "agent" | "command";
@@ -306,6 +368,11 @@ export interface DispatchPayload {
 export class HubClient {
   constructor(private readonly baseUrl: string, private readonly token: string) {}
 
+  /** Supply the activation-scoped SecretStorage token without persisting it in settings. */
+  static setSecretStorageToken(token: string): void {
+    secretStorageToken = token.trim();
+  }
+
   static fromConfig(): HubClient | undefined {
     const cfg = vscode.workspace.getConfiguration("forgewire");
     const baseUrl = (cfg.get<string>("hubUrl") ?? "").trim();
@@ -317,9 +384,12 @@ export class HubClient {
   }
 
   /**
-   * Probe each candidate URL in priority order (lowest priority first; ties
-   * broken by uptime: highest uptime wins). Returns the first reachable
-   * candidate plus all probe results for UI display.
+   * Probe each candidate URL in priority order (lowest priority first) and
+   * return the first reachable one, plus all probe results for UI display.
+   * Candidates are iterated in already-priority-sorted order and the first
+   * reachable one wins -- there is no uptime-based tiebreak (114C.7 Slice
+   * 6c: corrected this doc comment, which previously claimed one that the
+   * code has never implemented).
    *
    * If `forgewire.hubPin` is set, that URL is returned directly without
    * probing -- this is the manual-override path.
@@ -426,8 +496,409 @@ export class HubClient {
     return (await res.json()) as T;
   }
 
+  // 114C.7: 30 auth/account routes, none of them going through `request()`
+  // above. Hub errors for those are hand-written stable typed codes (the
+  // plan: "stable typed codes without credential enumeration or
+  // secret-bearing debug strings"), but `request()`'s catch-all path throws
+  // the *raw response body verbatim* as the error message -- fine for
+  // existing routes with hand-written safe JSON bodies, but a real leak path
+  // the moment any hub-side bug (a panic message, a validation error
+  // echoing partial input) puts something unintended in that body. This
+  // helper is narrower on purpose: it recognizes only `{error:{code,
+  // message}}` matching a known TypedAuthErrorCode and rejects with that;
+  // anything else -- a body that fails to parse, a code not in the known
+  // set -- becomes a fixed generic string, never the raw body. Scoped to
+  // auth routes only; `request()` above is unchanged for everything else.
+  private async requestAuth<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    bearer?: string,
+    extraHeaders?: Record<string, string>
+  ): Promise<T> {
+    const headers: Record<string, string> = { "Content-Type": "application/json", ...extraHeaders };
+    if (bearer) headers.Authorization = `Bearer ${bearer}`;
+    const init: RequestInit = { method, headers };
+    if (body !== undefined) {
+      init.body = JSON.stringify(body);
+    }
+    const res = await fetch(`${this.baseUrl}${path}`, init);
+    if (!res.ok) {
+      throw await typedAuthErrorFrom(res);
+    }
+    if (res.status === 204) {
+      return undefined as T;
+    }
+    return (await res.json()) as T;
+  }
+
   async healthz(): Promise<{ status: string; protocol_version: number; version: string; uptime_seconds?: number; started_at?: number; host?: string; port?: number }> {
     return this.request("GET", "/healthz");
+  }
+
+  /** `GET /whoami`: the installed credential's subject, roles, and the
+   *  `fabric.*.write` capability set the operator UI gates on. Authoritative
+   *  source for {@link CommandContext.authorities}; see
+   *  `crates/fabric-hub/src/routes/whoami.rs`. Uses the installed hub token. */
+  async whoami(): Promise<{ subject: string; roles: string[]; authorities: string[]; legacy_compat: boolean; human_principal: string | null }> {
+    return this.request("GET", "/whoami");
+  }
+
+  /** `GET /auth/bootstrap/status`: true while the realm has no administrator
+   *  yet. Public route -- no bearer sent, matching the hub's own contract
+   *  (there is no credential to send before the first admin exists). */
+  async authBootstrapStatus(): Promise<{ bootstrap_open: boolean }> {
+    return this.requestAuth("GET", "/auth/bootstrap/status");
+  }
+
+  // ---- 114C.7 Slice 2: the remaining 23 directly-wireable auth/account -----
+  // routes (Slice 1 proved the shape on bootstrap/status). The other 6 of
+  // the 30 total routes -- register/login passkey options+verify and
+  // step-up options+verify -- are deliberately NOT wired here: they carry a
+  // live WebAuthn ceremony (`navigator.credentials`), which only a browser
+  // context has access to. That ceremony is already fully handled end to
+  // end by the hub-served bridge page (114C.6 Slice 5b) driven via
+  // `runWebauthnBridgeFlow` below -- the bridge page itself calls those 6
+  // routes directly over fetch from the browser, never through this class.
+  // Adding pass-through wrappers here for routes nothing in this extension
+  // can ever legitimately call would be dead code, not transport shape.
+  //
+  // Every authenticated method below takes an explicit `accessSecret`
+  // parameter rather than using `this.token`: `this.token` is the
+  // automation/dispatcher hub token this class was constructed with, a
+  // structurally different credential from a human session's access secret
+  // (returned by login/passkey-login, persisted by the caller in platform
+  // secure storage per the plan's "secret-bearing login/refresh results
+  // terminate in the platform credential adapter" rule). The hub accepts
+  // both as `Authorization: Bearer <value>` and resolves human sessions
+  // first (`resolve_human_session` in `crates/fabric-hub/src/auth.rs`), so
+  // passing a session's access secret here is correct and is the only way
+  // any `/accounts/*` admin route (gated on the `admin` role, which a role
+  // token can never carry) is reachable at all.
+
+  /** `POST /auth/bootstrap`: create the realm's first administrator. Public
+   *  route, gated on source address / an optional one-time secret rather
+   *  than a bearer -- see `bootstrap_source_allowed` in `authn.rs`.
+   *  `bootstrapSecret` is sent as `x-forgewire-bootstrap-secret` only when
+   *  the hub is configured to require one. */
+  async authBootstrap(
+    username: string,
+    displayName: string,
+    password: string,
+    bootstrapSecret?: string
+  ): Promise<AccountSummaryWireDto> {
+    return this.requestAuth(
+      "POST",
+      "/auth/bootstrap",
+      { username, display_name: displayName, password },
+      undefined,
+      bootstrapSecret ? { "x-forgewire-bootstrap-secret": bootstrapSecret } : undefined
+    );
+  }
+
+  /** `POST /auth/login`: username+password sign-in. Public route -- the
+   *  returned `access_secret`/`refresh_secret` are the credential the
+   *  caller must then persist in platform secure storage, never in this
+   *  package's own state. */
+  async authLogin(
+    username: string,
+    password: string,
+    clientKind?: string,
+    clientLabel?: string
+  ): Promise<{
+    session_id: string; account_id: string; assurance_level: string;
+    access_secret: string; refresh_secret: string;
+    idle_expires_at: string; absolute_expires_at: string;
+  }> {
+    return this.requestAuth("POST", "/auth/login", {
+      username, password, client_kind: clientKind, client_label: clientLabel,
+    });
+  }
+
+  /** `POST /auth/refresh`: rotate a session's refresh secret. Public route
+   *  (the refresh secret itself is the credential). */
+  async authRefresh(
+    sessionId: string,
+    refreshSecret: string
+  ): Promise<{ session_id: string; refresh_secret: string; idle_expires_at: string; absolute_expires_at: string }> {
+    return this.requestAuth("POST", "/auth/refresh", { session_id: sessionId, refresh_secret: refreshSecret });
+  }
+
+  /** `POST /auth/logout`: revoke one session. Self-service (any signed-in
+   *  human may revoke their own session; an admin may revoke another's --
+   *  the handler enforces ownership, not this method). */
+  async authLogout(accessSecret: string, sessionId: string): Promise<{ session_id: string; revoked: boolean }> {
+    return this.requestAuth("POST", "/auth/logout", { session_id: sessionId }, accessSecret);
+  }
+
+  /** `POST /auth/logout-all`: revoke every session for the caller's own
+   *  account. */
+  async authLogoutAll(accessSecret: string): Promise<{ account_id: string; revoked_count: number }> {
+    return this.requestAuth("POST", "/auth/logout-all", undefined, accessSecret);
+  }
+
+  /** `GET /auth/me`: the caller's own account summary. */
+  async authMe(accessSecret: string): Promise<AccountSummaryWireDto> {
+    return this.requestAuth("GET", "/auth/me", undefined, accessSecret);
+  }
+
+  /** `DELETE /auth/passkeys/{id}`: remove one of the caller's own passkeys.
+   *  Registering a passkey is not wired here -- see the ceremony-routes
+   *  note above; use the existing `forgewire.auth.registerPasskey` bridge
+   *  command for that. */
+  async authRemovePasskey(
+    accessSecret: string,
+    credentialId: string
+  ): Promise<{ credential_id: string; revoked: boolean }> {
+    return this.requestAuth("DELETE", `/auth/passkeys/${encodeURIComponent(credentialId)}`, undefined, accessSecret);
+  }
+
+  /** `GET /auth-policy`: realm id, whether bootstrap is still open, and the
+   *  full role vocabulary. NOT public -- `required_roles` in
+   *  `fabric-hub/src/auth.rs` gates it on `observer`/`reviewer` like any
+   *  other authenticated route. (Discovered live 2026-07-22: this method
+   *  previously called `requestAuth` with no bearer at all, so it always
+   *  401'd; every caller's "does this hub advertise human_accounts" probe
+   *  silently failed regardless of hub support.) Uses the installed
+   *  automation token via `request`, same as {@link healthz}/{@link whoami}
+   *  -- any credential holding at least `observer` satisfies it. */
+  async authPolicy(): Promise<{ realm_id: string; bootstrap_open: boolean; roles: string[] }> {
+    return this.request("GET", "/auth-policy");
+  }
+
+  /** `GET /auth/sessions`: the caller's own sessions, or (admin only)
+   *  another account's when `accountId` is supplied. */
+  async listAuthSessions(accessSecret: string, accountId?: string): Promise<{ sessions: SessionSummaryWireDto[] }> {
+    const query = accountId ? `?account_id=${encodeURIComponent(accountId)}` : "";
+    return this.requestAuth("GET", `/auth/sessions${query}`, undefined, accessSecret);
+  }
+
+  /** `DELETE /auth/sessions/{id}`: revoke a session by id (self-service or
+   *  admin -- ownership enforced handler-side). */
+  async revokeAuthSession(accessSecret: string, sessionId: string): Promise<{ session_id: string; revoked: boolean }> {
+    return this.requestAuth("DELETE", `/auth/sessions/${encodeURIComponent(sessionId)}`, undefined, accessSecret);
+  }
+
+  // ---- Step-up (114C.7 Slice 4c-3). The two authenticated ends of the
+  // in-place step-up ceremony; the client calls both itself (it holds the
+  // session bearer) and only relays the WebAuthn `credentials.get` through
+  // the hub-served bridge page. `public_key` is the WebAuthn request options
+  // the bridge page runs the authenticator on; `credential` is the assertion
+  // it returns. On verify the hub elevates the session to aal2 in place and
+  // returns a freshly rotated `access_secret` the caller must persist. ------
+
+  /** `POST /auth/step-up/options`: start a step-up ceremony for the caller's
+   *  current session. No body; returns the WebAuthn request challenge. */
+  async stepUpOptions(accessSecret: string): Promise<{ challenge_id: string; options_token: string; public_key: unknown }> {
+    return this.requestAuth("POST", "/auth/step-up/options", {}, accessSecret);
+  }
+
+  /** `POST /auth/step-up/verify`: complete step-up with the relayed
+   *  assertion. Returns the elevated session's new (rotated) access secret. */
+  async stepUpVerify(
+    accessSecret: string,
+    challengeId: string,
+    optionsToken: string,
+    credential: unknown
+  ): Promise<{ session_id: string; assurance_level: string; access_secret: string; stepped_up_at?: string }> {
+    return this.requestAuth(
+      "POST",
+      "/auth/step-up/verify",
+      { challenge_id: challengeId, options_token: optionsToken, credential },
+      accessSecret
+    );
+  }
+
+  // ---- Account administration (all `admin`-role-gated; `accessSecret` must
+  // be an admin's own human-session access secret) --------------------------
+
+  /** `GET /accounts`: paginated account list. Readable by `admin` or
+   *  `reviewer`. */
+  async listAccounts(
+    accessSecret: string,
+    limit = 200,
+    offset = 0
+  ): Promise<{ accounts: AccountSummaryWireDto[] }> {
+    return this.requestAuth("GET", `/accounts?limit=${limit}&offset=${offset}`, undefined, accessSecret);
+  }
+
+  /** `POST /accounts`: create a new account with an initial password and
+   *  role. `admin` only. */
+  async createAccount(
+    accessSecret: string,
+    username: string,
+    displayName: string,
+    password: string,
+    role: string
+  ): Promise<AccountSummaryWireDto> {
+    return this.requestAuth(
+      "POST",
+      "/accounts",
+      { username, display_name: displayName, password, role },
+      accessSecret
+    );
+  }
+
+  /** `GET /accounts/{id}`. Readable by `admin` or `reviewer`. */
+  async getAccount(accessSecret: string, accountId: string): Promise<AccountSummaryWireDto> {
+    return this.requestAuth("GET", `/accounts/${encodeURIComponent(accountId)}`, undefined, accessSecret);
+  }
+
+  /** `PATCH /accounts/{id}`: the narrow status-transition route -- unlock
+   *  (`locked` -> `active`) or admin-forced recovery toggling, per
+   *  `transition_allowed` in `accounts.rs`. Not for `active` <-> `disabled`
+   *  (use `disableAccount`/`enableAccount`). `expectedRevision` must be the
+   *  account's current `revision` (from a prior `getAccount`/`listAccounts`
+   *  call) -- the route is a compare-and-set. */
+  async updateAccountStatus(
+    accessSecret: string,
+    accountId: string,
+    status: "active" | "locked" | "recovery_required",
+    expectedRevision: number
+  ): Promise<AccountSummaryWireDto> {
+    return this.requestAuth(
+      "PATCH",
+      `/accounts/${encodeURIComponent(accountId)}`,
+      { status, expected_revision: expectedRevision },
+      accessSecret
+    );
+  }
+
+  /** `POST /accounts/{id}/membership`: grant a role. `admin` only. */
+  async grantMembership(accessSecret: string, accountId: string, role: string): Promise<AccountSummaryWireDto> {
+    return this.requestAuth(
+      "POST",
+      `/accounts/${encodeURIComponent(accountId)}/membership`,
+      { role },
+      accessSecret
+    );
+  }
+
+  /** `DELETE /accounts/{id}/membership/{role}`: revoke a role, protecting
+   *  the realm's last enabled administrator. `admin` only. */
+  async revokeMembership(accessSecret: string, accountId: string, role: string): Promise<AccountSummaryWireDto> {
+    return this.requestAuth(
+      "DELETE",
+      `/accounts/${encodeURIComponent(accountId)}/membership/${encodeURIComponent(role)}`,
+      undefined,
+      accessSecret
+    );
+  }
+
+  /** `POST /accounts/{id}/disable`: protects the last enabled admin.
+   *  `expectedRevision` is a compare-and-set token, see `updateAccountStatus`. */
+  async disableAccount(
+    accessSecret: string,
+    accountId: string,
+    expectedRevision: number
+  ): Promise<AccountSummaryWireDto> {
+    return this.requestAuth(
+      "POST",
+      `/accounts/${encodeURIComponent(accountId)}/disable`,
+      { expected_revision: expectedRevision },
+      accessSecret
+    );
+  }
+
+  /** `POST /accounts/{id}/enable`: only valid from `disabled`. */
+  async enableAccount(
+    accessSecret: string,
+    accountId: string,
+    expectedRevision: number
+  ): Promise<AccountSummaryWireDto> {
+    return this.requestAuth(
+      "POST",
+      `/accounts/${encodeURIComponent(accountId)}/enable`,
+      { expected_revision: expectedRevision },
+      accessSecret
+    );
+  }
+
+  /** `POST /accounts/{id}/recovery-codes`: generates and returns plaintext
+   *  recovery codes exactly once -- caller must display and discard, never
+   *  cache or log them. `admin` only. */
+  async generateRecoveryCodes(
+    accessSecret: string,
+    accountId: string,
+    count = 5
+  ): Promise<{ account_id: string; codes: string[] }> {
+    return this.requestAuth(
+      "POST",
+      `/accounts/${encodeURIComponent(accountId)}/recovery-codes`,
+      { count },
+      accessSecret
+    );
+  }
+
+  /** `POST /accounts/{id}/recovery/complete`: redeem a recovery code and
+   *  set a new password. Same OBSERVE role gate as the other self-service
+   *  `/auth/*` routes (see `required_roles` in `auth.rs`) -- but note the
+   *  account is typically `recovery_required`, not necessarily holding a
+   *  normal session; this call still requires *some* authenticated bearer
+   *  today, a known constraint on the pure-recovery flow this slice does
+   *  not change. */
+  async completeRecovery(
+    accessSecret: string,
+    accountId: string,
+    code: string,
+    newPassword: string
+  ): Promise<AccountSummaryWireDto> {
+    return this.requestAuth(
+      "POST",
+      `/accounts/${encodeURIComponent(accountId)}/recovery/complete`,
+      { code, new_password: newPassword },
+      accessSecret
+    );
+  }
+
+  /** `POST /accounts/{id}/delete`: step one of two-step deletion -- marks
+   *  `deletion_pending`, revokes sessions, protects the last admin. `admin`
+   *  only. */
+  async initiateAccountDeletion(
+    accessSecret: string,
+    accountId: string,
+    expectedRevision: number
+  ): Promise<AccountSummaryWireDto> {
+    return this.requestAuth(
+      "POST",
+      `/accounts/${encodeURIComponent(accountId)}/delete`,
+      { expected_revision: expectedRevision },
+      accessSecret
+    );
+  }
+
+  /** `POST /accounts/{id}/tombstone`: step two, irreversible. Requires the
+   *  account already be `deletion_pending`. `admin` only. */
+  async completeAccountDeletion(
+    accessSecret: string,
+    accountId: string,
+    expectedRevision: number
+  ): Promise<AccountSummaryWireDto> {
+    return this.requestAuth(
+      "POST",
+      `/accounts/${encodeURIComponent(accountId)}/tombstone`,
+      { expected_revision: expectedRevision },
+      accessSecret
+    );
+  }
+
+  /** `GET /accounts/{id}/security-history`: bounded recent login attempts
+   *  and sessions. Readable by `admin` or `reviewer`. */
+  async accountSecurityHistory(
+    accessSecret: string,
+    accountId: string,
+    limit = 50
+  ): Promise<{
+    account_id: string;
+    login_attempts: Array<{ attempted_at: string; successful: boolean }>;
+    sessions: SessionSummaryWireDto[];
+  }> {
+    return this.requestAuth(
+      "GET",
+      `/accounts/${encodeURIComponent(accountId)}/security-history?limit=${limit}`,
+      undefined,
+      accessSecret
+    );
   }
 
   async getLabels(): Promise<LabelsInfo> {
@@ -553,6 +1024,14 @@ export class HubClient {
 
   async auditTail(): Promise<{ chain_tail: unknown }> {
     return this.request("GET", "/audit/tail");
+  }
+
+  async getSettings(): Promise<Record<string, unknown>> {
+    return this.request("GET", "/settings");
+  }
+
+  async getHistoryStatus(): Promise<Record<string, unknown>> {
+    return this.request("GET", "/history/status");
   }
 
   async auditDay(day: string): Promise<{ day: string; events: AuditEvent[]; verified: boolean; error: string | null }> {
@@ -930,6 +1409,9 @@ function canonicalJson(value: unknown): string {
 }
 
 function readToken(cfg: vscode.WorkspaceConfiguration): string {
+  if (secretStorageToken) {
+    return secretStorageToken;
+  }
   const configured = (cfg.get<string>("hubToken") ?? "").trim();
   if (configured) {
     return configured;
