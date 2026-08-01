@@ -31,6 +31,7 @@ $names = @(
     "install-fabric.ps1",
     "install-operator-overlay.ps1",
     "replay-operator-overlays.ps1",
+    "update-fabric.ps1",
     "nssm-install-hub.ps1",
     "nssm-install-runner.ps1",
     "install-hub-watchdog.ps1",

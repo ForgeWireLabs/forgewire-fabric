@@ -40,6 +40,7 @@ MIRRORED = (
     "install-fabric.ps1",
     "install-operator-overlay.ps1",
     "replay-operator-overlays.ps1",
+    "update-fabric.ps1",
     "nssm-install-hub.ps1",
     "nssm-install-runner.ps1",
     "install-hub-watchdog.ps1",
@@ -118,6 +119,12 @@ def test_deployment_clone_sync_preserves_dirty_work_without_hard_reset() -> None
     for needle in ("operator/$hostName/$stamp", "git bundle create", "git merge --ff-only"):
         assert needle in body
     assert "reset --hard" not in body
+
+
+def test_privileged_binary_update_waits_before_overlay_replay() -> None:
+    body = (SOURCE_DIR / "update-fabric.ps1").read_text(encoding="utf-8")
+    assert "-Verb RunAs -Wait -PassThru" in body
+    assert "exit $process.ExitCode" in body
 
 
 @pytest.mark.skipif(not sys.platform.startswith("win"), reason="Windows NSSM overlay contract")
