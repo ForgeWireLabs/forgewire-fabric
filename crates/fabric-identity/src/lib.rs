@@ -13,29 +13,38 @@
 //!   key without an explicit re-tag. This prevents accidental cross-role
 //!   signing.
 //! - **File format is JSON.** Human-inspectable, easy to back up, easy to
-//!   verify with `jq`.
+//!   verify with `jq` — as the *decrypted* payload; see `SECURITY` below for
+//!   what actually sits on disk.
 //!
-//! ## SECURITY: the secret key is stored in plaintext hex
+//! ## SECURITY: the secret key is encrypted at rest
 //!
-//! `IdentityFile::secret_key_hex` is written to disk in the clear. `save()`
-//! restricts the file to owner-read/write on Unix (best-effort, applied on
-//! every save — see its doc comment for the coverage gap on
-//! never-re-saved files, and note this has **no effect on Windows**), but that
-//! is a mitigation, not a fix: any process or user with read access to the
-//! file — a local account on a shared host, a stolen backup, a misconfigured
-//! share — can exfiltrate the key that signs every dispatcher/runner/hub
-//! message this identity authors, with no further barrier.
+//! `IdentityFile::secret_key_hex` is never written to disk in the clear.
+//! `save()` encrypts the identity (AES-256-GCM) under a wrapping key resolved
+//! from `FABRIC_IDENTITY_WRAPPING_KEY_FILE` (an operator-supplied 32-byte key
+//! file — the explicit path for headless/server deployments with no OS
+//! keyring) or, by default, the OS keyring (feature `os-keyring`, on by
+//! default). See [`vault`] for the wire format and resolution order.
 //!
-//! This is a known, tracked gap, not an oversight. ForgeLink's linked-node
-//! identity vault (a downstream consumer of the same ed25519 stack) never
-//! serializes the secret at all — it stores it AES-256-GCM-encrypted, wrapped
-//! by an OS-keyring-derived key. The operator decision to unify this crate
-//! onto that model is recorded in
-//! `forgewire/work/active/204-shared-node-identity-crate/compatibility-inventory.md`.
-//! Until that lands, treat any `IdentityFile` on disk as security-sensitive
-//! and protect the containing directory accordingly.
+//! **This fails closed.** If no wrapping key can be resolved, `save()`
+//! returns [`IdentityError::VaultUnavailable`] and writes nothing — there is
+//! no plaintext fallback. A file that already exists in the legacy plaintext
+//! format (from a build before this change) is transparently decrypted on
+//! `load()` for backward compatibility, then **eagerly re-encrypted** before
+//! `load()` returns, so the very next successful load of a legacy file closes
+//! the gap for it. If re-encryption fails on that pass (e.g. no wrapping key
+//! configured yet), the identity is still returned — a load never fails
+//! because migration couldn't complete — and the file stays plaintext,
+//! restricted to owner-only permissions on Unix, until a load succeeds with a
+//! resolvable wrapping key.
+//!
+//! This closes the gap tracked in
+//! `forgewire/work/active/204-shared-node-identity-crate/compatibility-inventory.md`,
+//! ported from ForgeLink's linked-node identity vault (a downstream consumer
+//! of the same ed25519 stack), which never serialized the secret at all.
 
 #![deny(rust_2018_idioms)]
+
+mod vault;
 
 use std::path::Path;
 
@@ -86,6 +95,12 @@ pub enum IdentityError {
         expected: KeyPurpose,
         found: KeyPurpose,
     },
+
+    #[error("{0}")]
+    VaultUnavailable(String),
+
+    #[error("{0}")]
+    VaultCorrupted(String),
 }
 
 /// Generate a fresh ed25519 identity.
@@ -104,25 +119,44 @@ pub fn generate(id: &str, purpose: KeyPurpose) -> IdentityFile {
 
 /// Load and validate an identity file from disk.
 ///
-/// Supports both the native Rust format (`id`, `public_key_hex`, `secret_key_hex`)
-/// and the Python/legacy format (`runner_id` or `dispatcher_id`, `public_key`,
-/// `private_key`). The Python format is normalised on load; the file on disk is
-/// NOT rewritten (migration is explicit via `save`).
+/// Reads the encrypted vault format written by `save()` (see the crate-level
+/// `SECURITY` note) if present. Otherwise falls back, for backward
+/// compatibility, to the legacy plaintext native Rust format (`id`,
+/// `public_key_hex`, `secret_key_hex`) or the Python/legacy format
+/// (`runner_id` or `dispatcher_id`, `public_key`, `private_key`) — and, on a
+/// successful legacy load, **eagerly re-encrypts the file** before returning
+/// so the gap closes the moment it is next read. Re-encryption failure (e.g.
+/// no wrapping key configured yet) does not fail the load; the identity is
+/// still returned, and the file is migrated on a later successful load.
 ///
-/// Returns a diagnostic error if the file is missing, corrupted, or the
-/// public key doesn't match the secret key. Never silently regenerates.
+/// Returns a diagnostic error if the file is missing, corrupted, undecryptable
+/// with the resolved wrapping key, or the public key doesn't match the secret
+/// key. Never silently regenerates.
 pub fn load(path: &Path) -> Result<IdentityFile, IdentityError> {
     if !path.exists() {
         return Err(IdentityError::NotFound(path.display().to_string()));
     }
-    let data = std::fs::read_to_string(path)?;
-    // First try native Rust format
-    if let Ok(identity) = serde_json::from_str::<IdentityFile>(&data) {
+    let data = std::fs::read(path)?;
+    if vault::looks_like_vault(&data) {
+        let identity = vault::decrypt_from_bytes(path, &data)?;
         validate(&identity)?;
         return Ok(identity);
     }
-    // Fall back to Python/legacy format
-    let raw: serde_json::Value = serde_json::from_str(&data)?;
+    let identity = parse_legacy(&data)?;
+    validate(&identity)?;
+    // Best-effort transparent migration. The identity was already validly
+    // loaded from the legacy format; a failed re-encryption attempt must not
+    // turn a successful load into an error.
+    let _ = save(path, &identity);
+    Ok(identity)
+}
+
+/// Parse the legacy plaintext native-Rust or Python-era identity JSON.
+fn parse_legacy(data: &[u8]) -> Result<IdentityFile, IdentityError> {
+    if let Ok(identity) = serde_json::from_slice::<IdentityFile>(data) {
+        return Ok(identity);
+    }
+    let raw: serde_json::Value = serde_json::from_slice(data)?;
     let id = raw
         .get("runner_id")
         .or_else(|| raw.get("dispatcher_id"))
@@ -142,7 +176,7 @@ pub fn load(path: &Path) -> Result<IdentityFile, IdentityError> {
         .and_then(|v| v.as_str())
         .ok_or_else(|| serde_json::from_str::<IdentityFile>("").unwrap_err())?
         .to_owned();
-    let identity = IdentityFile {
+    Ok(IdentityFile {
         id,
         purpose: KeyPurpose::Runner, // Python format doesn't carry purpose; default Runner
         public_key_hex,
@@ -155,9 +189,7 @@ pub fn load(path: &Path) -> Result<IdentityFile, IdentityError> {
             .get("created_at")
             .and_then(|v| v.as_str())
             .map(|s| s.to_owned()),
-    };
-    validate(&identity)?;
-    Ok(identity)
+    })
 }
 
 /// Load and validate, also checking that the key purpose matches.
@@ -196,21 +228,21 @@ pub fn validate(identity: &IdentityFile) -> Result<(), IdentityError> {
     Ok(())
 }
 
-/// Save an identity file to disk as pretty-printed JSON.
+/// Save an identity file to disk, encrypted (see the crate-level `SECURITY`
+/// note).
 ///
-/// The file still holds the secret key in plaintext hex (see the crate-level
-/// `SECURITY` note); this only restricts *who* can read it. Permissions are
-/// re-applied on every save, including an overwrite of an existing file, so a
-/// file created before this hardening existed is tightened the next time it is
-/// rotated or re-saved. A file that is never re-saved keeps its prior
-/// permissions until then — this is not a substitute for the encrypted-vault
-/// migration tracked in `forgewire/work/active/204-shared-node-identity-crate`.
+/// Fails closed: if no wrapping key can be resolved
+/// ([`IdentityError::VaultUnavailable`]), nothing is written — there is no
+/// plaintext fallback. On success, the file is additionally restricted to
+/// owner read/write on Unix (best-effort defense in depth on top of
+/// encryption; no effect on Windows, which needs an ACL-based equivalent not
+/// implemented here).
 pub fn save(path: &Path, identity: &IdentityFile) -> Result<(), IdentityError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let json = serde_json::to_string_pretty(identity)?;
-    std::fs::write(path, json)?;
+    let blob = vault::encrypt_to_bytes(path, identity)?;
+    std::fs::write(path, blob)?;
     restrict_permissions(path)?;
     Ok(())
 }
@@ -271,6 +303,28 @@ fn utc_now_iso() -> String {
 mod tests {
     use super::*;
 
+    /// Every test in this module that touches `save`/`load` must call this
+    /// first. It points `FABRIC_IDENTITY_WRAPPING_KEY_FILE` at a fixed,
+    /// process-local key file so tests are deterministic and never depend on
+    /// a real OS keyring/secret service being present in the test
+    /// environment. Uses `Once` so the one-time env var write happens before
+    /// any test reads it, safely under parallel test execution.
+    fn ensure_test_wrapping_key() {
+        use std::sync::Once;
+        static INIT: Once = Once::new();
+        INIT.call_once(|| {
+            let path = std::env::temp_dir().join(format!(
+                "fabric-identity-test-wrapping-key-{}.bin",
+                std::process::id()
+            ));
+            std::fs::write(&path, [7_u8; 32]).expect("write test wrapping key");
+            std::env::set_var(
+                vault::WRAPPING_KEY_FILE_ENV,
+                path.to_string_lossy().to_string(),
+            );
+        });
+    }
+
     #[test]
     fn generate_and_validate() {
         let id = generate("test-node", KeyPurpose::Runner);
@@ -299,6 +353,7 @@ mod tests {
 
     #[test]
     fn detect_wrong_purpose() {
+        ensure_test_wrapping_key();
         let id = generate("test-node", KeyPurpose::Runner);
         let path = std::env::temp_dir().join("test_identity_purpose.json");
         save(&path, &id).unwrap();
@@ -309,6 +364,7 @@ mod tests {
 
     #[test]
     fn save_load_roundtrip() {
+        ensure_test_wrapping_key();
         let id = generate("roundtrip-test", KeyPurpose::Node);
         let path = std::env::temp_dir().join("test_identity_roundtrip.json");
         save(&path, &id).unwrap();
@@ -323,6 +379,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn save_restricts_permissions_to_owner_only() {
+        ensure_test_wrapping_key();
         use std::os::unix::fs::PermissionsExt;
         let id = generate("perm-test", KeyPurpose::Node);
         let path = std::env::temp_dir().join("test_identity_permissions.json");
@@ -335,6 +392,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn save_retightens_permissions_on_an_already_loose_file() {
+        ensure_test_wrapping_key();
         use std::os::unix::fs::PermissionsExt;
         let id = generate("perm-retighten-test", KeyPurpose::Node);
         let path = std::env::temp_dir().join("test_identity_permissions_retighten.json");
@@ -350,6 +408,7 @@ mod tests {
     #[cfg(not(unix))]
     #[test]
     fn save_succeeds_without_posix_permission_bits() {
+        ensure_test_wrapping_key();
         let id = generate("perm-noop-test", KeyPurpose::Node);
         let path = std::env::temp_dir().join("test_identity_permissions_noop.json");
         save(&path, &id).unwrap();
@@ -370,5 +429,117 @@ mod tests {
     fn not_found_is_diagnostic() {
         let result = load(Path::new("/nonexistent/identity.json"));
         assert!(matches!(result, Err(IdentityError::NotFound(_))));
+    }
+
+    #[test]
+    fn saved_bytes_never_contain_the_plaintext_secret() {
+        ensure_test_wrapping_key();
+        let id = generate("no-plaintext-test", KeyPurpose::Hub);
+        let path = std::env::temp_dir().join("test_identity_no_plaintext.json");
+        save(&path, &id).unwrap();
+
+        let raw = std::fs::read(&path).unwrap();
+        assert!(vault::looks_like_vault(&raw));
+        // Neither the secret hex string nor its raw bytes anywhere in the file.
+        assert!(!raw
+            .windows(id.secret_key_hex.len())
+            .any(|w| w == id.secret_key_hex.as_bytes()));
+        let secret_bytes = hex::decode(&id.secret_key_hex).unwrap();
+        assert!(!raw.windows(secret_bytes.len()).any(|w| w == secret_bytes));
+
+        let loaded = load(&path).unwrap();
+        assert_eq!(loaded.secret_key_hex, id.secret_key_hex);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn detects_tampered_vault_ciphertext() {
+        ensure_test_wrapping_key();
+        let id = generate("tamper-test", KeyPurpose::Node);
+        let path = std::env::temp_dir().join("test_identity_tamper.json");
+        save(&path, &id).unwrap();
+
+        let mut blob = std::fs::read(&path).unwrap();
+        let last = blob.last_mut().unwrap();
+        *last ^= 0x01;
+        std::fs::write(&path, &blob).unwrap();
+
+        let result = load(&path);
+        assert!(matches!(result, Err(IdentityError::VaultCorrupted(_))));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn migrates_legacy_plaintext_identity_on_load() {
+        ensure_test_wrapping_key();
+        let id = generate("migrate-test", KeyPurpose::Dispatcher);
+        let path = std::env::temp_dir().join("test_identity_migrate.json");
+        // Write in the pre-vault plaintext format directly, bypassing save().
+        std::fs::write(&path, serde_json::to_string_pretty(&id).unwrap()).unwrap();
+        let raw_before = std::fs::read(&path).unwrap();
+        assert!(!vault::looks_like_vault(&raw_before));
+
+        let loaded = load(&path).unwrap();
+        assert_eq!(loaded.id, id.id);
+        assert_eq!(loaded.secret_key_hex, id.secret_key_hex);
+
+        let raw_after = std::fs::read(&path).unwrap();
+        assert!(
+            vault::looks_like_vault(&raw_after),
+            "legacy file should be re-encrypted after a successful load"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_of_legacy_file_still_succeeds_when_migration_cannot_write() {
+        ensure_test_wrapping_key();
+        let id = generate("migrate-readonly-test", KeyPurpose::Node);
+        let dir =
+            std::env::temp_dir().join(format!("fabric-identity-readonly-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("identity.json");
+        std::fs::write(&path, serde_json::to_string_pretty(&id).unwrap()).unwrap();
+
+        // Point the wrapping-key env var at a nonexistent file for this call
+        // only is not possible without races against other tests sharing the
+        // process; instead simulate migration failure by making the target
+        // file read-only so the re-encrypting write fails, while the read
+        // that already succeeded must still return Ok.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&path).unwrap().permissions();
+            perms.set_mode(0o400);
+            std::fs::set_permissions(&path, perms).unwrap();
+        }
+        #[cfg(windows)]
+        {
+            let mut perms = std::fs::metadata(&path).unwrap().permissions();
+            perms.set_readonly(true);
+            std::fs::set_permissions(&path, perms).unwrap();
+        }
+
+        let loaded = load(&path).unwrap();
+        assert_eq!(loaded.id, id.id);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&path).unwrap().permissions();
+            perms.set_mode(0o600);
+            std::fs::set_permissions(&path, perms).unwrap();
+        }
+        #[cfg(windows)]
+        {
+            let mut perms = std::fs::metadata(&path).unwrap().permissions();
+            // Windows readonly is a single attribute bit, not Unix mode bits;
+            // clearing it does not make the file world-writable the way
+            // clippy's lint warns about on Unix.
+            #[allow(clippy::permissions_set_readonly_false)]
+            perms.set_readonly(false);
+            std::fs::set_permissions(&path, perms).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

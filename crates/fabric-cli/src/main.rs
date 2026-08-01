@@ -768,14 +768,20 @@ async fn main() {
                         eprintln!("failed to save identity: {e}");
                         std::process::exit(1);
                     });
-                    println!("Identity saved to {}", path.display());
+                    println!("Identity saved (encrypted) to {}", path.display());
                     println!("  id:         {}", identity.id);
                     println!("  purpose:    {}", identity.purpose);
                     println!("  public_key: {}", identity.public_key_hex);
                 } else {
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&identity).unwrap_or_default()
+                    // Never print the secret to stdout/terminal scrollback/shell
+                    // history. Without --output there is nowhere encrypted to put
+                    // it, so show only what Show/Validate already treat as safe.
+                    println!("id:         {}", identity.id);
+                    println!("purpose:    {}", identity.purpose);
+                    println!("public_key: {}", identity.public_key_hex);
+                    eprintln!(
+                        "note: secret key not printed. Pass --output PATH to persist it \
+                         to the encrypted identity vault."
                     );
                 }
             }

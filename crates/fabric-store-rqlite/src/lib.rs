@@ -1323,23 +1323,30 @@ impl RunnerStore for RqliteStore {
         now: &str,
     ) -> StoreResult<RunnerRow> {
         let nonce = data["nonce"].as_str().unwrap_or("").to_owned();
-        let rows_changed = self.execute_one(
-            "UPDATE runners SET last_heartbeat=?,cpu_load_pct=?,ram_free_mb=?,battery_pct=?,on_battery=?,last_known_commit=COALESCE(?,last_known_commit),last_nonce=?,claim_failures_total=COALESCE(?,claim_failures_total),claim_failures_consecutive=COALESCE(?,claim_failures_consecutive),last_claim_error=?,heartbeat_failures_total=COALESCE(?,heartbeat_failures_total),state=CASE WHEN drain_requested=1 THEN 'draining' ELSE 'online' END WHERE runner_id=? AND (last_nonce IS NULL OR last_nonce!=?)",
-            &[json!(now), json!(data["cpu_load_pct"]), json!(data["ram_free_mb"]), json!(data["battery_pct"]), json!(data["on_battery"].as_bool().map(|b| if b { 1 } else { 0 })), json!(data["last_known_commit"]), json!(nonce), json!(data["claim_failures_total"]), json!(data["claim_failures_consecutive"]), json!(data["last_claim_error"]), json!(data["heartbeat_failures_total"]), json!(runner_id), json!(nonce)],
-        ).await?;
-        if rows_changed == 0 {
-            let exists = self
-                .query(
-                    "SELECT 1 FROM runners WHERE runner_id=?",
-                    &[json!(runner_id)],
-                )
-                .await?;
-            return if exists.is_empty() {
-                Err(StoreError::NotFound(format!("runner {runner_id}")))
-            } else {
-                Err(StoreError::PermissionDenied("nonce replay rejected".into()))
-            };
+
+        // WI-131: the nonce check is no longer fused into the state UPDATE's
+        // WHERE clause. That fusion is what limited replay protection to an
+        // immediately-repeated value -- `last_nonce != ?` remembers exactly
+        // one nonce, so `A, B, A` passed. Existence is checked first so the
+        // NotFound-vs-replay distinction the caller relies on is preserved,
+        // then the nonce is consumed strictly, then the state update runs
+        // unconditionally.
+        let exists = self
+            .query(
+                "SELECT 1 FROM runners WHERE runner_id=?",
+                &[json!(runner_id)],
+            )
+            .await?;
+        if exists.is_empty() {
+            return Err(StoreError::NotFound(format!("runner {runner_id}")));
         }
+        self.consume_agent_nonce_strict("runner_nonces", "runner_id", runner_id, &nonce, now)
+            .await?;
+
+        self.execute_one(
+            "UPDATE runners SET last_heartbeat=?,cpu_load_pct=?,ram_free_mb=?,battery_pct=?,on_battery=?,last_known_commit=COALESCE(?,last_known_commit),last_nonce=?,claim_failures_total=COALESCE(?,claim_failures_total),claim_failures_consecutive=COALESCE(?,claim_failures_consecutive),last_claim_error=?,heartbeat_failures_total=COALESCE(?,heartbeat_failures_total),state=CASE WHEN drain_requested=1 THEN 'draining' ELSE 'online' END WHERE runner_id=?",
+            &[json!(now), json!(data["cpu_load_pct"]), json!(data["ram_free_mb"]), json!(data["battery_pct"]), json!(data["on_battery"].as_bool().map(|b| if b { 1 } else { 0 })), json!(data["last_known_commit"]), json!(nonce), json!(data["claim_failures_total"]), json!(data["claim_failures_consecutive"]), json!(data["last_claim_error"]), json!(data["heartbeat_failures_total"]), json!(runner_id)],
+        ).await?;
         self.get_runner(runner_id).await
     }
 
@@ -1473,6 +1480,43 @@ impl DispatcherStore for RqliteStore {
 
 // -- Nonces ------------------------------------------------------------------
 
+// WI-131: strict single-use nonce consume shared by the dispatcher and runner
+// paths. Inherent (not part of `NonceStore`) because it is an rqlite
+// implementation detail -- the trait exposes only the per-principal methods.
+impl RqliteStore {
+    async fn consume_agent_nonce_strict(
+        &self,
+        table: &str,
+        id_column: &str,
+        id: &str,
+        nonce: &str,
+        now: &str,
+    ) -> StoreResult<()> {
+        // WI-131. Same strict model as `consume_session_nonce`: prune outside
+        // the skew window, then let the PRIMARY KEY reject a reuse.
+        let cutoff = prune_cutoff();
+        let _ = self
+            .execute_one(
+                &format!("DELETE FROM {table} WHERE used_at < ?"),
+                &[json!(cutoff)],
+            )
+            .await;
+        match self
+            .execute_one(
+                &format!("INSERT INTO {table} ({id_column}, nonce, used_at) VALUES (?,?,?)"),
+                &[json!(id), json!(nonce), json!(now)],
+            )
+            .await
+        {
+            Ok(_) => Ok(()),
+            Err(error) => Err(StoreError::PermissionDenied(format!(
+                "nonce replay rejected ({error})"
+            ))),
+        }
+    }
+
+}
+
 #[async_trait]
 impl NonceStore for RqliteStore {
     async fn consume_dispatcher_nonce(
@@ -1481,23 +1525,32 @@ impl NonceStore for RqliteStore {
         nonce: &str,
         now: &str,
     ) -> StoreResult<()> {
-        let n = self.execute_one(
-            "UPDATE dispatchers SET last_nonce=?,last_seen=? WHERE dispatcher_id=? AND (last_nonce IS NULL OR last_nonce!=?)",
-            &[json!(nonce), json!(now), json!(dispatcher_id), json!(nonce)],
-        ).await?;
-        if n == 0 {
-            let exists = self
-                .query(
-                    "SELECT 1 FROM dispatchers WHERE dispatcher_id=?",
-                    &[json!(dispatcher_id)],
-                )
-                .await?;
-            return if exists.is_empty() {
-                Err(StoreError::NotFound(format!("dispatcher {dispatcher_id}")))
-            } else {
-                Err(StoreError::PermissionDenied("nonce replay rejected".into()))
-            };
+        // WI-131: existence first (preserving NotFound-vs-replay), then a
+        // strict single-use consume against `dispatcher_nonces`, then the
+        // bookkeeping update. `last_nonce` is still written for
+        // observability, but it is no longer what enforces replay.
+        let exists = self
+            .query(
+                "SELECT 1 FROM dispatchers WHERE dispatcher_id=?",
+                &[json!(dispatcher_id)],
+            )
+            .await?;
+        if exists.is_empty() {
+            return Err(StoreError::NotFound(format!("dispatcher {dispatcher_id}")));
         }
+        self.consume_agent_nonce_strict(
+            "dispatcher_nonces",
+            "dispatcher_id",
+            dispatcher_id,
+            nonce,
+            now,
+        )
+        .await?;
+        self.execute_one(
+            "UPDATE dispatchers SET last_nonce=?,last_seen=? WHERE dispatcher_id=?",
+            &[json!(nonce), json!(now), json!(dispatcher_id)],
+        )
+        .await?;
         Ok(())
     }
 
@@ -1507,23 +1560,23 @@ impl NonceStore for RqliteStore {
         nonce: &str,
         now: &str,
     ) -> StoreResult<()> {
-        let n = self.execute_one(
-            "UPDATE runners SET last_nonce=?,last_heartbeat=? WHERE runner_id=? AND (last_nonce IS NULL OR last_nonce!=?)",
-            &[json!(nonce), json!(now), json!(runner_id), json!(nonce)],
-        ).await?;
-        if n == 0 {
-            let exists = self
-                .query(
-                    "SELECT 1 FROM runners WHERE runner_id=?",
-                    &[json!(runner_id)],
-                )
-                .await?;
-            return if exists.is_empty() {
-                Err(StoreError::NotFound(format!("runner {runner_id}")))
-            } else {
-                Err(StoreError::PermissionDenied("nonce replay rejected".into()))
-            };
+        // WI-131: see `consume_dispatcher_nonce`. Same ordering, same reason.
+        let exists = self
+            .query(
+                "SELECT 1 FROM runners WHERE runner_id=?",
+                &[json!(runner_id)],
+            )
+            .await?;
+        if exists.is_empty() {
+            return Err(StoreError::NotFound(format!("runner {runner_id}")));
         }
+        self.consume_agent_nonce_strict("runner_nonces", "runner_id", runner_id, nonce, now)
+            .await?;
+        self.execute_one(
+            "UPDATE runners SET last_nonce=?,last_heartbeat=? WHERE runner_id=?",
+            &[json!(nonce), json!(now), json!(runner_id)],
+        )
+        .await?;
         Ok(())
     }
 
