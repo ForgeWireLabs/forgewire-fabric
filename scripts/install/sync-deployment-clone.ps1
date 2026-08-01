@@ -74,6 +74,31 @@ function Assert-Git {
     if ($LASTEXITCODE -ne 0) { throw $What }
 }
 
+# Run git, routing its output to the verbose stream, and throw $FailureMessage
+# on a non-zero exit.
+#
+# The $ErrorActionPreference dance is load-bearing, not defensive noise. git
+# writes ordinary progress ("Switched to a new branch ...") to STDERR. Under
+# Windows PowerShell 5.1 with $ErrorActionPreference = 'Stop', merging a native
+# command's stderr (`2>&1`) turns those benign lines into terminating
+# NativeCommandError records -- so a perfectly successful `git switch` aborts
+# the script. pwsh 7 does not do this, which is why this only shows up on hosts
+# invoked through `powershell.exe`. Suspending the preference around the call,
+# and deciding success from $LASTEXITCODE instead, behaves identically on both.
+function Invoke-Git {
+    param([string[]]$GitArgs, [string]$FailureMessage)
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = & git @GitArgs 2>&1 | Out-String
+        if ($output.Trim()) { Write-Verbose $output.Trim() }
+    }
+    finally {
+        $ErrorActionPreference = $previous
+    }
+    if ($LASTEXITCODE -ne 0) { throw $FailureMessage }
+}
+
 # --- Identity guard -------------------------------------------------------
 # Runs BEFORE any branch switch. `git commit` fails without an identity, and
 # failing after the switch would strand the clone on a half-built archive
@@ -177,23 +202,18 @@ function New-OperatorArchive {
 
     $startingRef = (git rev-parse --abbrev-ref HEAD)
     $script:StartingRef = $startingRef
-    git switch -c $ArchiveBranch 2>&1 | Write-Verbose
-    Assert-Git 'could not create operator archive branch'
+    Invoke-Git @('switch', '-c', $ArchiveBranch) 'could not create operator archive branch'
     try {
-        git add -A 2>&1 | Write-Verbose
-        Assert-Git 'could not stage tracked changes'
+        Invoke-Git @('add', '-A') 'could not stage tracked changes'
         if ($operatorFiles.Count -gt 0) {
             # -f is required: these paths are ignored by design, and are being
             # captured deliberately rather than un-ignored.
-            git add -f -- $operatorFiles 2>&1 | Write-Verbose
-            Assert-Git 'could not stage operator-owned ignored files'
+            Invoke-Git (@('add', '-f', '--') + $operatorFiles) 'could not stage operator-owned ignored files'
         }
-        git @IdentityArgs commit -m "chore(operator): preserve $env:COMPUTERNAME deployment edits before sync" 2>&1 | Write-Verbose
-        Assert-Git 'could not commit operator archive branch'
+        Invoke-Git ($IdentityArgs + @('commit', '-m', "chore(operator): preserve $env:COMPUTERNAME deployment edits before sync")) 'could not commit operator archive branch'
 
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Destination) | Out-Null
-        git bundle create $Destination $ArchiveBranch 2>&1 | Write-Verbose
-        Assert-Git 'could not create operator archive bundle'
+        Invoke-Git @('bundle', 'create', $Destination, $ArchiveBranch) 'could not create operator archive bundle'
 
         # Sidecar manifest so a restore does not require guessing provenance.
         $manifest = [ordered]@{
@@ -217,8 +237,15 @@ function New-OperatorArchive {
     }
     catch {
         # Leave the operator on the branch they started from rather than
-        # stranded mid-archive.
-        git switch $startingRef 2>$null | Out-Null
+        # stranded mid-archive. This is the recovery path, so it must not be
+        # able to fail for the same PS 5.1 native-stderr reason the rest of
+        # this script guards against -- suspend the preference here too, and
+        # swallow anything that still goes wrong so the original error (which
+        # is the useful one) propagates rather than being masked.
+        $previous = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try { & git switch $startingRef 2>&1 | Out-Null } catch { }
+        finally { $ErrorActionPreference = $previous }
         throw
     }
 }
@@ -243,15 +270,13 @@ try {
     if ($Mode -eq 'Import') {
         if (-not $BundlePath) { throw '-BundlePath is required for -Mode Import' }
         if (-not (Test-Path -LiteralPath $BundlePath)) { throw "bundle not found: $BundlePath" }
-        git bundle verify $BundlePath
-        Assert-Git "bundle failed verification: $BundlePath"
+        Invoke-Git @('bundle', 'verify', $BundlePath) "bundle failed verification: $BundlePath"
         $restoreBranch = "operator-restore/$stamp"
         if ($DryRun) {
             Write-Host "DRY_RUN: git fetch `"$BundlePath`" '*:refs/heads/$restoreBranch/*'"
             return
         }
-        git fetch $BundlePath "+refs/heads/*:refs/heads/$restoreBranch/*"
-        Assert-Git 'could not fetch refs from bundle'
+        Invoke-Git @('fetch', $BundlePath, "+refs/heads/*:refs/heads/$restoreBranch/*") 'could not fetch refs from bundle'
         Write-Host "RESTORED_REFS=refs/heads/$restoreBranch/*" -ForegroundColor Green
         Write-Host 'Review with: git log --oneline --all | Select-String operator-restore'
         Write-Host "Apply with:  git checkout <restored-ref> -- <path>"
@@ -273,12 +298,9 @@ try {
         # and unstage it, so the tree is byte-identical to how it was found.
         if ($created -and $script:StartingRef) {
             $archiveCommit = (git rev-parse $created)
-            git switch $script:StartingRef 2>&1 | Write-Verbose
-            Assert-Git "could not return to $($script:StartingRef) after export"
-            git checkout $archiveCommit -- . 2>&1 | Write-Verbose
-            Assert-Git 'could not replay archived working-tree state after export'
-            git reset 2>&1 | Write-Verbose
-            Assert-Git 'could not unstage replayed working-tree state after export'
+            Invoke-Git @('switch', $script:StartingRef) "could not return to $($script:StartingRef) after export"
+            Invoke-Git @('checkout', $archiveCommit, '--', '.') 'could not replay archived working-tree state after export'
+            Invoke-Git @('reset') 'could not unstage replayed working-tree state after export'
         }
         if ($created) { Write-Host 'EXPORT_COMPLETE' -ForegroundColor Green }
         else { Write-Host 'EXPORT_EMPTY: nothing to preserve.' -ForegroundColor Green }
@@ -290,14 +312,10 @@ try {
         return
     }
 
-    git fetch $Remote
-    Assert-Git "git fetch $Remote failed"
-    git switch $Branch
-    Assert-Git "git switch $Branch failed"
-    git merge --ff-only "$Remote/$Branch"
-    if ($LASTEXITCODE -ne 0) {
-        throw "deployment clone diverged from $Remote/$Branch; preserved state was not overwritten (see $bundle)"
-    }
+    Invoke-Git @('fetch', $Remote) "git fetch $Remote failed"
+    Invoke-Git @('switch', $Branch) "git switch $Branch failed"
+    Invoke-Git @('merge', '--ff-only', "$Remote/$Branch") `
+        "deployment clone diverged from $Remote/$Branch; preserved state was not overwritten (see $bundle)"
     Write-Host "DEPLOYMENT_HEAD=$(git rev-parse HEAD)" -ForegroundColor Green
     if ($created) {
         Write-Host "Operator state preserved on $created and in $bundle" -ForegroundColor Green
