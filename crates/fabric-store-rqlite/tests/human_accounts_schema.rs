@@ -28,6 +28,11 @@ const EXPECTED_TABLES: &[&str] = &[
     // (not a `human_*` table -- realm-scoped, not account-scoped -- but created
     // by the same `init_human_accounts_schema` call, so it is counted here).
     "realm_identity",
+    // Eleventh table, added in 114E Slice 4: single-use proof-of-possession
+    // request nonces, scoped per human session. Created by this initializer
+    // (not the main one) because it is a session-lifetime concern and must
+    // exist wherever `human_sessions` does.
+    "session_nonces",
 ];
 
 #[tokio::test]
@@ -173,6 +178,7 @@ async fn human_accounts_migration_touches_no_existing_table() {
         EXPECTED_TABLES.iter().map(|s| s.to_string()).collect();
     assert_eq!(
         added, expected_added,
-        "the migration must add exactly the seven locked tables and nothing else"
+        "the migration must add exactly the locked table set ({} tables) and nothing else",
+        EXPECTED_TABLES.len()
     );
 }

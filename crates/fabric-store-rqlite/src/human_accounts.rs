@@ -59,6 +59,18 @@ impl RqliteStore {
             "CREATE INDEX IF NOT EXISTS idx_human_sessions_account ON human_sessions (account_id)",
             // Refresh-family replay detection.
             "CREATE INDEX IF NOT EXISTS idx_human_sessions_refresh_family ON human_sessions (refresh_family_id)",
+            // 114E Slice 4: strict single-use nonces for proof-of-possession
+            // requests. Lives beside `human_sessions` rather than in the main
+            // schema because it is scoped to a human session and is created by
+            // the same initializer the session path runs.
+            //
+            // PRIMARY KEY (session_id, nonce) IS the replay check: a duplicate
+            // INSERT fails. That is what makes this strict, unlike the
+            // "remember one last_nonce" compare-and-set used for dispatchers
+            // and runners, which accepts the sequence A, B, A.
+            "CREATE TABLE IF NOT EXISTS session_nonces (session_id TEXT NOT NULL, nonce TEXT NOT NULL, used_at TEXT NOT NULL, PRIMARY KEY (session_id, nonce))",
+            // Supports the retention prune (`used_at < cutoff`).
+            "CREATE INDEX IF NOT EXISTS idx_session_nonces_used_at ON session_nonces (used_at)",
             "CREATE TABLE IF NOT EXISTS human_refresh_uses (id INTEGER PRIMARY KEY AUTOINCREMENT, refresh_family_id TEXT NOT NULL, token_fingerprint TEXT NOT NULL, issued_at TEXT NOT NULL, used_at TEXT, replaced_at TEXT, result TEXT NOT NULL)",
             "CREATE INDEX IF NOT EXISTS idx_human_refresh_uses_family ON human_refresh_uses (refresh_family_id)",
             "CREATE TABLE IF NOT EXISTS human_recovery_codes (code_id TEXT PRIMARY KEY, account_id TEXT NOT NULL, code_verifier TEXT NOT NULL, batch_id TEXT NOT NULL, created_at TEXT NOT NULL, consumed_at TEXT, revoked_at TEXT, expires_at TEXT)",

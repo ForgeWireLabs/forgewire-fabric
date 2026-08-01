@@ -337,6 +337,30 @@ pub async fn resolve_signed_session(
             message: "the request signature did not verify",
         };
     }
+
+    // 114E Slice 4: strict single-use nonce consume, closing the replay
+    // window §6 deferred from Slice 1. Deliberately AFTER signature
+    // verification: consuming first would let an unauthenticated caller fill
+    // `session_nonces` with arbitrary values, turning a replay guard into a
+    // write amplifier, and would burn the nonce of a request that was never
+    // legitimate. Verifying first means only a caller who already holds the
+    // session's private key can write a row.
+    if let Err(error) = store
+        .consume_session_nonce(session_id, nonce, &crate::utils::utc_now())
+        .await
+    {
+        tracing::warn!(
+            session_id = %session_id,
+            error = %error,
+            "rejected a signed session request whose nonce was already used"
+        );
+        return HumanSessionOutcome::Rejected {
+            status: StatusCode::UNAUTHORIZED,
+            code: "NonceReplayed",
+            message: "this request nonce has already been used",
+        };
+    }
+
     authenticate_validated_session(store, session).await
 }
 

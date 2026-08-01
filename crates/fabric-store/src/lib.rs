@@ -334,6 +334,26 @@ pub trait NonceStore: Send + Sync {
         nonce: &str,
         now: &str,
     ) -> StoreResult<()>;
+
+    /// Single-use consume of a 114E human proof-of-possession request nonce.
+    ///
+    /// Unlike [`NonceStore::consume_dispatcher_nonce`] and
+    /// [`NonceStore::consume_runner_nonce`], which compare against a single
+    /// remembered `last_nonce` and therefore only reject an *immediately*
+    /// repeated value, this records every nonce and rejects any reuse within
+    /// the retention window. `A, B, A` is accepted by the `last_nonce` model
+    /// and rejected here.
+    ///
+    /// Returns [`StoreError::PermissionDenied`] on replay. Implementations
+    /// must prune entries older than the signature skew window so the table
+    /// stays bounded — a nonce older than the window cannot be replayed
+    /// anyway, because the timestamp check rejects it first.
+    async fn consume_session_nonce(
+        &self,
+        session_id: &str,
+        nonce: &str,
+        now: &str,
+    ) -> StoreResult<()>;
 }
 
 // -- Stream store ------------------------------------------------------------

@@ -1526,6 +1526,77 @@ impl NonceStore for RqliteStore {
         }
         Ok(())
     }
+
+    async fn consume_session_nonce(
+        &self,
+        session_id: &str,
+        nonce: &str,
+        now: &str,
+    ) -> StoreResult<()> {
+        // Prune first, so the table only ever holds nonces still inside the
+        // skew window. A nonce older than that cannot be replayed anyway --
+        // `check_skew` rejects the request before this is reached -- so
+        // dropping it loses no protection and keeps the table bounded by
+        // request rate x 300s rather than growing without limit.
+        let cutoff = prune_cutoff();
+        let _ = self
+            .execute_one(
+                "DELETE FROM session_nonces WHERE used_at < ?",
+                &[json!(cutoff)],
+            )
+            .await;
+
+        // The PRIMARY KEY (session_id, nonce) is the replay check: a second
+        // INSERT of the same pair fails, whatever order nonces arrive in.
+        match self
+            .execute_one(
+                "INSERT INTO session_nonces (session_id, nonce, used_at) VALUES (?,?,?)",
+                &[json!(session_id), json!(nonce), json!(now)],
+            )
+            .await
+        {
+            Ok(_) => Ok(()),
+            // rqlite reports the constraint violation as a generic backend
+            // error; any failure to insert here means "this nonce is already
+            // recorded for this session", which is exactly a replay. The
+            // underlying text is kept in the internal error for diagnosis --
+            // the hub maps this to a fixed client-facing code and never
+            // forwards this string.
+            Err(error) => Err(StoreError::PermissionDenied(format!(
+                "nonce replay rejected ({error})"
+            ))),
+        }
+    }
+}
+
+/// Now minus the signature skew window, in the same lexicographically
+/// sortable UTC format the store writes timestamps in (`utc_now()`), so the
+/// `used_at < ?` comparison is a plain string compare.
+///
+/// Derived from the wall clock rather than from the caller's `now` string:
+/// both come from the same source, and taking it from `SystemTime` avoids
+/// re-parsing a formatted timestamp only to reformat it. Returns an empty
+/// string — which prunes nothing — if the clock is before the epoch plus the
+/// skew window, so a clock anomaly can never delete live nonces.
+fn prune_cutoff() -> String {
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    let skew = u64::try_from(fabric_types::SIGNATURE_MAX_SKEW_SECONDS).unwrap_or(300);
+    let cutoff = SystemTime::now()
+        .checked_sub(Duration::from_secs(skew))
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .and_then(|d| i64::try_from(d.as_secs()).ok());
+    match cutoff {
+        // Reuse `epoch_secs_to_iso`, the same formatter `utc_now()` uses, so
+        // the `used_at < ?` string comparison is guaranteed to be against an
+        // identically-shaped timestamp. Writing a second formatter here would
+        // be a second implementation of one concern -- the defect class
+        // decisions 0005/0006 exist to eliminate -- and any divergence between
+        // the two would silently break pruning rather than fail loudly.
+        Some(secs) => epoch_secs_to_iso(secs),
+        // Clock before epoch+skew: prune nothing rather than risk deleting
+        // nonces that are still inside the window.
+        None => String::new(),
+    }
 }
 
 // -- Streams -----------------------------------------------------------------

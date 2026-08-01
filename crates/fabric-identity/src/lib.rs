@@ -14,6 +14,26 @@
 //!   signing.
 //! - **File format is JSON.** Human-inspectable, easy to back up, easy to
 //!   verify with `jq`.
+//!
+//! ## SECURITY: the secret key is stored in plaintext hex
+//!
+//! `IdentityFile::secret_key_hex` is written to disk in the clear. `save()`
+//! restricts the file to owner-read/write on Unix (best-effort, applied on
+//! every save — see its doc comment for the coverage gap on
+//! never-re-saved files, and note this has **no effect on Windows**), but that
+//! is a mitigation, not a fix: any process or user with read access to the
+//! file — a local account on a shared host, a stolen backup, a misconfigured
+//! share — can exfiltrate the key that signs every dispatcher/runner/hub
+//! message this identity authors, with no further barrier.
+//!
+//! This is a known, tracked gap, not an oversight. ForgeLink's linked-node
+//! identity vault (a downstream consumer of the same ed25519 stack) never
+//! serializes the secret at all — it stores it AES-256-GCM-encrypted, wrapped
+//! by an OS-keyring-derived key. The operator decision to unify this crate
+//! onto that model is recorded in
+//! `forgewire/work/active/204-shared-node-identity-crate/compatibility-inventory.md`.
+//! Until that lands, treat any `IdentityFile` on disk as security-sensitive
+//! and protect the containing directory accordingly.
 
 #![deny(rust_2018_idioms)]
 
@@ -177,12 +197,38 @@ pub fn validate(identity: &IdentityFile) -> Result<(), IdentityError> {
 }
 
 /// Save an identity file to disk as pretty-printed JSON.
+///
+/// The file still holds the secret key in plaintext hex (see the crate-level
+/// `SECURITY` note); this only restricts *who* can read it. Permissions are
+/// re-applied on every save, including an overwrite of an existing file, so a
+/// file created before this hardening existed is tightened the next time it is
+/// rotated or re-saved. A file that is never re-saved keeps its prior
+/// permissions until then — this is not a substitute for the encrypted-vault
+/// migration tracked in `forgewire/work/active/204-shared-node-identity-crate`.
 pub fn save(path: &Path, identity: &IdentityFile) -> Result<(), IdentityError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let json = serde_json::to_string_pretty(identity)?;
     std::fs::write(path, json)?;
+    restrict_permissions(path)?;
+    Ok(())
+}
+
+/// Restrict the identity file to owner read/write only. No-op on platforms
+/// without POSIX permission bits (see `SECURITY` note: Windows needs an
+/// ACL-based equivalent, not implemented here).
+#[cfg(unix)]
+fn restrict_permissions(path: &Path) -> Result<(), IdentityError> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut permissions = std::fs::metadata(path)?.permissions();
+    permissions.set_mode(0o600);
+    std::fs::set_permissions(path, permissions)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn restrict_permissions(_path: &Path) -> Result<(), IdentityError> {
     Ok(())
 }
 
@@ -271,6 +317,43 @@ mod tests {
         assert_eq!(loaded.public_key_hex, id.public_key_hex);
         assert_eq!(loaded.secret_key_hex, id.secret_key_hex);
         assert_eq!(loaded.purpose, id.purpose);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_restricts_permissions_to_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let id = generate("perm-test", KeyPurpose::Node);
+        let path = std::env::temp_dir().join("test_identity_permissions.json");
+        save(&path, &id).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_retightens_permissions_on_an_already_loose_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let id = generate("perm-retighten-test", KeyPurpose::Node);
+        let path = std::env::temp_dir().join("test_identity_permissions_retighten.json");
+        // Simulate a file written before this hardening existed.
+        std::fs::write(&path, "{}").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        save(&path, &id).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(not(unix))]
+    #[test]
+    fn save_succeeds_without_posix_permission_bits() {
+        let id = generate("perm-noop-test", KeyPurpose::Node);
+        let path = std::env::temp_dir().join("test_identity_permissions_noop.json");
+        save(&path, &id).unwrap();
+        assert!(path.exists());
         let _ = std::fs::remove_file(&path);
     }
 
