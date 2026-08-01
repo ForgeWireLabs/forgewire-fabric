@@ -113,7 +113,7 @@ def test_operator_overlays_survive_managed_data_removal_and_replay() -> None:
 
 
 def test_deployment_clone_sync_preserves_dirty_work_without_hard_reset() -> None:
-    body = (REPO_ROOT / "scripts" / "dr" / "sync_deployment_clone.ps1").read_text(
+    body = (REPO_ROOT / "scripts" / "install" / "sync-deployment-clone.ps1").read_text(
         encoding="utf-8"
     )
     for needle in ("operator/$hostName/$stamp", "git bundle create", "git merge --ff-only"):

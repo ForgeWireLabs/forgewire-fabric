@@ -67,7 +67,7 @@ erase it, and `install-fabric.ps1` automatically replays registered overlays.
 Manifests must reference token/key files; literal secret values are rejected.
 
 Before advancing a deployed standalone clone, run
-`scripts\dr\sync_deployment_clone.ps1`. Dirty changes are committed to a local
+`scripts\install\sync-deployment-clone.ps1`. Dirty changes are committed to a local
 `operator/<host>/<timestamp>` branch and exported as a git bundle outside the
 clone before `main` is fast-forwarded. The script never hard-resets a clone and
 never pushes operator branches to the public mirror.

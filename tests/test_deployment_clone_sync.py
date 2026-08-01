@@ -8,7 +8,7 @@ import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SYNC_SCRIPT = REPO_ROOT / "scripts" / "dr" / "sync_deployment_clone.ps1"
+SYNC_SCRIPT = REPO_ROOT / "scripts" / "install" / "sync-deployment-clone.ps1"
 
 
 def _run(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:

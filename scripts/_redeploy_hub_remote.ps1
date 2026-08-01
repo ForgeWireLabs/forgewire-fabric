@@ -15,7 +15,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$sync = Join-Path $RepoRoot 'scripts\dr\sync_deployment_clone.ps1'
+$sync = Join-Path $RepoRoot 'scripts\install\sync-deployment-clone.ps1'
 if (-not (Test-Path -LiteralPath $sync)) { throw "clone sync script missing: $sync" }
 & $sync -RepoRoot $RepoRoot -Remote $Remote -Branch $Branch
 if (-not $?) { throw 'deployment clone synchronization failed' }
