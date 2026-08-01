@@ -47,6 +47,7 @@ from . import audit as _audit  # noqa: E402,F401
 from . import cost as _cost  # noqa: E402,F401
 from . import hub as _hub  # noqa: E402,F401
 from . import identity as _identity  # noqa: E402,F401
+from . import operator_overlays as _operator_overlays  # noqa: E402,F401
 from . import runner as _runner  # noqa: E402,F401
 from . import runners_cmd as _runners_cmd  # noqa: E402,F401
 from . import secrets_cmd as _secrets_cmd  # noqa: E402,F401

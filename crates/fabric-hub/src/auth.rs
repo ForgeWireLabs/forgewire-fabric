@@ -24,7 +24,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 
 use crate::state::HubState;
-use crate::utils::audit_append;
+use crate::utils::{attribution, audit_append};
 
 pub const VALID_ROLES: &[&str] = &["dispatcher", "runner", "observer", "approver", "reviewer"];
 
@@ -538,6 +538,7 @@ pub async fn require_bearer(
             "method": method,
             "path": path,
             "required_roles": required,
+            "actor": attribution(&context),
         });
         if let Err(error) = audit_append(
             &*state.store,
@@ -579,7 +580,7 @@ pub async fn require_bearer(
                 "auth.step_up_denied",
                 &method,
                 &path,
-                Some(&context.subject),
+                Some(&context),
             )
             .await;
             return auth_error(
@@ -610,12 +611,20 @@ async fn audit_denial(
     kind: &str,
     method: &str,
     path: &str,
-    subject: Option<&str>,
+    // 114C.4 dual attribution: `None` when authentication itself failed
+    // before any actor was ever resolved (missing/invalid bearer, a
+    // rejected human session) -- there is no identity to attribute in that
+    // case, not even "known automation", so both `subject` and `actor`
+    // serialize to `null` rather than a guessed value. `Some` only when a
+    // real `AuthContext` already exists and the denial is a downstream
+    // authorization/step-up check against it (role_denied, step_up_denied).
+    actor: Option<&AuthContext>,
 ) {
     let payload = json!({
         "method": method,
         "path": path,
-        "subject": subject,
+        "subject": actor.map(|a| a.subject.as_str()),
+        "actor": actor.map(attribution),
     });
     if let Err(error) = audit_append(&*state.store, &state.secrets, kind, None, &payload).await {
         tracing::error!(error = %error, kind, "failed to append authentication denial audit event");
@@ -630,7 +639,11 @@ async fn audit_denial(
 pub fn is_authorized(context: &AuthContext, method: &str, path: &str) -> bool {
     // Bootstrap is the sole admin-shaped legacy exception. It lets an existing
     // installation split/migrate its credential without granting the legacy
-    // bearer approval, secret, token list/revoke, or general reviewer power.
+    // bearer approval, secret, token list/revoke, or the `admin`-gated
+    // role-token-lifecycle authority `required_roles` now requires for those
+    // same three paths (see the role-token-mutation comment there) -- this
+    // bypass covers strictly less than that gate, not the same power reached
+    // a different way.
     if context.legacy_compat
         && method == "POST"
         && matches!(
@@ -798,6 +811,28 @@ pub fn required_roles(method: &str, path: &str) -> &'static [&'static str] {
         return ADMIN_REVIEW;
     }
     if path == "/state/import" {
+        return ADMIN;
+    }
+
+    // Role-token *lifecycle* (issue/split/migrate/revoke) mints or destroys
+    // the very credentials the rest of this route table gates on -- a bare
+    // `reviewer` token minting itself a fresh `dispatcher`/`runner`/`approver`
+    // token is a privilege-escalation path, not merely "reviewer manages
+    // automation," so these mutations require `admin` (a human-only role by
+    // construction -- see the ADMIN doc comment above). Reading the list
+    // stays `ADMIN_REVIEW`, mirroring `/accounts`'s identical read/write
+    // split: an admin who holds no `reviewer` grant must still be able to
+    // see what automation credentials exist. The legacy bearer's own narrow
+    // bootstrap exception (`is_authorized`, above) is unaffected -- it does
+    // not route through this table at all.
+    if path == "/admin/role-tokens" {
+        return if method == "GET" { ADMIN_REVIEW } else { ADMIN };
+    }
+    if path == "/admin/role-tokens/split" || path == "/admin/role-tokens/migrate" {
+        return ADMIN;
+    }
+    if path.starts_with("/admin/role-tokens/") {
+        // DELETE /admin/role-tokens/{token_id} (revoke).
         return ADMIN;
     }
     if path.starts_with("/admin/") || path == "/admin" {
@@ -1133,7 +1168,29 @@ mod tests {
             required_roles("POST", "/approvals/a-1/approve"),
             &["approver", "reviewer"]
         );
-        assert_eq!(required_roles("GET", "/admin/role-tokens"), &["reviewer"]);
+        assert_eq!(
+            required_roles("GET", "/admin/role-tokens"),
+            &["admin", "reviewer"]
+        );
+        assert_eq!(required_roles("POST", "/admin/role-tokens"), &["admin"]);
+        assert_eq!(
+            required_roles("POST", "/admin/role-tokens/split"),
+            &["admin"]
+        );
+        assert_eq!(
+            required_roles("POST", "/admin/role-tokens/migrate"),
+            &["admin"]
+        );
+        assert_eq!(
+            required_roles("DELETE", "/admin/role-tokens/rt_x"),
+            &["admin"]
+        );
+        // Every other /admin/* path is untouched by the role-token-specific
+        // branches above and still falls through to the generic reviewer gate.
+        assert_eq!(
+            required_roles("POST", "/admin/anything-else"),
+            &["reviewer"]
+        );
         assert_eq!(required_roles("GET", "/policy"), &["observer", "reviewer"]);
         assert_eq!(
             required_roles("GET", "/settings"),
@@ -1171,6 +1228,49 @@ mod tests {
             "PUT",
             "/settings/budget.daily_usd"
         ));
+    }
+
+    #[test]
+    fn a_bare_reviewer_token_cannot_mint_or_revoke_role_tokens() {
+        // Regression: a reviewer-role token could previously issue itself a
+        // fresh dispatcher/runner/approver/reviewer token via POST
+        // /admin/role-tokens -- a privilege-escalation path (reviewer, a role
+        // no route otherwise treats as a superset of dispatcher/runner/
+        // approver, could freely mint tokens holding exactly those roles).
+        // Caught live 2026-07-28 during a 114C.8 drill re-run: a probe of
+        // this reviewer token's boundaries, expected to be denied, succeeded
+        // instead. Role-token lifecycle mutation now requires `admin` (a
+        // human-only role by construction -- see `required_roles`'s ADMIN
+        // doc comment), mirroring the identical read/write split
+        // `/accounts` already uses.
+        let reviewer = AuthContext::for_test("token-reviewer-1", &["reviewer"], None);
+        assert!(
+            !is_authorized(&reviewer, "POST", "/admin/role-tokens"),
+            "a bare reviewer token must not be able to mint a new role token"
+        );
+        assert!(
+            !is_authorized(&reviewer, "POST", "/admin/role-tokens/split"),
+            "a bare reviewer token must not be able to split the legacy bundle"
+        );
+        assert!(
+            !is_authorized(&reviewer, "POST", "/admin/role-tokens/migrate"),
+            "a bare reviewer token must not be able to migrate a bearer into a role token"
+        );
+        assert!(
+            !is_authorized(&reviewer, "DELETE", "/admin/role-tokens/rt_x"),
+            "a bare reviewer token must not be able to revoke another role token"
+        );
+        // Visibility is unaffected: reviewer can still list what exists.
+        assert!(is_authorized(&reviewer, "GET", "/admin/role-tokens"));
+
+        // A human admin session (never itself a role token, per ADMIN's own
+        // construction guarantee) is exactly who this is gated to now.
+        let admin = AuthContext::for_test("acct-admin-1", &["admin"], Some("acct-admin-1"));
+        assert!(is_authorized(&admin, "POST", "/admin/role-tokens"));
+        assert!(is_authorized(&admin, "POST", "/admin/role-tokens/split"));
+        assert!(is_authorized(&admin, "POST", "/admin/role-tokens/migrate"));
+        assert!(is_authorized(&admin, "DELETE", "/admin/role-tokens/rt_x"));
+        assert!(is_authorized(&admin, "GET", "/admin/role-tokens"));
     }
 
     #[test]

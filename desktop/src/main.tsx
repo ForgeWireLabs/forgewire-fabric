@@ -131,6 +131,7 @@ import {
   statusClass
 } from "./components/primitives";
 import { AccountPage } from "./pages/AccountPage";
+import { accountRoleContextNote } from "./restrictionMessages";
 import type { DesktopCommand } from "./commandCatalog";
 import "./styles.css";
 
@@ -1024,7 +1025,7 @@ function App() {
         </header>
 
         <div className="workbench-scroll">
-          {Object.keys(restrictions).length > 0 && <RestrictionStrip restrictions={restrictions} />}
+          {Object.keys(restrictions).length > 0 && <RestrictionStrip restrictions={restrictions} accountRoles={accountMe?.roles ?? null} />}
           {Object.keys(errors).length > 0 && <ErrorStrip errors={errors} />}
           {actionError && <ErrorStrip errors={{ action: actionError }} />}
           {commandNotice && <div className="command-notice" role="status"><Command size={17} /><span>{commandNotice}</span><button onClick={() => setCommandNotice(null)} aria-label="Dismiss command notice"><XCircle size={15} /></button></div>}
@@ -1590,10 +1591,12 @@ function AgentsPage({ api, snapshot, route, onNavigate }: WorkbenchProps) {
   return <div className="page-stack"><section className="split-layout"><Panel title="Fabric agents" action={`${snapshot.agents.length} registered`}><div className="agent-grid">{snapshot.agents.map((agent) => <button className={`agent-button ${selected?.runner_id === agent.runner_id ? "selected" : ""}`} key={agent.runner_id} onClick={() => onNavigate(`/agents/${encodeURIComponent(agent.runner_id)}`)}><AgentCard agent={agent} /></button>)}{snapshot.agents.length === 0 && <EmptyState label="No Fabric agents are advertising MCP manifests." />}</div></Panel><Panel title={capabilityName ?? selected?.alias ?? selected?.runner_id ?? "Agent detail"} action={capabilityKind ?? selected?.state ?? "select an agent"}>{selected ? <div className="detail-stack"><div className="audit-grid"><InfoLine label="agent type" value={selected.agent_type ?? "agent"} /><InfoLine label="host" value={selected.hostname ?? "unknown"} /><InfoLine label="state" value={selected.state ?? "unknown"} /><InfoLine label="MCP version" value={String(selected.mcp_manifest_version ?? "not reported")} /><InfoLine label="MCP servers" value={String(selected.mcp_manifest?.servers?.length ?? 0)} /><InfoLine label="tenant" value={selected.tenant ?? "default"} /><InfoLine label="workspace" value={selected.workspace_root ?? "not reported"} /></div>{capabilityName && <section className="capability-detail"><header><Network size={17} /><div><strong>{capabilityName}</strong><small>{capabilityKind} · advertised MCP manifest</small></div></header>{detailError ? <AuthorizationOrFailure message={detailError} /> : capability ? <RecordDetail value={capability} empty="Capability returned no detail fields." /> : <EmptyState label="Loading capability detail…" />}</section>}{!capabilityName && <McpManifestDetail agent={selected} onNavigate={onNavigate} />}</div> : parts[1] && parts[1] !== "all" ? <Tombstone label={`Agent ${parts[1]} is no longer advertising in the current snapshot.`} /> : <EmptyState label="Choose an agent or advertised MCP capability in the explorer." />}</Panel></section></div>;
 }
 
-function ApprovalsPage({ api, snapshot, route, errors, restrictions, onApproval, onNavigate, onRefresh }: WorkbenchProps) {
+function ApprovalsPage({ api, snapshot, route, errors, restrictions, accountMe, onApproval, onNavigate, onRefresh }: WorkbenchProps) {
   const selectedId = route.startsWith("/approvals/") && !route.endsWith("/all") ? decodeURIComponent(route.slice(11)) : null;
   const selected = snapshot.approvals.find((approval) => approval.approval_id === selectedId);
-  const approvalIssue = restrictions.approvals ?? errors.approvals;
+  const approvalIssue = restrictions.approvals
+    ? `${restrictions.approvals}${accountRoleContextNote(accountMe?.roles ?? null)}`
+    : errors.approvals;
   const denied = Boolean(restrictions.approvals) || authorizationDenied(approvalIssue);
   const [detail, setDetail] = useState<ApprovalInfo | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
@@ -1632,7 +1635,7 @@ function CostPage({ snapshot }: { snapshot: HubSnapshot }) {
   return <div className="page-stack"><section className="metric-grid"><Metric icon={<CircleDollarSign />} label="Today" value={money(snapshot.budget?.daily_spend_usd)} detail={typeof snapshot.budget?.daily_budget_usd === "number" ? `${money(snapshot.budget.daily_budget_usd)} budget` : "daily cap not set"} /><Metric icon={<BadgeDollarSign />} label="This week" value={money(snapshot.budget?.weekly_spend_usd)} detail={typeof snapshot.budget?.weekly_budget_usd === "number" ? `${money(snapshot.budget.weekly_budget_usd)} budget` : "weekly cap not set"} /><Metric icon={<AlertTriangle />} label="Posture" value={snapshot.budget?.weekly_alert ? "Alert" : "Normal"} detail={budgetDetail(snapshot)} /></section><section className="split-layout"><Panel title="Budget envelope" action={snapshot.budget?.weekly_alert ? "attention" : "within posture"}><div className="audit-grid"><InfoLine label="daily spend" value={money(snapshot.budget?.daily_spend_usd)} /><InfoLine label="daily remaining" value={money(snapshot.budget?.daily_remaining_usd)} /><InfoLine label="daily utilization" value={percent(snapshot.budget?.daily_pct)} /><InfoLine label="weekly spend" value={money(snapshot.budget?.weekly_spend_usd)} /><InfoLine label="weekly remaining" value={money(snapshot.budget?.weekly_remaining_usd)} /><InfoLine label="weekly utilization" value={percent(snapshot.budget?.weekly_pct)} /></div></Panel><Panel title="Attribution breakdown" action="hub-reported"><RecordDetail value={snapshot.cost ?? null} empty="The hub did not return a provider, model, agent, or task cost breakdown." /></Panel></section></div>;
 }
 
-function AuditPage({ api, snapshot, taskAudit, errors, restrictions, route }: WorkbenchProps) {
+function AuditPage({ api, snapshot, taskAudit, errors, restrictions, accountMe, route }: WorkbenchProps) {
   const routeDay = route.match(/^\/audit\/(\d{4}-\d{2}-\d{2})$/)?.[1];
   const [day, setDay] = useState(routeDay ?? new Date().toISOString().slice(0, 10));
   const [result, setResult] = useState<Record<string, unknown> | null>(null);
@@ -1647,11 +1650,13 @@ function AuditPage({ api, snapshot, taskAudit, errors, restrictions, route }: Wo
   const tailVerified = snapshot.audit?.verified;
   const dayVerified = typeof result?.verified === "boolean" ? result.verified : undefined;
   const events = Array.isArray(result?.events) ? result.events as Array<Record<string, unknown>> : [];
-  const readFailure = restrictions.audit ?? errors.audit ?? failure;
+  const readFailure = restrictions.audit
+    ? `${restrictions.audit}${accountRoleContextNote(accountMe?.roles ?? null)}`
+    : errors.audit ?? failure;
   return <div className="page-stack"><section className="audit-verification-banner"><ShieldCheck size={22} /><div><strong>{readFailure ? "Audit read failed" : tailVerified === false || dayVerified === false ? "Audit verification failed" : tailVerified || dayVerified ? "Audit chain verified" : "Audit verification unavailable"}</strong><span>{readFailure ? "No success is implied; inspect authorization or transport failure below." : "Verification state is reported explicitly and never inferred from a non-empty event list."}</span></div></section>{readFailure && <AuthorizationOrFailure message={readFailure} />}<section className="split-layout"><Panel title="Verification posture" action={tailVerified === true ? "verified" : tailVerified === false ? "failed" : "unknown"}><div className="audit-grid"><InfoLine label="chain tail" value={snapshot.audit ? "loaded" : "not loaded"} /><InfoLine label="tail verification" value={tailVerified === true ? "verified" : tailVerified === false ? "FAILED" : "not reported"} /><InfoLine label="selected task" value={taskAudit ? auditSummary(taskAudit) : "select a task"} /><InfoLine label="labels snapshot" value={snapshot.cluster?.labels_snapshot?.status ?? "unknown"} /><InfoLine label="backend" value={snapshot.cluster?.backend ?? "unknown"} /></div></Panel><Panel title="Audit day" action={dayVerified === true ? "verified" : dayVerified === false ? "failed" : `${events.length} events`}><div className="audit-day-controls"><label>UTC day<input type="date" value={day} onChange={(event) => setDay(event.target.value)} /></label><button onClick={() => void load()}><RefreshCw size={15} />Load</button></div><div className="audit-day-events">{events.map((event, index) => <article key={String(event.hash ?? event.id ?? index)}><strong>{String(event.kind ?? event.event_type ?? "event")}</strong><span>{formatMaybeDate(String(event.created_at ?? event.ts ?? ""))}</span><code>{String(event.hash ?? "no event hash")}</code></article>)}{events.length === 0 && !readFailure && <EmptyState label="No events returned for this UTC day." />}</div></Panel></section></div>;
 }
 
-function SecretsPage({ api, snapshot, errors, restrictions, onRefresh }: WorkbenchProps) {
+function SecretsPage({ api, snapshot, errors, restrictions, accountMe, onRefresh }: WorkbenchProps) {
   const [name, setName] = useState("");
   const [action, setAction] = useState<"put" | "rotate" | "delete">("put");
   const [value, setValue] = useState("");
@@ -1666,7 +1671,9 @@ function SecretsPage({ api, snapshot, errors, restrictions, onRefresh }: Workben
     catch (error) { setNotice(error instanceof Error ? error.message : String(error)); }
     finally { setValue(""); setBusy(false); }
   };
-  const secretIssue = restrictions.secrets ?? errors.secrets;
+  const secretIssue = restrictions.secrets
+    ? `${restrictions.secrets}${accountRoleContextNote(accountMe?.roles ?? null)}`
+    : errors.secrets;
   return <div className="page-stack"><Panel title="Secrets" action="governed metadata"><div className="security-notice"><LockKeyhole size={24} /><div><strong>Secret values are never rendered or persisted</strong><p>Only metadata crosses the read path. Mutation values remain in component memory until native IPC accepts or rejects them, then the field is cleared.</p></div></div>{secretIssue && <AuthorizationOrFailure message={secretIssue} />}<div className="secret-grid"><section className="secret-list">{(snapshot.secrets ?? []).map((secret, index) => <article key={recordId(secret) || index}><KeyRound size={16} /><div><strong>{objectLabel(secret, `Secret ${index + 1}`)}</strong><small>{stringField(secret, "provider") || stringField(secret, "source") || "protected store"} · {stringField(secret, "updated_at") || "rotation not reported"}</small></div><StatusPill status={stringField(secret, "status") || "available"} compact /></article>)}{(snapshot.secrets ?? []).length === 0 && !secretIssue && <EmptyState label="No secret metadata was returned by the current desktop API." />}</section><section className="governance-form"><h4>Govern secret</h4><label>Secret name<input value={name} onChange={(event) => setName(event.target.value)} autoComplete="off" /></label><label>Action<select value={action} onChange={(event) => { setAction(event.target.value as typeof action); setValue(""); }}><option value="put">Store</option><option value="rotate">Rotate</option><option value="delete">Delete</option></select></label>{action !== "delete" && <label>Transient value<input type="password" value={value} onChange={(event) => setValue(event.target.value)} autoComplete="new-password" /></label>}<button className={action === "delete" ? "danger-action" : "primary-command"} onClick={() => void submit()} disabled={busy || !name.trim()}>{action === "delete" ? "Delete secret" : action === "rotate" ? "Rotate secret" : "Store secret"}</button>{notice && <span role="status" className={notice.includes("cleared") ? "inline-success" : "inline-error"}>{notice}</span>}</section></div></Panel></div>;
 }
 
@@ -2050,13 +2057,13 @@ function ErrorStrip({ errors }: { errors: Record<string, string> }) {
   );
 }
 
-function RestrictionStrip({ restrictions }: { restrictions: Record<string, string> }) {
+function RestrictionStrip({ restrictions, accountRoles }: { restrictions: Record<string, string>; accountRoles: readonly string[] | null }) {
   return (
     <div className="error-strip restriction-strip" role="status">
       <LockKeyhole size={18} />
       <div>
-        <strong>Some views are limited by your current role</strong>
-        <span>{Object.entries(restrictions).map(([key, value]) => `${key}: ${value}`).join(" · ")}</span>
+        <strong>Some views are limited by the installed automation token's role</strong>
+        <span>{Object.entries(restrictions).map(([key, value]) => `${key}: ${value}`).join(" · ")}{accountRoleContextNote(accountRoles)}</span>
       </div>
     </div>
   );

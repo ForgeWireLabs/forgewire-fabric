@@ -102,6 +102,60 @@ export function bridgeCallbackRequestIsAcceptable(request: {
 }
 
 /**
+ * True if `host` is a loopback host per the same widened definition Desktop's
+ * Rust `is_loopback_host` (`webauthn_bridge.rs`) and fabric-hub's
+ * `callback_is_loopback` use -- `127.0.0.1`, `localhost`, or any `.localhost`
+ * subdomain (RFC 6761 reserves the whole namespace for loopback). Kept in
+ * sync by hand: this package cannot share a source of truth with either of
+ * those.
+ */
+function isLoopbackHost(host: string): boolean {
+  return host === "127.0.0.1" || host === "localhost" || host.endsWith(".localhost");
+}
+
+/**
+ * Rewrite `hubUrl` so the bridge page opens at a host matching the realm's
+ * WebAuthn rp_id, mirroring Desktop's `normalize_bridge_host`
+ * (`webauthn_bridge.rs`) field-for-field, but for this client's own bridge
+ * URL rather than a native ceremony's origin.
+ *
+ * A realm's default rp_id is the literal string "localhost" (114D sec 5), but
+ * a loopback-discovered hub URL (e.g. the VS Code extension's
+ * `http://127.0.0.1:<port>` auto-discovery in `hubClient.ts`) is an IP
+ * literal. Per the WebAuthn spec an IP-literal origin can never satisfy any
+ * non-empty rp_id -- browsers refuse every `navigator.credentials.get`/
+ * `create` call from one outright, regardless of rp_id (confirmed live on
+ * Desktop before this same fix landed there: Chrome's "This is an invalid
+ * domain." for exactly this case). Left unchanged when the host is not
+ * loopback at all: a remote hub's rp_id is whatever that realm configured,
+ * which this function has no basis to guess at.
+ *
+ * Hand-parsed rather than via the WHATWG `URL` constructor: this package
+ * compiles against `lib: ["ES2022"]` with no DOM and no Node types (see
+ * `generateBridgeState`), so `URL` is not available to source files here.
+ * Only the scheme + host[:port] + rest are ever separated, and a string this
+ * function cannot confidently split into those parts is returned unchanged --
+ * silently passing an unparseable `hubUrl` through here is no worse than
+ * before this fix existed, and `buildBridgeUrl` opens this exact string in
+ * the browser regardless.
+ */
+function normalizeBridgeHost(hubUrl: string): string {
+  const match = /^([a-zA-Z][a-zA-Z0-9+.-]*:\/\/)([^/?#]*)([\s\S]*)$/.exec(hubUrl);
+  if (!match) return hubUrl;
+  const scheme = match[1] ?? "";
+  const authority = match[2] ?? "";
+  const rest = match[3] ?? "";
+  const at = authority.lastIndexOf("@");
+  const userinfo = at >= 0 ? authority.slice(0, at + 1) : "";
+  const hostPort = at >= 0 ? authority.slice(at + 1) : authority;
+  const colon = hostPort.lastIndexOf(":");
+  const host = colon >= 0 ? hostPort.slice(0, colon) : hostPort;
+  const port = colon >= 0 ? hostPort.slice(colon) : "";
+  if (!isLoopbackHost(host)) return hubUrl;
+  return `${scheme}${userinfo}localhost${port}${rest}`;
+}
+
+/**
  * Build the URL to open in the system browser.
  *
  * The hub re-validates `callback` as loopback before serving the page, so a
@@ -123,7 +177,7 @@ export function buildBridgeUrl(options: {
    */
   challenge?: string;
 }): string {
-  const base = options.hubUrl.replace(/\/+$/, "");
+  const base = normalizeBridgeHost(options.hubUrl).replace(/\/+$/, "");
   // Always loopback, never derived from `hubUrl`: this is where session
   // secrets come back, so it must stay on the machine that started the flow
   // even when the hub itself is remote.

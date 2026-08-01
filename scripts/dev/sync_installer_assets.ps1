@@ -28,6 +28,9 @@ $src  = Join-Path $repo "scripts\install"
 $dst  = Join-Path $repo "python\forgewire_fabric\_installer_assets"
 
 $names = @(
+    "install-fabric.ps1",
+    "install-operator-overlay.ps1",
+    "replay-operator-overlays.ps1",
     "nssm-install-hub.ps1",
     "nssm-install-runner.ps1",
     "install-hub-watchdog.ps1",

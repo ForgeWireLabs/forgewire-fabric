@@ -52,4 +52,30 @@ tauri-plugin-updater = "2.10.1"
 # auditable parser over a general-purpose one for a single narrow endpoint.
 tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "net", "time", "io-util"] }
 toml = "0.9"
+# `webauthn_bridge::build_bridge_url` needs real URL parsing to rewrite an
+# IP-literal hub_url's host to the realm's rp_id before opening the bridge
+# page (mirrors `native_webauthn::derive_loopback_origin`). Already present
+# transitively via reqwest; declared directly rather than reached for through
+# that transitive edge, which is not this crate's to depend on.
+url = "2"
 zeroize = "1.8"
+
+# 114D D.3: native platform-authenticator (Windows Hello) passkey enrollment,
+# driven directly from this backend instead of the system browser
+# (`webauthn_bridge` above, which stays the deliberate fallback for
+# roaming/cross-device passkeys and providerless platforms). Windows-only
+# (`win10` wraps `webauthn.dll` via native FFI, per its own crate docs) --
+# scoped to this target so macOS/Linux builds of this same Cargo.toml are
+# unaffected; see `native_webauthn.rs`'s own module doc comment for the
+# non-Windows fallback behavior a caller sees instead.
+[target.'cfg(windows)'.dependencies]
+webauthn-authenticator-rs = { version = "=0.5.5", default-features = false, features = [
+  "win10",
+] }
+# webauthn-authenticator-rs's own `prelude` re-exports only
+# CreationChallengeResponse/PublicKeyCredential/Register*/Request* -- not
+# AuthenticatorAttachment/AuthenticatorSelectionCriteria/UserVerificationPolicy,
+# which force_platform_attachment needs directly. Pinned to the identical
+# =0.5.5 so it resolves to the exact same types webauthn-authenticator-rs
+# itself uses internally, not a merely-compatible copy.
+webauthn-rs-proto = "=0.5.5"

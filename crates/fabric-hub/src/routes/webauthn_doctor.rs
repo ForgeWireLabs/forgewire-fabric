@@ -30,15 +30,18 @@ pub struct WebauthnDoctorResponse {
     #[serde(flatten)]
     report: WebauthnDoctorReport,
     /// Whether the *running* hub process currently has a live WebAuthn
-    /// instance -- built once at startup from the settings document as it
-    /// was then (see `main.rs`'s "built once at startup" comment beside
-    /// `build_from_settings`), not re-built on every settings change.
+    /// instance -- built once at startup from the realm identity if one was
+    /// established then, else the settings document as it was then (see
+    /// `main.rs`'s "built once at startup" comment beside
+    /// `build_from_realm_or_settings`), not re-built on every settings/realm
+    /// change.
     running: bool,
-    /// True when `report.ready` (computed from the *current* settings
-    /// document, re-read live) disagrees with `running` (the *startup-time*
-    /// snapshot). An operator who just fixed their config sees `ready: true`
-    /// here well before the running instance catches up -- this field is
-    /// what tells them a restart, not another config edit, is what's left.
+    /// True when `report.ready` (computed from the *current* realm identity
+    /// or settings document, re-read live) disagrees with `running` (the
+    /// *startup-time* snapshot). An operator who just fixed their config, or
+    /// just completed genesis, sees `ready: true` here well before the
+    /// running instance catches up -- this field is what tells them a
+    /// restart, not another config edit, is what's left.
     restart_required: bool,
 }
 
@@ -65,7 +68,16 @@ pub async fn webauthn_doctor(State(state): State<Arc<HubState>>) -> Json<Webauth
         }
         Err(_) => json!({}),
     };
-    let report = crate::webauthn::diagnose(&effective_auth);
+    // 114D D.1: diagnose from the realm identity when one is established,
+    // matching `main.rs`'s `build_from_realm_or_settings` precedence exactly
+    // -- otherwise `report.ready` here could disagree with what the running
+    // instance was actually built from, corrupting `restart_required` below.
+    let realm_identity =
+        fabric_accounts::repository::RealmRepository::get_realm_identity(&*state.store)
+            .await
+            .unwrap_or(None);
+    let report =
+        crate::webauthn::diagnose_realm_or_settings(realm_identity.as_ref(), &effective_auth);
     let running = state.webauthn.is_some();
     Json(WebauthnDoctorResponse {
         restart_required: restart_required(report.ready, running),

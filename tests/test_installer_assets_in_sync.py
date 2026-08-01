@@ -20,9 +20,14 @@ Source of truth is ``scripts/install/``. To update bundled copies::
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
+import sys
 
+from click.testing import CliRunner
 import pytest
+
+from forgewire_fabric.cli import cli
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_DIR = REPO_ROOT / "scripts" / "install"
@@ -32,6 +37,9 @@ BUNDLED_DIR = REPO_ROOT / "python" / "forgewire_fabric" / "_installer_assets"
 # legitimately bundle-only (none today) would be excluded here. Today every
 # script in scripts/install/*.ps1 is mirrored.
 MIRRORED = (
+    "install-fabric.ps1",
+    "install-operator-overlay.ps1",
+    "replay-operator-overlays.ps1",
     "nssm-install-hub.ps1",
     "nssm-install-runner.ps1",
     "install-hub-watchdog.ps1",
@@ -83,6 +91,63 @@ def test_runner_installer_exposes_hub_ssh_failover_params() -> None:
             f"nssm-install-runner.ps1 missing required token '{needle}'. "
             "Cross-host hub watchdog cannot be wired OOTB without it."
         )
+
+
+def test_operator_overlays_survive_managed_data_removal_and_replay() -> None:
+    """Operator services and identities must not live under the uninstall tree."""
+    installer = (SOURCE_DIR / "install-operator-overlay.ps1").read_text(encoding="utf-8")
+    replay = (SOURCE_DIR / "replay-operator-overlays.ps1").read_text(encoding="utf-8")
+    node_installer = (SOURCE_DIR / "install-fabric.ps1").read_text(encoding="utf-8")
+    for needle in (
+        "C:\\ProgramData\\forgewire-operator",
+        "cached_source",
+        "migrate_files",
+        "system-admin",
+        "AppEnvironmentExtra",
+    ):
+        assert needle in installer
+    assert "install-operator-overlay.ps1" in replay
+    assert "replay-operator-overlays.ps1" in node_installer
+    assert "-StartServices" in node_installer
+
+
+def test_deployment_clone_sync_preserves_dirty_work_without_hard_reset() -> None:
+    body = (REPO_ROOT / "scripts" / "dr" / "sync_deployment_clone.ps1").read_text(
+        encoding="utf-8"
+    )
+    for needle in ("operator/$hostName/$stamp", "git bundle create", "git merge --ff-only"):
+        assert needle in body
+    assert "reset --hard" not in body
+
+
+@pytest.mark.skipif(not sys.platform.startswith("win"), reason="Windows NSSM overlay contract")
+def test_operator_overlay_cli_reaches_real_manifest_validator(tmp_path: Path) -> None:
+    manifest = tmp_path / "overlay.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "name": "test-overlay",
+                "services": [
+                    {
+                        "name": "ForgeWireTestOverlay",
+                        "executable": r"C:\ProgramData\forgewire\bin\test.exe",
+                        "working_directory": r"C:\Projects",
+                        "startup": "manual",
+                        "environment": {
+                            "FORGEWIRE_HUB_TOKEN_FILE": r"C:\ProgramData\forgewire\hub.token"
+                        },
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = CliRunner().invoke(
+        cli,
+        ["operator-overlays", "apply", str(manifest), "--validate-only"],
+    )
+    assert result.exit_code == 0, result.output
 
 
 def test_hub_watchdog_supports_remote_ssh_restart() -> None:

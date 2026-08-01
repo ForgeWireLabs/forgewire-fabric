@@ -19,6 +19,11 @@ use zeroize::Zeroize;
 // rather than a shared one) and because fabric-hub's own equivalent code
 // already lives in its own `routes/webauthn_bridge.rs`, which this matches.
 mod webauthn_bridge;
+// 114D D.3: native Windows Hello passkey enrollment via
+// webauthn-authenticator-rs, the primary path once a realm exists;
+// webauthn_bridge above stays the deliberate fallback. See its own module
+// doc comment for the full rationale and the Windows/non-Windows split.
+mod native_webauthn;
 
 const UPDATER_PUBLIC_KEY: Option<&str> = option_env!("FORGEWIRE_UPDATER_PUBLIC_KEY");
 
@@ -2122,6 +2127,7 @@ fn main() {
             webauthn_bridge::sign_in_with_passkey,
             webauthn_bridge::register_passkey,
             webauthn_bridge::step_up,
+            native_webauthn::register_passkey_native,
             load_dispatcher_identity,
             load_or_create_dispatcher_identity,
             dispatch_signed_task,

@@ -797,17 +797,19 @@ impl HubClient {
 
     // -- Human accounts (114C.7 Slice 2): the remaining 23 directly-wireable
     // routes (Slice 1 proved the shape on bootstrap/status; `bootstrap` and
-    // `bootstrap_status` above predate this slice). 4 of the remaining 6 --
-    // register/login passkey options+verify -- are not wired here: they
-    // carry a live WebAuthn ceremony this backend has no way to drive (no
-    // `navigator.credentials` in a Tauri Rust process); Desktop's existing
-    // `webauthn_bridge` module (114C.6 Slice 5d) already opens a browser to
-    // run that ceremony end to end against those routes directly, never
-    // through this client. The other 2 -- step-up options+verify -- *are*
-    // wired below (114C.7 Slice 5b): unlike login/register, step-up only
-    // needs the browser to relay a `credentials.get` assertion, so this
-    // client (which already holds the session bearer) makes both
-    // authenticated calls itself.
+    // `bootstrap_status` above predate this slice). Of the remaining 6, login
+    // passkey options+verify are still not wired here: they carry a live
+    // *unauthenticated* WebAuthn ceremony (no session bearer exists yet to
+    // authenticate this client's own call with), so Desktop's `webauthn_bridge`
+    // module (114C.6 Slice 5d) still opens a browser to run that ceremony end
+    // to end against those routes directly, never through this client. The
+    // other 4 -- register passkey options+verify (114D D.3, added below) and
+    // step-up options+verify (114C.7 Slice 5b) -- *are* wired: all three run
+    // against an *already-authenticated* session, so this client (which
+    // already holds the session bearer) makes both authenticated calls
+    // itself; only the WebAuthn ceremony's credential/assertion is opaque to
+    // it, produced by whichever `AuthenticatorBackend` the caller drives
+    // (native platform authenticator or the browser bridge relay).
     //
     // Single-attempt, no retry, unlike `request_with_retry` above: an
     // account-mutation or session-issuing call silently retried after a
@@ -1133,6 +1135,63 @@ impl HubClient {
             reqwest::Method::DELETE,
             &format!("/auth/sessions/{}", encode_path_segment(session_id)),
             None,
+            Some(SessionCredential::Bearer(access_secret)),
+        )
+        .await
+    }
+
+    // -- Passkey registration (114D D.3). Unlike the browser-bridge path
+    // this crate's own module doc comment names as out of scope ("no
+    // `navigator.credentials` in a Tauri Rust process"), the native
+    // authenticator (`desktop::native_webauthn`, Windows Hello via
+    // `webauthn-authenticator-rs`) *can* run the ceremony directly in this
+    // process -- so this client now holds the session bearer and calls both
+    // authenticated ends itself, exactly like step-up below, with only the
+    // WebAuthn ceremony itself running outside this client (in the native
+    // authenticator backend rather than a browser).
+
+    /// `POST /auth/passkeys/register/options`: start a registration
+    /// ceremony for the caller's current session. No body; returns
+    /// `{ challenge_id, options_token, public_key }`, where `public_key` is
+    /// a `webauthn-rs` `CreationChallengeResponse` the caller feeds to a
+    /// `AuthenticatorBackend` (native or bridge) to produce a credential for
+    /// [`register_passkey_verify`](HubClient::register_passkey_verify).
+    pub async fn register_passkey_options(
+        &self,
+        access_secret: &str,
+    ) -> Result<Value, ClientError> {
+        self.request_auth(
+            reqwest::Method::POST,
+            "/auth/passkeys/register/options",
+            Some(&json!({})),
+            Some(SessionCredential::Bearer(access_secret)),
+        )
+        .await
+    }
+
+    /// `POST /auth/passkeys/register/verify`: complete registration with the
+    /// credential a `AuthenticatorBackend` produced from
+    /// [`register_passkey_options`](HubClient::register_passkey_options)'s
+    /// challenge. `credential` is sent verbatim -- this client neither
+    /// constructs nor inspects it, matching `step_up_verify`'s identical
+    /// "the assertion/credential is opaque to the client" shape.
+    pub async fn register_passkey_verify(
+        &self,
+        access_secret: &str,
+        challenge_id: &str,
+        options_token: &str,
+        label: Option<&str>,
+        credential: &Value,
+    ) -> Result<Value, ClientError> {
+        self.request_auth(
+            reqwest::Method::POST,
+            "/auth/passkeys/register/verify",
+            Some(&json!({
+                "challenge_id": challenge_id,
+                "options_token": options_token,
+                "label": label,
+                "credential": credential,
+            })),
             Some(SessionCredential::Bearer(access_secret)),
         )
         .await

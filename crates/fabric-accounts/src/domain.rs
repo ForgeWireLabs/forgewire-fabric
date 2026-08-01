@@ -135,6 +135,34 @@ pub struct Credential {
     pub backup_state: bool,
 }
 
+/// The realm's founding cryptographic identity (114D D.1): the single
+/// replicated record every principal, credential, policy, and origin attaches
+/// to. It is a store-layer *singleton* -- at most one exists per cluster,
+/// enforced by a compare-and-set insert (114D sec 15.1) so that two freshly
+/// installed nodes racing genesis produce exactly one realm, never two.
+///
+/// `rp_id` + `origins` are the load-bearing fields: every node's WebAuthn
+/// verifier reads them from this replicated record rather than a local
+/// hostname, which is what makes "any node verifies any human's passkey" true
+/// cluster-wide and closes the per-hostname relying-party trap (114D sec 5).
+/// `rp_id` defaults to `localhost` with loopback-origin ceremonies and is the
+/// single override point for a realm-bound domain. Like [`Account`]/[`Session`],
+/// fields are `pub` -- a store adapter reconstructs an already-validated row
+/// with a struct literal; new-write validation lives at the store write path.
+#[derive(Debug, Clone)]
+pub struct RealmIdentity {
+    pub realm_id: RealmId,
+    pub name: String,
+    pub rp_id: String,
+    pub origins: Vec<String>,
+    pub created_at: String,
+    /// The node that founded the realm (genesis). Informational: the head is
+    /// mobile (114D sec 2/3), so this records where genesis *ran*, not a
+    /// permanent authority.
+    pub genesis_node: Option<String>,
+    pub key_alg: String,
+}
+
 /// A stable human-principal record. Never itself a credential -- see
 /// [`Credential`] for what proves control of it.
 #[derive(Debug)]

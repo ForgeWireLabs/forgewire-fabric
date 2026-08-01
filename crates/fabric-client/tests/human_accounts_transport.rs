@@ -206,6 +206,58 @@ async fn step_up_verify_sends_the_bearer_and_the_relayed_assertion() {
 }
 
 #[tokio::test]
+async fn register_passkey_options_sends_the_session_bearer_with_an_empty_body() {
+    let (url, rx) = start_mock_server(
+        200,
+        r#"{"challenge_id":"chal-2","options_token":"tok-2","public_key":{"challenge":"c"}}"#,
+    );
+    let client = HubClient::new(&url, "unused-automation-token");
+    let result = client
+        .register_passkey_options("human-session-access-secret")
+        .await
+        .expect("register_passkey_options should succeed");
+
+    assert_eq!(result["challenge_id"], "chal-2");
+
+    let recorded = rx.recv().expect("server recorded a request");
+    assert_eq!(recorded.method, "POST");
+    assert_eq!(recorded.path, "/auth/passkeys/register/options");
+    assert_eq!(
+        recorded.authorization.as_deref(),
+        Some("Bearer human-session-access-secret"),
+        "must use the session access secret, never the automation hub token this client also holds"
+    );
+}
+
+#[tokio::test]
+async fn register_passkey_verify_sends_the_bearer_label_and_credential() {
+    let (url, rx) = start_mock_server(200, r#"{"credential_id":"cred-1","label":"Windows Hello"}"#);
+    let client = HubClient::new(&url, "");
+    let credential = serde_json::json!({ "id": "cred-1", "rawId": "raw" });
+    let result = client
+        .register_passkey_verify(
+            "secret",
+            "chal-2",
+            "tok-2",
+            Some("Windows Hello"),
+            &credential,
+        )
+        .await
+        .expect("register_passkey_verify should succeed");
+
+    assert_eq!(result["credential_id"], "cred-1");
+
+    let recorded = rx.recv().expect("server recorded a request");
+    assert_eq!(recorded.method, "POST");
+    assert_eq!(recorded.path, "/auth/passkeys/register/verify");
+    assert_eq!(recorded.authorization.as_deref(), Some("Bearer secret"));
+    assert!(recorded.body.contains("\"challenge_id\":\"chal-2\""));
+    assert!(recorded.body.contains("\"options_token\":\"tok-2\""));
+    assert!(recorded.body.contains("\"label\":\"Windows Hello\""));
+    assert!(recorded.body.contains("\"credential\":{\"id\":\"cred-1\""));
+}
+
+#[tokio::test]
 async fn a_non_2xx_response_becomes_a_client_error_hub_carrying_the_typed_code() {
     let (url, rx) = start_mock_server(
         409,

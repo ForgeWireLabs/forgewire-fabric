@@ -9,6 +9,13 @@ package. The VSIX (`vscode/`) is versioned independently.
 
 ### Changed
 
+- **Managed deployment clones and durable operator overlays**: standalone clone
+  refreshes now archive dirty work to a host-specific branch and external Git
+  bundle before a fast-forward. Consumer-owned NSSM services, identities, and
+  binaries are registered under `C:\ProgramData\forgewire-operator`, cached,
+  and replayed after install/redeploy without storing secret values in source.
+  The Python integration/installer surface is now 0.20.0.
+
 - **Rust-authoritative hub consolidation (WI-128)**: `fabric-hub` 0.11.0 now
   owns the last parity routes: capability waiting diagnostics, true task SSE,
   operator-audited rqlite snapshot/import, and the explicitly degraded legacy
@@ -16,9 +23,336 @@ package. The VSIX (`vscode/`) is versioned independently.
   its closed-app re-export shims are removed; Python 0.19.0 is now strictly
   the HTTP client, MCP, CLI, discovery, and runner-side integration layer.
   `forgewire-fabric hub start` launches the installed native binary.
+### Security
+
+- **A bare `reviewer`-role token could mint or revoke role tokens, including
+  a fresh `dispatcher`/`runner`/`approver` token for itself (privilege
+  escalation)** (`fabric-hub`): `required_roles`'s generic `/admin/*` ->
+  `["reviewer"]` catch-all covered `/admin/role-tokens` and its
+  `/split`/`/migrate` and `DELETE .../{id}` siblings too, so any caller
+  holding only `reviewer` -- a role with no other special standing over
+  `dispatcher`/`runner`/`approver` anywhere else in this route table -- could
+  call `POST /admin/role-tokens` and hand itself a brand-new token carrying
+  any of those roles, or revoke another automation credential outright.
+  Caught live 2026-07-28 during a 114C.8 drill re-run: a probe of a real
+  installed reviewer token's boundaries, expected to fail, succeeded instead
+  (reverted immediately, no lasting effect). Fixed by carving
+  `/admin/role-tokens*` out of the generic catch-all into its own branch,
+  mirroring `/accounts`'s existing read/write split: listing (`GET`) stays
+  reviewer-readable alongside `admin`, but issuing, splitting, migrating, and
+  revoking now require `admin` -- a role no role token or the legacy bearer
+  can ever hold, by construction (`admin` is deliberately absent from
+  `VALID_ROLES`). The legacy bearer's own narrow three-path bootstrap
+  exception (letting a fresh install split/migrate its compatibility bundle
+  before any role token or human admin account exists) is untouched -- it
+  bypasses this route table entirely via its own dedicated check. New
+  regression test (`a_bare_reviewer_token_cannot_mint_or_revoke_role_tokens`)
+  proves the exact escalation path is closed while `GET`/legacy-bootstrap
+  behavior is unchanged; both route-policy baseline fixtures
+  (`role_policy_baseline.json`'s machine-surface guard rejects `admin`
+  outright, so the new pinned rows live in
+  `human_account_route_policy_baseline.json` instead, alongside `/accounts`
+  and `/settings`'s identical human-only-role carve-outs) and
+  `admin_only_routes_reject_every_machine_role`'s hardcoded route list were
+  updated to cover the four newly-admin-gated paths. Deployed to both live
+  cluster nodes the same session via the existing self-update mechanism
+  (`forgewire-fabric-cli update`), verified live on each afterward (same
+  installed reviewer bearer that previously succeeded now correctly denied).
+  **Operational note**: any existing tooling that relied on a bare
+  `reviewer`-scoped automation token to manage the role-token fleet now
+  needs a real, signed-in human `admin` session for that instead --
+  reviewer's remaining role-token access is read-only (`GET`/list).
+
+### Fixed
+
+- **Genesis-minted accounts couldn't sign in after the seal (114D D.2)**
+  (`fabric-accounts`, `fabric-store-rqlite`, `fabric-hub`): `complete_genesis`
+  minted the Master's `human_accounts`/`human_memberships` rows under the
+  freshly-generated `realm_identity` UUID, but every pre-existing 114C route
+  (`/auth/login`, passkey login/registration, admin account routes,
+  `require_bearer`'s own session resolution) is hardcoded to
+  `fabric_hub::auth::DEFAULT_REALM_ID` (`"default"`) when scoping account
+  lookups. The two values never matched. `/setup/complete`'s own embedded
+  post-seal login worked (it used the matching value internally), but every
+  *subsequent* `/auth/login` attempt failed with the same non-enumerating
+  `InvalidCredentials` a wrong password produces -- indistinguishable without
+  direct database inspection. Caught live during a genuine two-machine
+  clean-slate reinstall and real Desktop sign-in attempt; not caught by the
+  prior automated test suite, which had (unknowingly) baked the identical
+  conflation into its own assertions (fixed alongside this: three tests now
+  assert against the production-matching realm value, plus a new explicit
+  `realm_identity_id != DEFAULT_REALM_ID` regression guard).
+  `complete_genesis` now takes an explicit `account_realm_id` parameter,
+  kept distinct from the realm identity's own freshly-minted id. Both live
+  nodes were patched immediately (direct SQL) and then redeployed on the
+  fixed binary, reverified with a real end-to-end login against the
+  redeployed hub.
+
+- **Desktop's restriction banner conflated the signed-in human's account role
+  with the installed automation token's role (114C.7)** (`desktop`): the
+  "Hub and fleet" dashboard (tasks/approvals/secrets/audit) authenticates
+  exclusively through the installed, machine-level automation credential
+  (`hub_client()`/`load_hub_token()`), a categorically different, deliberately
+  separate credential from the signed-in human session used only for
+  account self-service (confirmed intentional -- see `accountMe`'s doc
+  comment in `main.tsx` and `command-availability-live-wiring-handoff.md`'s
+  "Explicitly out of scope" note). The restriction banner shown when that
+  automation token lacks a required role (e.g. "Requires reviewer role
+  access. Current token roles: dispatcher, runner, observer.") named only the
+  automation token's roles, with nothing distinguishing it from the caller's
+  own account role -- so a signed-in `admin` reasonably read the message as
+  describing *their own* access, not a separate machine credential. Caught
+  live 2026-07-28 when a genesis-minted admin (freshly signed in after the
+  realm-id fix above) saw the banner and could not tell why "admin" did not
+  mean "full access." Fixed by appending the signed-in account's own role(s)
+  to the restriction message wherever one is shown (the aggregate
+  `RestrictionStrip` and the per-page Secrets/Approvals/Audit banners),
+  extracted into a new, independently testable `restrictionMessages.ts`
+  (mirroring the earlier `AccountPage` extraction, since `main.tsx` cannot be
+  imported directly by a test). No credential or authorization logic
+  changed -- display only. Separately (an operational fix, not a code
+  change): minted a `reviewer`-authority role token via the legacy bearer's
+  self-authorizing `POST /admin/role-tokens` bootstrap path and installed it
+  as the Desktop's automation token, which is the actual, already-designed
+  mechanism for extending the dashboard's authority (per `role-tokens
+  migrate`/`issue` and `auth.rs`'s `legacy_bundle_is_narrow_and_only_
+  bootstraps_role_tokens` test).
+
+- **Desktop's browser-based WebAuthn bridge could never succeed against the
+  default IP-literal hub URL (114C.6)** (`desktop`): `webauthn_bridge::
+  build_bridge_url` opened the hub-served passkey bridge page at whatever
+  literal host form `hub_url` carried, verbatim. `sanitize_url`/
+  `normalizeHubUrl` actively rewrite a user's `localhost` hub URL *to*
+  `127.0.0.1` for transport (the `GuiConfig` default), so the bridge page
+  opened at an IP-literal origin -- which the WebAuthn spec forbids from
+  ever satisfying any rp_id, including the realm's own default of
+  `"localhost"`. Every passkey login and registration through the browser
+  bridge failed with the browser's own `SecurityError` (seen live in Chrome
+  as "This is an invalid domain.") before any authenticator prompt could
+  even run. `native_webauthn::derive_loopback_origin` had already solved the
+  identical problem for the native Windows Hello ceremony; the browser-bridge
+  path never received the equivalent fix, and none of its existing tests
+  exercised a `127.0.0.1` `hub_url` to catch it. Fixed with a new
+  `normalize_bridge_host`, which rewrites a loopback `hub_url`'s host
+  (`127.0.0.1`, `localhost`, or any `.localhost` subdomain) to the literal
+  `"localhost"` before the bridge URL is built, leaving a remote (non-
+  loopback) hub's `hub_url` untouched since that realm's rp_id is whatever it
+  configured. A prior gap the same defect would also affect (the VSIX's
+  TypeScript `buildBridgeUrl` in `packages/fabric-client-core/src/
+  webauthnBridge.ts` mirrors this function field-for-field and has the
+  identical bug against its own auto-discovered `http://127.0.0.1:<port>`
+  local hub) is intentionally not touched by this change -- out of this
+  fix's scope, tracked separately.
+
+- **The VSIX's WebAuthn bridge had the identical IP-literal-origin bug as
+  Desktop's, above (114C.6)** (`fabric-client-core`): `buildBridgeUrl` in
+  `packages/fabric-client-core/src/webauthnBridge.ts` mirrors Desktop's
+  `webauthn_bridge::build_bridge_url` field-for-field, and had mirrored its
+  bug too -- it built the bridge page URL from `options.hubUrl` verbatim. The
+  VS Code extension's `hubClient.ts` auto-discovers a local hub at the
+  literal `http://127.0.0.1:<port>` (`vscode/src/hubClient.ts:447`), and the
+  realm's WebAuthn `rp_id` defaults to `"localhost"` (114D sec 5); per the
+  WebAuthn spec an IP-literal origin can never satisfy any non-empty
+  `rp_id`, so the browser would refuse every `navigator.credentials.get`/
+  `create()` call from that origin, exactly as reproduced live on Desktop.
+  Fixed with a new `normalizeBridgeHost`, mirroring Desktop's
+  `normalize_bridge_host`: it rewrites a loopback `hubUrl`'s host
+  (`127.0.0.1`, `localhost`, or any `.localhost` subdomain) to the literal
+  `"localhost"` before the bridge URL is built, leaving a remote (non-
+  loopback) hub's `hubUrl` untouched. Hand-parsed via regex rather than the
+  WHATWG `URL` constructor, since this package compiles with no DOM and no
+  Node lib types and `URL` is unavailable to its source files -- confirmed
+  by `test_client_core_architecture.py`'s no-DOM/no-node purity contract
+  staying green. 4 new regression tests added mirroring the Rust side's
+  `build_bridge_url`-level cases. `npm run build --workspace
+  @forgewire/fabric-client-core`, `npx vitest run --root
+  packages/fabric-client-core` (71 passed), `npx vitest run --root desktop`
+  (58 passed), and `npm run compile --workspace forgewire`
+  (typecheck/bundle/verify:bundle) all green. Not verified against a live
+  browser passkey ceremony in VS Code itself this session.
 
 ### Added
 
+- **Dual human/client audit attribution wired across the full route surface
+  (114C.4, AC-114C-2)** (`fabric-hub`): the 2026-07-18 dual-attribution audit
+  run left this at 1 of 25 tracked `audit_append` call sites carrying
+  `attribution()`. Re-surveying the actual current surface (rather than
+  trusting that stale count) found it had grown to 52 sites -- the original
+  count never included `routes/accounts.rs`, `routes/setup.rs`, or the two
+  denial-audit sites in `auth.rs` proper, and `routes/authn.rs` had grown
+  from 2 to 10 sites since passkey routes landed. 30 of the 52 already
+  carried `attribution()` from prior, uncounted work; this change wires the
+  remaining 14 that had a real, already-authenticated `AuthContext`
+  available but weren't using it: all 4 role-token admin routes
+  (`admin.rs`), both authentication-denial audit paths (`auth.rs`, with a
+  structural fix distinguishing "no actor ever resolved" -- a rejected or
+  missing bearer -- from "known automation, no human", which previously
+  collapsed to the same shape), `approvals.rs`'s ForgeLink-decision sync (new
+  actor extraction on `get_approval`), the step-up-path passkey
+  replay-suspected event (`authn.rs`), both secret rotation/deletion routes
+  (`secrets.rs`, new actor extraction on both handlers), the settings-change
+  event (`settings.rs`, upgraded from a bare subject string to the full
+  shape), the egress-denied event (`streams.rs`, new actor extraction on
+  `append_progress`), and the runtime intent gate (`tasks.rs`, new actor
+  extraction on `evaluate_intent`). The remaining 8 sites are structurally
+  out of scope, not a gap: 5 are pre-authentication routes (bootstrap, login,
+  refresh-replay, login-time passkey-replay, genesis completion) where no
+  `AuthContext` exists yet -- the audited event *is* the act of establishing
+  or failing to establish one -- and 1 (`stdin_input`) authenticates via
+  Ed25519 dispatcher-signature verification, a categorically different,
+  already-cryptographically-verified identity model with no `AuthContext` on
+  that path at all. Also closes a separately-recorded gap from the same
+  2026-07-18 run ("no test... asserts a secret's absence from" a persisted
+  audit event): a new `dual_attribution_leak_scanner.rs` integration test
+  seals a real secret, appends a payload nesting an `attribution()`-shaped
+  actor object beside the secret's plaintext through the real
+  `audit_append`, and asserts against the persisted row that the plaintext
+  is redacted while the actor object survives intact -- mutation-verified by
+  temporarily removing `audit_append`'s redaction call and confirming the
+  test fails with the plaintext visible before restoring it. Does not close
+  AC-114C-2: role-token/Ed25519 identity preservation is architecturally
+  untouched (only audit payload content changed) and was already
+  live-verified separately; recovery remains backend-only with no client UI
+  or live redemption drill; and the three step-up/passkey-gated live drills
+  114C.8 deferred (disable-account, role grant/revoke, interactive
+  dispatch+approval) still need to be re-run against the real cluster now
+  that the WebAuthn bridge fix above removes their blocker.
+
+- **Native Windows Hello passkey enrollment backend (114D D.3)** (`fabric-client`,
+  `desktop`): partial progress toward AC-114D-3 -- the hard technical risk
+  (does the native Windows WebAuthn API genuinely force Hello, not a USB key)
+  is retired and evidenced. UI wiring and native login remain; live human
+  verification is now done -- a deliberately-watched run on the real
+  Precision machine (2026-07-28) produced a real credential (confirmed
+  against `human_credentials`: 795 bytes of genuine public key material) via
+  an actual completed Windows Hello ceremony. The one-off manual test that
+  drove it (`live_manual_register_native_against_the_local_hub`) is deleted
+  per its own doc comment now that the result is recorded in the evidence
+  run.
+  - `fabric-client`: `HubClient::register_passkey_options`/`register_passkey_verify`,
+    mirroring `step_up_options`/`step_up_verify`'s session-bearer-authenticated
+    shape -- closes half of the "register/login passkey options+verify are not
+    wired here" gap this crate's own doc comment named (login stays unwired;
+    no session exists yet to authenticate that call with).
+  - `desktop`: new Windows-only `native_webauthn` module drives
+    `webauthn-authenticator-rs`'s `Win10` backend directly -- no system browser,
+    no webview-origin problem (there is no webview in this path at all).
+    `force_platform_attachment` sets `authenticator_attachment: Platform` +
+    `user_verification: Required` before every ceremony, overriding rather than
+    only filling any pre-existing hint; verified against the actual
+    `webauthn-authenticator-rs` source (not assumed) that this genuinely
+    reaches the real `WEBAUTHN_AUTHENTICATOR_MAKE_CREDENTIAL_OPTIONS::dwAuthenticatorAttachment`
+    Windows API parameter, and two of the new tests actually ran the real logic
+    on Windows. `derive_loopback_origin` forces the ceremony origin's host to
+    `localhost` (matching 114D's `rp_id` default) and refuses outright for a
+    non-loopback `hub_url`, matching 114D sec 5's own accepted scope (native
+    ceremonies only work against a local hub). A fixture test locks in the
+    real (source-verified) double-nested wire shape
+    `{"public_key":{"publicKey":{...}}}` the hub's response actually has --
+    the exact shape a prior browser-bridge bug got wrong. Registration only
+    (matching AC-114D-3's "enrollment" framing); the `Win10` backend's
+    `do_authentication` half for native login is a natural follow-up, not
+    built here. `#[cfg(not(windows))]` returns a typed "not supported" error
+    so the Tauri command exists cross-platform even though only Windows
+    implements it.
+  - `cargo test --workspace` green (2 new transport tests; 9 new
+    `native_webauthn` tests, including the Windows-only attachment-forcing
+    ones actually executing on this machine). clippy clean.
+    `scripts/validate_local.ps1` green end to end (needed several re-runs
+    purely due to the documented live-cluster `settings_cas_..._on_real_rqlite`
+    quorum-loss flake, confirmed environmental -- the local rqlite node had
+    just restarted).
+  - No frontend/UI change: `register_passkey_native` is a registered,
+    invokable Tauri command, but nothing in the existing Account page calls
+    it yet, so an operator's actual enrollment experience is unchanged by
+    this slice.
+- **Genesis setup backend (114D D.2)** (`fabric-accounts`, `fabric-store-rqlite`,
+  `fabric-hub`): closes AC-114D-2 -- the slice that mints the real Master.
+  - `fabric-accounts`: `AccountOrchestration::complete_genesis` -- a new
+    `GenesisOutcome { realm, account, recovery_codes }` orchestration method
+    atomically establishing the realm's founding identity AND the Master's
+    account/password-credential/admin-membership/durable recovery codes in
+    one SQL transaction, alongside `bootstrap_first_administrator`.
+  - `fabric-store-rqlite`: the transaction inserts into *two* singleton
+    tables (`realm_identity`, `human_bootstrap_state`) in one batch, so a new
+    `realm_or_bootstrap_conflict` helper reads SQLite's own constraint-error
+    message to disambiguate which one a losing caller lost to --
+    `RealmAlreadyEstablished` vs `BootstrapClosed` -- rather than collapsing
+    both into one generic conflict. Genesis recovery codes are durable
+    (`expires_at` NULL), unlike `generate_recovery_codes`'s 72-hour
+    admin-assisted-recovery TTL -- verified redeemable through the existing
+    `complete_recovery_with_code` flow.
+  - `fabric-hub`: new `routes::setup` module -- `GET /setup/status` (reports
+    `bootstrap_open`/`realm_established`/`sealing`, the last always `false`
+    in this increment since one SQL transaction has no partial-commit window
+    for it to observe) and `POST /setup/complete`, gated by the *same*
+    loopback + `bootstrap_open` primitive `/auth/bootstrap` already uses
+    (`bootstrap_source_allowed`, widened to `pub(crate)` and reused
+    verbatim, not reimplemented). `/setup/complete` composes
+    `complete_genesis` with `authenticate_and_issue_session` (the same call
+    `/auth/login` makes) so the response lands the operator signed-in,
+    optionally proof-of-possession-bound (114E) via `session_public_key` --
+    two separate calls, not one bigger transaction, so a session-issuance
+    hiccup after a successful seal leaves a real Master retryable via normal
+    login rather than a broken realm. Both routes are public (unreachable
+    behind `require_bearer` by construction -- no credential exists yet).
+  - Recovery-code minting is password-anchored in this increment (matching
+    the design's own no-authenticator fallback, 114D sec 14.4) -- native
+    passkey enrollment (D.3) and the high-security root-credential set
+    (sec 19) compose afterward via the already-existing, now
+    `admin`-reachable `/auth/passkeys/register/*` routes, since the minted
+    Master already holds `admin` the instant genesis seals.
+  - `cargo test --workspace` green throughout: 6 new store-layer tests
+    (concurrent-genesis race, weak-password-rejects-before-writing, durable
+    recovery-code redemption) and 8 new HTTP-level tests (loopback gating,
+    empty-origins rejection, the legacy-admin-no-realm precondition, and an
+    end-to-end proof that the genesis-issued session authenticates a real
+    request with the admin role). clippy -D warnings clean;
+    `scripts/validate_local.ps1`'s full 13-step gate green end to end.
+- **Realm-identity store + WebAuthn rewiring (114D D.1, increments 2-3)**
+  (`fabric-store-rqlite`, `fabric-store`, `fabric-hub`): closes AC-114D-1 --
+  every node's WebAuthn verifier now reads `rp_id`/`origins` from the
+  replicated realm identity instead of a local settings document, the
+  per-node relying-party trap (114D sec 5).
+  - `fabric-store-rqlite`: a `realm_identity` singleton table
+    (`id INTEGER PRIMARY KEY CHECK (id = 1)`, the same CAS shape as
+    `human_bootstrap_state`) added to `init_human_accounts_schema`; a
+    `RealmRepository for RqliteStore` impl whose `establish_realm_identity`
+    is a single-statement compare-and-set insert -- a second genesis hits
+    the PRIMARY KEY conflict and maps to `RealmAlreadyEstablished` with no
+    partial state, proving the concurrent-genesis guard (114D sec 15.1).
+    `origins` persists as a JSON array, order preserved.
+  - `fabric-store`: `FabricStore`'s supertrait list gains `RealmRepository`
+    (mirroring how `AccountRepository`/`SessionRepository`/etc. were added
+    in 114C), so both hub startup and the doctor route can read the realm
+    identity through the single `Arc<dyn FabricStore>` handle they already
+    hold.
+  - `fabric-hub`: `webauthn::build_from_realm_or_settings` prefers the
+    realm identity when established, falling back to legacy
+    `auth.passkeys` settings for a pre-114D deployment or a node that
+    hasn't run genesis; `diagnose_realm_or_settings` mirrors the same
+    precedence so `GET /auth/webauthn/doctor`'s `ready` field can never
+    disagree with what the running instance was actually built from (the
+    existing `diagnose_ready_always_agrees_with_build_from_settings`
+    invariant, now also proven across the realm branch). Both are wired
+    into `main.rs` startup and the doctor route.
+  - `cargo test --workspace` green throughout (fabric-store-rqlite's full
+    suite against ephemeral rqlite, fabric-hub's 80 lib tests including 7
+    new realm-path webauthn tests, 3 new realm_identity store-integration
+    tests proving the CAS race). No client change (backend only, matching
+    D.1's stated scope).
+- **Realm-identity port layer (114D D.1, increment 1)** (`fabric-accounts`): the
+  domain contract for the realm's founding cryptographic identity — a
+  `RealmIdentity` record (`realm_id`, `name`, `rp_id`, `origins[]`, `created_at`,
+  `genesis_node`, `key_alg`) and a `RealmRepository` port with
+  `get_realm_identity` + a compare-and-set `establish_realm_identity` singleton.
+  A new typed error `RealmAlreadyEstablished` (distinct from `BootstrapClosed`)
+  lets genesis (D.2) detect a lost concurrent-genesis race and convert to join;
+  it rippled through the Rust `ALL_CODES`, the TypeScript
+  `TYPED_AUTH_ERROR_CODES`, and the shared `account_session_summary.json`
+  fixture in the same change, keeping the cross-language error contract in sync.
+  Port only — the rqlite `realm_identity` table/CAS impl and the WebAuthn
+  rewiring land in the next D.1 increments.
 - **Proof-of-possession client (114E Slice 2)** (`fabric-client`, `desktop`):
   the client half of key-bound human sessions, coexisting with bearer.
   - `fabric-client`: a `SessionCredential` enum (`Bearer` | `Pop { session_id,

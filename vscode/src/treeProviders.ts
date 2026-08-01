@@ -1409,7 +1409,18 @@ function hostStatusBadge(host: HostSummary): string {
   const roles: HostRoleSummary[] = [r.hub_head, r.control, r.dispatch, r.command_runner, r.agent_runner];
   const enabled = roles.filter((role) => role.enabled);
   if (enabled.length === 0) return "idle";
-  const healthy = new Set(["active", "online", "master", "slave", "registered", "ok", "ready"]);
+  const healthy = new Set([
+    "active",
+    "online",
+    "master",
+    "slave",
+    "standby",
+    "registered",
+    "installed",
+    "disabled",
+    "ok",
+    "ready",
+  ]);
   const bad = new Set(["offline", "failed", "error", "unreachable", "stopped"]);
   let hasBad = false;
   let hasUnknown = false;
@@ -1571,10 +1582,11 @@ function healthNodes(health: ClusterHealth | undefined): HostsNode[] {
     children: backendChildren,
   });
   const s = health.labels_snapshot;
+  const sidecarMissing = !s.exists && (s.status === "unknown" || !s.status);
   const sidecarColor =
     s.status === "applied" || s.status === "seeded_from_db"
       ? "charts.green"
-      : s.status === "absent" || s.status === "disabled"
+      : sidecarMissing || s.status === "absent" || s.status === "disabled"
         ? "charts.yellow"
         : "charts.red";
   const ageStr = s.mtime
@@ -1584,8 +1596,8 @@ function healthNodes(health: ClusterHealth | undefined): HostsNode[] {
     kind: "health",
     key: "sidecar",
     label: "Labels sidecar",
-    description: `${s.status ?? "?"} \u00b7 age ${ageStr}`,
-    icon: s.exists ? "save" : "warning",
+    description: `${sidecarMissing ? "n/a" : (s.status ?? "?")} \u00b7 age ${ageStr}`,
+    icon: s.exists ? "save" : "circle-slash",
     color: sidecarColor,
     tooltip: new vscode.MarkdownString(
       `**Labels snapshot sidecar**\n\n` +

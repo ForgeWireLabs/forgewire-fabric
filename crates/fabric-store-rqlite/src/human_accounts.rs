@@ -19,13 +19,13 @@ use serde_json::{json, Value};
 
 use fabric_accounts::domain::{
     Account, AccountId, AccountStatus, AssuranceLevel, ClientKind, Credential, CredentialId,
-    CredentialKind, Membership, MembershipId, RealmId, Role, Session, SessionId,
+    CredentialKind, Membership, MembershipId, RealmId, RealmIdentity, Role, Session, SessionId,
 };
 use fabric_accounts::dto::LoginAttemptDto;
 use fabric_accounts::error::{AccountsError, AccountsResult};
 use fabric_accounts::repository::{
-    AccountOrchestration, AccountRepository, CredentialRepository, LoginOutcome,
-    MembershipRepository, SessionRepository,
+    AccountOrchestration, AccountRepository, CredentialRepository, GenesisOutcome, LoginOutcome,
+    MembershipRepository, RealmRepository, SessionRepository,
 };
 use fabric_accounts::secret::SecretString;
 use fabric_accounts::{password, secrets, validation};
@@ -95,6 +95,18 @@ impl RqliteStore {
             // silently double-counting the account in
             // `count_enabled_admins`'s row-count query.
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_human_memberships_active_role ON human_memberships (account_id, role) WHERE revoked_at IS NULL",
+            // 114D D.1: the realm's founding cryptographic identity. A
+            // singleton (`id INTEGER PRIMARY KEY CHECK (id = 1)`, the same
+            // shape as `human_bootstrap_state`) so a second genesis insert
+            // hits a PRIMARY KEY conflict and maps to RealmAlreadyEstablished
+            // -- the concurrent-genesis compare-and-set guard (114D sec 15.1).
+            // `origins` is a JSON array string; `rp_id`+`origins` are what the
+            // hub's WebAuthn verifier reads instead of a local hostname,
+            // closing the cross-node relying-party trap (114D sec 5). Not a
+            // `human_*` table (it is realm-scoped, not account-scoped), but
+            // created here so the single `init_human_accounts_schema` startup
+            // call establishes the whole identity schema.
+            "CREATE TABLE IF NOT EXISTS realm_identity (id INTEGER PRIMARY KEY CHECK (id = 1), realm_id TEXT NOT NULL, name TEXT NOT NULL, rp_id TEXT NOT NULL, origins TEXT NOT NULL, created_at TEXT NOT NULL, genesis_node TEXT, key_alg TEXT NOT NULL)",
         ];
         for stmt in creates {
             self.execute_one(stmt, &[]).await?;
@@ -132,6 +144,99 @@ impl RqliteStore {
         }
         Ok(())
     }
+}
+
+/// 114D D.1: the realm's founding-identity authority. `origins` is stored as a
+/// JSON array string; every other field maps one-to-one to a column.
+#[async_trait]
+impl RealmRepository for RqliteStore {
+    async fn get_realm_identity(&self) -> AccountsResult<Option<RealmIdentity>> {
+        let rows = self
+            .query(
+                "SELECT realm_id,name,rp_id,origins,created_at,genesis_node,key_alg FROM realm_identity WHERE id=1",
+                &[],
+            )
+            .await
+            .map_err(map_backend_error)?;
+        let Some(row) = rows.first() else {
+            return Ok(None);
+        };
+        Ok(Some(row_to_realm_identity(row)?))
+    }
+
+    async fn establish_realm_identity(
+        &self,
+        realm: &RealmIdentity,
+    ) -> AccountsResult<RealmIdentity> {
+        // `origins` persisted verbatim (order preserved) as a JSON array. A
+        // serialization failure here is a caller/programming error, not an
+        // infra failure, so it maps to a policy violation rather than the
+        // fail-closed AuthServiceUnavailable.
+        let origins_json = serde_json::to_string(&realm.origins).map_err(|e| {
+            AccountsError::AccountPolicyViolation {
+                reason: format!("realm_origins_not_serializable: {e}"),
+            }
+        })?;
+
+        // Compare-and-set singleton: the fixed `id=1` means a second caller's
+        // INSERT hits the PRIMARY KEY (CHECK id=1) conflict and is reported by
+        // SQLite as a UNIQUE violation -- mapped to RealmAlreadyEstablished so
+        // a concurrent-genesis loser (114D sec 15.1/15.2) can convert to join
+        // rather than founding a second realm. No partial state on the losing
+        // path: the single INSERT either lands whole or not at all.
+        self.execute_one(
+            "INSERT INTO realm_identity (id,realm_id,name,rp_id,origins,created_at,genesis_node,key_alg) VALUES (1,?,?,?,?,?,?,?)",
+            &[
+                json!(realm.realm_id),
+                json!(realm.name),
+                json!(realm.rp_id),
+                json!(origins_json),
+                json!(realm.created_at),
+                json!(realm.genesis_node),
+                json!(realm.key_alg),
+            ],
+        )
+        .await
+        .map_err(|e| {
+            if is_unique_violation(&e) {
+                AccountsError::RealmAlreadyEstablished
+            } else {
+                map_backend_error(e)
+            }
+        })?;
+
+        // Read back the stored row so the returned record reflects exactly
+        // what was persisted (and normalizes `origins` back through the same
+        // JSON round-trip a later `get_realm_identity` would).
+        //
+        // Unreachable in practice: the INSERT above just succeeded on this
+        // node's authoritative write path. If a read immediately after
+        // cannot see it, the store is failing -- fail closed.
+        RealmRepository::get_realm_identity(self)
+            .await?
+            .ok_or(AccountsError::AuthServiceUnavailable)
+    }
+}
+
+fn row_to_realm_identity(row: &Value) -> Result<RealmIdentity, AccountsError> {
+    let origins_raw = str_val(row, "origins");
+    let origins: Vec<String> = serde_json::from_str(&origins_raw).map_err(|e| {
+        // A corrupt/non-array `origins` column is store-state corruption, not
+        // a transient outage; surface it as a policy violation naming the
+        // field rather than the generic fail-closed code.
+        AccountsError::AccountPolicyViolation {
+            reason: format!("realm_origins_corrupt: {e}"),
+        }
+    })?;
+    Ok(RealmIdentity {
+        realm_id: str_val(row, "realm_id"),
+        name: str_val(row, "name"),
+        rp_id: str_val(row, "rp_id"),
+        origins,
+        created_at: str_val(row, "created_at"),
+        genesis_node: opt_str(row, "genesis_node"),
+        key_alg: str_val(row, "key_alg"),
+    })
 }
 
 // -- string <-> domain-enum conversions --------------------------------------
@@ -215,6 +320,33 @@ pub(crate) fn map_backend_error(e: RqliteError) -> AccountsError {
 
 fn is_unique_violation(e: &RqliteError) -> bool {
     matches!(e, RqliteError::Status { body, .. } if body.contains("UNIQUE constraint failed"))
+}
+
+/// 114D D.2: `complete_genesis`'s transaction inserts into *two* different
+/// singleton tables (`realm_identity` and `human_bootstrap_state`), so a
+/// bare [`is_unique_violation`] cannot say which one a losing caller
+/// actually lost to -- and the two mean different things to the client
+/// (found an existing realm to join, vs. found an existing admin with no
+/// realm, a legacy/mixed state). SQLite's own constraint-violation message
+/// names the table, so this reads that name out of the same error body
+/// `is_unique_violation` already inspects, rather than issuing a second
+/// query to disambiguate. `None` for any error that is not a unique
+/// violation on either table -- the caller falls back to
+/// [`map_backend_error`] in that case.
+fn realm_or_bootstrap_conflict(e: &RqliteError) -> Option<AccountsError> {
+    let RqliteError::Status { body, .. } = e else {
+        return None;
+    };
+    if !body.contains("UNIQUE constraint failed") {
+        return None;
+    }
+    if body.contains("realm_identity") {
+        Some(AccountsError::RealmAlreadyEstablished)
+    } else if body.contains("human_bootstrap_state") {
+        Some(AccountsError::BootstrapClosed)
+    } else {
+        None
+    }
 }
 
 // -- row <-> domain conversions -----------------------------------------------
@@ -918,6 +1050,129 @@ impl AccountOrchestration for RqliteStore {
         })?;
 
         AccountRepository::get_account(self, &account_id).await
+    }
+
+    /// 114D D.2 -- see the trait doc comment for the full contract. Mirrors
+    /// `bootstrap_first_administrator`'s shape (one `execute_tx` batch, IDs
+    /// generated up front, typed conflict on the losing branch) with two
+    /// differences: a `realm_identity` insert joins the batch as its first
+    /// statement, and the recovery-code inserts (durable, `expires_at`
+    /// NULL) join it as its last -- everything the design calls the
+    /// "genesis document" lands in the one transaction.
+    ///
+    /// Two different "realm id" concepts are deliberately kept apart here:
+    /// `realm_identity_id` (generated below, written only to the
+    /// `realm_identity` row) is D.1's own new, freshly-minted identifier;
+    /// `account_realm_id` (the caller-supplied parameter, always
+    /// `DEFAULT_REALM_ID` in practice) is the pre-existing 114C
+    /// `human_accounts`/`human_memberships` scoping value every other route
+    /// already hardcodes. Using the same value for both silently produces an
+    /// account that only genesis's own embedded login can ever authenticate
+    /// -- caught live once, see the trait doc comment for the full story.
+    async fn complete_genesis(
+        &self,
+        realm_name: &str,
+        rp_id: &str,
+        origins: &[String],
+        key_alg: &str,
+        genesis_node: Option<&str>,
+        account_realm_id: &str,
+        username: &str,
+        display_name: &str,
+        password_plaintext: &str,
+        recovery_code_count: i64,
+        now: &str,
+    ) -> AccountsResult<GenesisOutcome> {
+        let username_normalized = validation::normalize_username(username)?;
+        password::validate_password(password_plaintext, false)?;
+        let password_hash = password::hash_password(password_plaintext)?;
+        let origins_json =
+            serde_json::to_string(origins).map_err(|e| AccountsError::AccountPolicyViolation {
+                reason: format!("realm_origins_not_serializable: {e}"),
+            })?;
+
+        let realm_identity_id = generate_id();
+        let account_id = generate_id();
+        let credential_id = generate_id();
+        let membership_id = generate_id();
+
+        let mut statements: Vec<(&str, Vec<Value>)> = vec![
+            (
+                "INSERT INTO realm_identity (id,realm_id,name,rp_id,origins,created_at,genesis_node,key_alg) VALUES (1,?,?,?,?,?,?,?)",
+                vec![
+                    json!(realm_identity_id), json!(realm_name), json!(rp_id), json!(origins_json),
+                    json!(now), json!(genesis_node), json!(key_alg),
+                ],
+            ),
+            (
+                "INSERT INTO human_bootstrap_state (id,account_id,completed_at) VALUES (1,?,?)",
+                vec![json!(account_id), json!(now)],
+            ),
+            (
+                "INSERT INTO human_accounts (account_id,realm_id,username_normalized,username_display,display_name,email_normalized,status,created_at,updated_at,disabled_at,deleted_at,revision,security_version) VALUES (?,?,?,?,?,NULL,?,?,?,NULL,NULL,0,0)",
+                vec![
+                    json!(account_id), json!(account_realm_id), json!(username_normalized), json!(username),
+                    json!(display_name), json!(AccountStatus::Active.as_str()), json!(now), json!(now),
+                ],
+            ),
+            (
+                "INSERT INTO human_credentials (credential_id,account_id,kind,secret_verifier,algorithm,algorithm_params,version,created_at,revision) VALUES (?,?,?,?,?,NULL,1,?,0)",
+                vec![
+                    json!(credential_id), json!(account_id), json!(CredentialKind::Password.as_str()),
+                    json!(password_hash.expose_secret()), json!("argon2id"), json!(now),
+                ],
+            ),
+            (
+                "INSERT INTO human_memberships (membership_id,account_id,realm_id,role,granted_by_account_id,granted_at,revoked_at,revision) VALUES (?,?,?,?,NULL,?,NULL,0)",
+                vec![json!(membership_id), json!(account_id), json!(account_realm_id), json!(Role::Admin.as_str()), json!(now)],
+            ),
+        ];
+
+        // Durable break-glass recovery codes: expires_at is NULL (never
+        // expires), unlike generate_recovery_codes's 72-hour
+        // admin-assisted-recovery TTL -- the Master is not expected to
+        // redeem these within days, only if their credential is ever lost.
+        // Clamped the same way generate_recovery_codes clamps its own
+        // count, reusing MAX_RECOVERY_CODES_PER_BATCH so genesis cannot
+        // mint an unbounded batch.
+        let clamped_count =
+            usize::try_from(recovery_code_count.clamp(1, MAX_RECOVERY_CODES_PER_BATCH))
+                .unwrap_or(1);
+        let recovery_batch_id = generate_id();
+        let mut recovery_codes = Vec::with_capacity(clamped_count);
+        for _ in 0..clamped_count {
+            let code = secrets::generate_opaque_secret();
+            let code_id = generate_id();
+            statements.push((
+                "INSERT INTO human_recovery_codes (code_id,account_id,code_verifier,batch_id,created_at,consumed_at,revoked_at,expires_at) VALUES (?,?,?,?,?,NULL,NULL,NULL)",
+                vec![
+                    json!(code_id), json!(account_id),
+                    json!(secrets::hash_opaque_secret(code.expose_secret())),
+                    json!(recovery_batch_id), json!(now),
+                ],
+            ));
+            recovery_codes.push(code);
+        }
+
+        let stmt_refs: Vec<(&str, &[Value])> = statements
+            .iter()
+            .map(|(sql, params)| (*sql, params.as_slice()))
+            .collect();
+
+        self.execute_tx(&stmt_refs)
+            .await
+            .map_err(|e| realm_or_bootstrap_conflict(&e).unwrap_or_else(|| map_backend_error(e)))?;
+
+        let account = AccountRepository::get_account(self, &account_id).await?;
+        let realm = RealmRepository::get_realm_identity(self)
+            .await?
+            .ok_or(AccountsError::AuthServiceUnavailable)?;
+
+        Ok(GenesisOutcome {
+            realm,
+            account,
+            recovery_codes,
+        })
     }
 
     /// Verify a username/password against the realm and, on success, issue

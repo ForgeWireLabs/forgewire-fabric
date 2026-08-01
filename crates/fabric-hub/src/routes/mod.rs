@@ -35,6 +35,7 @@ pub mod policy;
 pub mod runners;
 pub mod secrets;
 pub mod settings;
+pub mod setup;
 pub mod state;
 pub mod streams;
 pub mod tasks;
@@ -194,6 +195,14 @@ mod tests {
     /// that reaches it, and the origins are by definition meant to be
     /// publicly reachable. See that route's own doc comment for the full
     /// reasoning.
+    ///
+    /// `/setup/status` + `/setup/complete` (114D D.2) join it for the same
+    /// reason `/auth/bootstrap*` does: there is no credential to
+    /// authenticate against before a Master exists, so these cannot sit
+    /// behind `require_bearer`. `/setup/complete` is additionally
+    /// loopback-gated at the handler level (reusing the exact primitive
+    /// `/auth/bootstrap` uses), so "public route" here means "reachable
+    /// without a bearer token," not "reachable from any network source."
     #[test]
     fn public_route_manifest_covers_health_and_self_service_auth_only() {
         let actual: Vec<_> = [
@@ -201,6 +210,7 @@ mod tests {
             authn::PUBLIC_ROUTES,
             webauthn_bridge::PUBLIC_ROUTES,
             webauthn_doctor::PUBLIC_ROUTES,
+            setup::PUBLIC_ROUTES,
         ]
         .into_iter()
         .flatten()
@@ -219,6 +229,8 @@ mod tests {
                 ("GET", "/auth/webauthn/bridge"),
                 ("GET", "/auth/webauthn/bridge.js"),
                 ("GET", "/auth/webauthn/doctor"),
+                ("GET", "/setup/status"),
+                ("POST", "/setup/complete"),
             ]
         );
     }

@@ -69,6 +69,7 @@ pub async fn list_approvals(
 
 pub async fn get_approval(
     State(state): State<Arc<HubState>>,
+    Extension(actor): Extension<AuthContext>,
     Path(approval_id): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let row = state
@@ -138,7 +139,11 @@ pub async fn get_approval(
                             &state.secrets,
                             "forgelink_decision_synced",
                             None,
-                            &json!({ "approval_id": approval_id, "decision": status_str }),
+                            &json!({
+                                "approval_id": approval_id,
+                                "decision": status_str,
+                                "actor": attribution(&actor),
+                            }),
                         )
                         .await;
                         if let Ok(Some(updated)) = state.store.get_approval(&approval_id).await {

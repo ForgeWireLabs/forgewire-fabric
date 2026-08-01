@@ -68,6 +68,77 @@ def _powershell_env() -> dict[str, str]:
     return env
 
 
+def _powershell_host() -> str:
+    host = shutil.which("pwsh") or shutil.which("powershell.exe")
+    if host is None:
+        raise SystemExit("PowerShell is required for Windows operator overlays.")
+    return host
+
+
+def apply_operator_overlay(
+    manifest: Path,
+    *,
+    fabric_root: Path | None = None,
+    build: bool = False,
+    register: bool = False,
+    start_services: bool = False,
+    validate_only: bool = False,
+) -> None:
+    """Apply one declarative Windows operator overlay through the bundled script."""
+    if not sys.platform.startswith("win"):
+        raise SystemExit("Operator overlays currently support Windows NSSM services only.")
+    command = [
+        _powershell_host(),
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(_asset("install-operator-overlay.ps1")),
+        "-ManifestPath",
+        str(manifest.resolve()),
+    ]
+    if fabric_root is not None:
+        command.extend(("-FabricRoot", str(fabric_root.resolve())))
+    if build:
+        command.append("-Build")
+    if register:
+        command.append("-Register")
+    if start_services:
+        command.append("-StartServices")
+    if validate_only:
+        command.append("-ValidateOnly")
+    subprocess.run(command, check=True, env=_powershell_env())
+
+
+def replay_operator_overlays(
+    *,
+    fabric_root: Path | None = None,
+    build: bool = False,
+    start_services: bool = False,
+    validate_only: bool = False,
+) -> None:
+    """Replay all registered Windows operator overlays."""
+    if not sys.platform.startswith("win"):
+        raise SystemExit("Operator overlays currently support Windows NSSM services only.")
+    command = [
+        _powershell_host(),
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(_asset("replay-operator-overlays.ps1")),
+    ]
+    if fabric_root is not None:
+        command.extend(("-FabricRoot", str(fabric_root.resolve())))
+    if build:
+        command.append("-Build")
+    if start_services:
+        command.append("-StartServices")
+    if validate_only:
+        command.append("-ValidateOnly")
+    subprocess.run(command, check=True, env=_powershell_env())
+
+
 # ---------------------------------------------------------------------------
 # Windows (NSSM)
 # ---------------------------------------------------------------------------

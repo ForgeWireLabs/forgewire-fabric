@@ -39,6 +39,7 @@
     "AuthServiceUnavailable",
     "RolePolicyViolation",
     "ChallengeInvalid",
-    "CredentialReplaySuspected"
+    "CredentialReplaySuspected",
+    "RealmAlreadyEstablished"
   ]
 }

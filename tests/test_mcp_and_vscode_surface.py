@@ -72,3 +72,17 @@ def test_dispatchers_view_collapsed_into_hosts() -> None:
     providers = (REPO_ROOT / "vscode" / "src" / "treeProviders.ts").read_text(encoding="utf-8")
     assert 'kind: "dispatcher"' in providers
     assert "hosts:dispatcher:" in providers
+
+
+def test_vscode_host_badge_treats_expected_cluster_roles_as_healthy() -> None:
+    providers = (REPO_ROOT / "vscode" / "src" / "treeProviders.ts").read_text(encoding="utf-8")
+    for status in ('"active"', '"online"', '"master"', '"slave"', '"standby"', '"registered"', '"installed"', '"disabled"'):
+        assert status in providers
+    assert 'const bad = new Set(["offline", "failed", "error", "unreachable", "stopped"])' in providers
+
+
+def test_vscode_missing_labels_sidecar_is_neutral() -> None:
+    providers = (REPO_ROOT / "vscode" / "src" / "treeProviders.ts").read_text(encoding="utf-8")
+    assert 'const sidecarMissing = !s.exists && (s.status === "unknown" || !s.status);' in providers
+    assert 'description: `${sidecarMissing ? "n/a" : (s.status ?? "?")} \\u00b7 age ${ageStr}`' in providers
+    assert 'icon: s.exists ? "save" : "circle-slash"' in providers

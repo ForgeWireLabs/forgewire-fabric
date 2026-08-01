@@ -185,6 +185,8 @@ ever carry.
 | GET /auth/webauthn/bridge | read | – | – | – | – | – | HUMAN_SESSION | Public — serves the browser-relay bridge page used by both clients for every WebAuthn ceremony (neither has an in-process, hub-reachable WebAuthn context). |
 | GET /auth/webauthn/bridge.js | read | – | – | – | – | – | HUMAN_SESSION | Public — the bridge page's JS, runs `navigator.credentials` and relays the result to a client-owned loopback listener. |
 | GET /auth/webauthn/doctor | read | – | – | – | – | – | HUMAN_SESSION | Public by design (114C.6 Slice 7) — reports RP id / allowed-origins configuration, which is routing information, not a secret. |
+| GET /setup/status | read | – | – | – | – | – | HUMAN_SESSION | Public (114D D.2) — drives the client setup FSM (`bootstrap_open`/`realm_established`/`sealing`); no credential exists yet in the pre-genesis window. |
+| POST /setup/complete | write | – | – | – | – | – | HUMAN_SESSION | Public, but gated exactly like `/auth/bootstrap` (loopback by default, optional bootstrap secret header, never a bearer) (114D D.2). Atomically establishes the realm identity and the Master account/credential/admin-membership/recovery codes, then issues a session — reachable only in the `bootstrap_open ∧ ¬realm_established` window. |
 | GET /accounts | read | ✅ | – | – | – | – | HUMAN_SESSION | `admin` or `reviewer` role. |
 | POST /accounts | write | ✅ | – | – | – | – | HUMAN_SESSION | `admin` only. Creates an account with an initial password and role. |
 | GET /accounts/{account_id} | read | ✅ | – | – | – | – | HUMAN_SESSION | `admin` or `reviewer` role. |

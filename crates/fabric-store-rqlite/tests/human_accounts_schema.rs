@@ -24,11 +24,16 @@ const EXPECTED_TABLES: &[&str] = &[
     // Ninth table, added in 114C.3 negative-auth (114C-name-lock.md second
     // addendum): the login-attempt records backing the rolling-window throttle.
     "human_login_attempts",
+    // Tenth table, added in 114D D.1: the realm's founding-identity singleton
+    // (not a `human_*` table -- realm-scoped, not account-scoped -- but created
+    // by the same `init_human_accounts_schema` call, so it is counted here).
+    "realm_identity",
 ];
 
 #[tokio::test]
-async fn init_human_accounts_schema_creates_all_nine_tables() {
-    let Some(node) = provision_or_skip("init_human_accounts_schema_creates_all_nine_tables").await
+async fn init_human_accounts_schema_creates_all_expected_tables() {
+    let Some(node) =
+        provision_or_skip("init_human_accounts_schema_creates_all_expected_tables").await
     else {
         return;
     };
@@ -47,7 +52,7 @@ async fn init_human_accounts_schema_creates_all_nine_tables() {
     }
     // `sqlite_sequence` is SQLite's own bookkeeping table, auto-created by
     // AUTOINCREMENT on human_refresh_uses -- not something this migration
-    // added, so it is excluded rather than counted against the locked seven.
+    // added, so it is excluded rather than counted against the locked set.
     let non_internal: std::collections::BTreeSet<_> = tables
         .iter()
         .filter(|t| !t.starts_with("sqlite_"))
@@ -55,7 +60,7 @@ async fn init_human_accounts_schema_creates_all_nine_tables() {
     assert_eq!(
         non_internal.len(),
         EXPECTED_TABLES.len(),
-        "no table beyond the locked seven should exist; got {tables:?}"
+        "no table beyond the locked set should exist; got {tables:?}"
     );
 }
 

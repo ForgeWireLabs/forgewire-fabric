@@ -36,7 +36,7 @@ __all__ = [
 # cross-runtime schema support → 0.17.0 → 0.18.0. Never move this down to
 # "align" with Rust; the two artifacts are versioned separately. See
 # VERSIONING.md for the full scheme.
-__version__ = "0.19.0"
+__version__ = "0.20.0"
 
 # Compat envelope for the ``forgewire-runtime`` (PyO3) wheel. The hub and
 # runner check this at import time and log a loud warning if a mismatching

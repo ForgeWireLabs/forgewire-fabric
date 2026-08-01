@@ -33,7 +33,7 @@ use axum::Router;
 use fabric_hub::auth::require_bearer;
 use fabric_hub::routes::{
     accounts, admin, agents, approvals, audit, authn, cluster, cost, dispatchers, health, history,
-    labels, policy, runners, secrets, settings, state, streams, tasks, webauthn_bridge,
+    labels, policy, runners, secrets, settings, setup, state, streams, tasks, webauthn_bridge,
     webauthn_doctor, whoami,
 };
 use fabric_hub::state::HubState;
@@ -428,9 +428,29 @@ async fn main() {
             serde_json::json!({})
         }
     };
-    let webauthn = fabric_hub::webauthn::build_from_settings(&effective_auth);
+    // 114D D.1: prefer the realm's founding identity over legacy per-node
+    // `auth.passkeys` settings when a realm has been established -- this is
+    // what closes the per-node relying-party trap (114D sec 5), since every
+    // node then builds its verifier from the same replicated rp_id/origins
+    // instead of its own local settings document. `None` on a pre-genesis
+    // cluster or a read failure degrades to the settings fallback, matching
+    // this whole block's existing "never a startup failure" discipline.
+    let realm_identity = fabric_accounts::repository::RealmRepository::get_realm_identity(&*store)
+        .await
+        .unwrap_or_else(|error| {
+            warn!(error = %error, "realm identity unreadable at startup; falling back to auth.passkeys settings");
+            None
+        });
+    let webauthn = fabric_hub::webauthn::build_from_realm_or_settings(
+        realm_identity.as_ref(),
+        &effective_auth,
+    );
     if webauthn.is_some() {
-        info!("passkeys enabled (WebAuthn relying party configured)");
+        if realm_identity.is_some() {
+            info!("passkeys enabled (WebAuthn relying party from realm identity)");
+        } else {
+            info!("passkeys enabled (WebAuthn relying party configured)");
+        }
     } else {
         info!("passkeys disabled or unconfigured (auth.passkeys)");
     }
@@ -504,7 +524,12 @@ async fn main() {
         // Deployment diagnostic, not account data -- see webauthn_doctor.rs's
         // own doc comment for why this is safe to leave unauthenticated
         // (114C.6 Slice 7).
-        .merge(webauthn_doctor::public_router());
+        .merge(webauthn_doctor::public_router())
+        // The genesis setup backend (114D D.2): unreachable behind
+        // require_bearer by construction (no credential exists yet), and
+        // additionally loopback-gated at the handler level -- see
+        // routes::setup's own module doc comment.
+        .merge(setup::public_router());
 
     // Authenticated routes
     let authed = Router::new()

@@ -91,6 +91,16 @@ pub enum AccountsError {
     /// generic "try the ceremony again" `ChallengeInvalid` implies.
     #[error("the credential's sign counter did not advance; possible cloned authenticator")]
     CredentialReplaySuspected,
+
+    /// The realm's founding identity already exists (114D D.1): a caller tried
+    /// to establish a second realm on a cluster that already has one. Raised by
+    /// the `realm_identity` singleton compare-and-set insert. Deliberately
+    /// distinct from `BootstrapClosed` (which is about the first *human admin*
+    /// existing): genesis (114D D.2) uses this specific code to detect that it
+    /// lost a concurrent-genesis race and must convert to joining the existing
+    /// realm rather than founding a new one (114D sec 15.1/15.2).
+    #[error("the realm identity is already established")]
+    RealmAlreadyEstablished,
 }
 
 impl AccountsError {
@@ -119,6 +129,7 @@ impl AccountsError {
             Self::RolePolicyViolation => "RolePolicyViolation",
             Self::ChallengeInvalid => "ChallengeInvalid",
             Self::CredentialReplaySuspected => "CredentialReplaySuspected",
+            Self::RealmAlreadyEstablished => "RealmAlreadyEstablished",
         }
     }
 
@@ -148,6 +159,7 @@ impl AccountsError {
         "RolePolicyViolation",
         "ChallengeInvalid",
         "CredentialReplaySuspected",
+        "RealmAlreadyEstablished",
     ];
 }
 
@@ -187,6 +199,7 @@ mod tests {
             AccountsError::RolePolicyViolation,
             AccountsError::ChallengeInvalid,
             AccountsError::CredentialReplaySuspected,
+            AccountsError::RealmAlreadyEstablished,
         ];
         for instance in &instances {
             assert!(

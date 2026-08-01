@@ -144,7 +144,7 @@ def test_role_limited_resource_does_not_redefine_session_health() -> None:
     assert "restrictions?: Record<string, string>" in api
     assert "restrictionKeys.has(key)" in api
     assert "Healthy · ${restrictedCount} restricted view" in main
-    assert "Some views are limited by your current role" in main
+    assert "Some views are limited by the installed automation token's role" in main
 
 
 def test_workspace_has_one_lockfile_for_both_skins() -> None:

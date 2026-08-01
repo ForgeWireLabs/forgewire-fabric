@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 
 use crate::auth::AuthContext;
 use crate::state::HubState;
-use crate::utils::{audit_append, utc_now};
+use crate::utils::{attribution, audit_append, utc_now};
 
 owned_router! {
     pub fn router, ROUTES {
@@ -117,6 +117,7 @@ async fn mutate(
             "actor": actor.subject,
             "revision": next.revision,
             "changes": changes,
+            "attribution": attribution(&actor),
         }),
     )
     .await

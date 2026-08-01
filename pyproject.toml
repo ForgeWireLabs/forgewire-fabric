@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "forgewire-fabric"
-version = "0.19.0"
+version = "0.20.0"
 description = "Python integration layer for ForgeWire Fabric: MCP dispatcher servers, client library, and operator CLI. The hub and runners ship as native binaries in the signed release bundle."
 requires-python = ">=3.11,<3.14"
 license = { text = "Apache-2.0" }

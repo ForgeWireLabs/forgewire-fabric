@@ -865,9 +865,13 @@ pub trait HistoryExportStore: Send + Sync {
 /// the other way around. Extended again in 114C.5 with `AccountOrchestration`
 /// so admin HTTP route handlers (which likewise only hold `Arc<dyn
 /// FabricStore>`) can reach the cross-cutting bootstrap/login/disable/revoke
-/// operations, not just the four CRUD-shaped repository traits. No new
+/// operations, not just the four CRUD-shaped repository traits. Extended
+/// again in 114D D.1 with `RealmRepository` so hub startup and the WebAuthn
+/// doctor route (also holding only `Arc<dyn FabricStore>`) can read the
+/// realm's founding identity to build/diagnose the relying party from it,
+/// instead of only the legacy per-node `auth.passkeys` settings. No new
 /// methods are declared here; a backend that already implements all
-/// twenty-four sub-traits satisfies this automatically.
+/// twenty-five sub-traits satisfies this automatically.
 #[async_trait]
 pub trait FabricStore:
     TaskStore
@@ -895,6 +899,7 @@ pub trait FabricStore:
     + fabric_accounts::repository::MembershipRepository
     + fabric_accounts::repository::SessionRepository
     + fabric_accounts::repository::AccountOrchestration
+    + fabric_accounts::repository::RealmRepository
     + fabric_accounts::webauthn::ChallengeRepository
     + Send
     + Sync

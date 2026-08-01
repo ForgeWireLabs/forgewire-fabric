@@ -109,6 +109,55 @@ pub(crate) fn generate_bridge_state() -> Result<String, String> {
     Ok(out)
 }
 
+/// True if `host` is a loopback host per the same widened definition
+/// `native_webauthn::is_loopback_host` and
+/// `fabric_hub::routes::webauthn_bridge::callback_is_loopback` use --
+/// `127.0.0.1`, `localhost`, or any `.localhost` subdomain (RFC 6761
+/// reserves the whole namespace for loopback). Kept in sync by hand: this
+/// crate cannot share a source of truth with either of those.
+fn is_loopback_host(host: &str) -> bool {
+    host == "127.0.0.1" || host == "localhost" || host.ends_with(".localhost")
+}
+
+/// Rewrite `hub_url` so the bridge page opens at a host matching the
+/// realm's WebAuthn rp_id, mirroring `native_webauthn::derive_loopback_
+/// origin`'s host-forcing exactly, but for the browser-bridge page's own
+/// URL rather than a native ceremony's origin.
+///
+/// A realm's default rp_id is the literal string "localhost" (114D sec 5),
+/// but `sanitize_url`/`normalizeHubUrl` actively normalize a user's
+/// "localhost" hub URL *to* "127.0.0.1" for transport (the GuiConfig
+/// default). Per the WebAuthn spec an IP-literal origin can never satisfy
+/// any non-empty rp_id -- browsers refuse every `navigator.credentials.get`/
+/// `create` call from one outright, regardless of rp_id (confirmed live:
+/// Chrome's "This is an invalid domain." for exactly this case). The native
+/// platform-authenticator path already solved this for its own ceremony
+/// (`derive_loopback_origin`); the server cannot fix it from its side either
+/// -- `routes/webauthn_bridge.rs`'s `callback_is_loopback` guards the reply
+/// channel, not the page's own origin, which is whatever host the browser
+/// was actually pointed at.
+///
+/// Left unchanged when the host is not loopback at all: a remote hub's
+/// rp_id is whatever that realm configured, which this function has no
+/// basis to guess at -- the remote host is assumed to already match. Also
+/// left unchanged when `hub_url` fails to parse: silently passing an
+/// unparseable string through here is no worse than before this fix
+/// existed, and `Url::parse` failing is already surfaced elsewhere (the
+/// caller opens this exact string in the system browser regardless).
+fn normalize_bridge_host(hub_url: &str) -> String {
+    let Ok(mut parsed) = url::Url::parse(hub_url) else {
+        return hub_url.to_string();
+    };
+    let host_is_loopback = parsed.host_str().is_some_and(is_loopback_host);
+    if !host_is_loopback {
+        return hub_url.to_string();
+    }
+    match parsed.set_host(Some("localhost")) {
+        Ok(()) => parsed.to_string(),
+        Err(_) => hub_url.to_string(),
+    }
+}
+
 /// Mirrors `buildBridgeUrl`. Builds only a loopback callback, never derived
 /// from `hub_url`: session secrets come back over this URL, so it must stay
 /// on the machine that started the flow even when the hub itself is remote.
@@ -123,7 +172,8 @@ pub(crate) fn build_bridge_url(
     // webauthnBridge.ts for the same not-a-secret / privacy-note reasoning.
     challenge: Option<&str>,
 ) -> String {
-    let base = hub_url.trim_end_matches('/');
+    let normalized_hub_url = normalize_bridge_host(hub_url);
+    let base = normalized_hub_url.trim_end_matches('/');
     let callback = format!("http://127.0.0.1:{callback_port}{BRIDGE_CALLBACK_PATH}");
     let mut params = format!(
         "mode={}&callback={}&state={}",
@@ -389,14 +439,17 @@ impl PasskeyBridgeResult {
             credential_id: None,
         }
     }
-    fn ok_with_credential(credential_id: Option<String>) -> Self {
+    // pub(crate): also used by native_webauthn (114D D.3), which returns the
+    // same result shape as this browser-bridge path so the frontend handles
+    // either uniformly.
+    pub(crate) fn ok_with_credential(credential_id: Option<String>) -> Self {
         Self {
             ok: true,
             message: None,
             credential_id,
         }
     }
-    fn error(message: impl Into<String>) -> Self {
+    pub(crate) fn error(message: impl Into<String>) -> Self {
         Self {
             ok: false,
             message: Some(message.into()),
@@ -639,6 +692,104 @@ mod tests {
         assert!(url.contains("mode=login"));
         assert!(url.contains("state=abc123"));
         assert!(url.contains("callback=http%3A%2F%2F127.0.0.1%3A53123%2Fcallback"));
+    }
+
+    #[test]
+    fn build_bridge_url_rewrites_an_ip_literal_hub_url_to_localhost() {
+        // Regression: this is the exact GuiConfig-default shape
+        // (`sanitize_url`/`normalizeHubUrl` actively rewrite "localhost" to
+        // "127.0.0.1" for transport) that made every passkey login/register
+        // fail with the browser's "This is an invalid domain." -- an
+        // IP-literal origin can never satisfy any rp_id, including the
+        // realm's default "localhost". The bridge page must open at a host
+        // that actually matches, not whatever literal form hub_url happens
+        // to carry.
+        let url = build_bridge_url(
+            "http://127.0.0.1:8765",
+            BridgeMode::Login,
+            53123,
+            "abc123",
+            None,
+        );
+        assert!(
+            url.starts_with("http://localhost:8765/auth/webauthn/bridge?"),
+            "expected the bridge page host to be rewritten to localhost, got: {url}"
+        );
+        assert!(url.contains("mode=login"));
+        assert!(url.contains("state=abc123"));
+        // The loopback callback is unaffected -- it is never derived from
+        // hub_url in the first place (see this function's own doc comment).
+        assert!(url.contains("callback=http%3A%2F%2F127.0.0.1%3A53123%2Fcallback"));
+    }
+
+    #[test]
+    fn build_bridge_url_leaves_an_already_localhost_hub_url_unchanged() {
+        let url = build_bridge_url("http://localhost:8765", BridgeMode::Register, 1, "s", None);
+        assert!(url.starts_with("http://localhost:8765/auth/webauthn/bridge?"));
+    }
+
+    #[test]
+    fn build_bridge_url_rewrites_a_dot_localhost_subdomain_too() {
+        // Mirrors native_webauthn's own widened loopback definition: any
+        // `.localhost` subdomain (e.g. the Tauri webview's own origin form)
+        // must still land on the realm's canonical "localhost" rp_id, not
+        // be left as a subdomain the realm never registered.
+        let url = build_bridge_url(
+            "http://tauri.localhost:8765",
+            BridgeMode::Login,
+            1,
+            "s",
+            None,
+        );
+        assert!(url.starts_with("http://localhost:8765/auth/webauthn/bridge?"));
+    }
+
+    #[test]
+    fn build_bridge_url_leaves_a_remote_non_loopback_hub_url_unchanged() {
+        // A remote hub's rp_id is whatever that realm configured -- this
+        // function has no basis to override it, unlike the loopback case
+        // where the realm's default is known.
+        let url = build_bridge_url(
+            "https://fabric.example:8765",
+            BridgeMode::Login,
+            1,
+            "s",
+            None,
+        );
+        assert!(url.starts_with("https://fabric.example:8765/auth/webauthn/bridge?"));
+    }
+
+    #[test]
+    fn normalize_bridge_host_rewrites_127_0_0_1_preserving_scheme_and_port() {
+        assert_eq!(
+            normalize_bridge_host("http://127.0.0.1:8765"),
+            "http://localhost:8765/"
+        );
+    }
+
+    #[test]
+    fn normalize_bridge_host_leaves_other_127_x_literals_unchanged() {
+        // Deliberately narrower than `fabric_hub`'s own `callback_is_loopback`
+        // (which accepts the whole 127.0.0.0/8 range for the *reply*
+        // channel): this mirrors `native_webauthn::is_loopback_host`'s exact
+        // definition instead, since `127.0.0.1` -- not the wider range -- is
+        // the one literal `sanitize_url`/`normalizeHubUrl` actually produce.
+        let input = "http://127.5.6.7:9";
+        assert_eq!(normalize_bridge_host(input), input);
+    }
+
+    #[test]
+    fn normalize_bridge_host_leaves_a_lan_address_unchanged() {
+        // A LAN-reachable hub is neither loopback nor necessarily configured
+        // with rp_id "localhost" -- this function must not guess.
+        let input = "http://192.168.1.50:8765";
+        assert_eq!(normalize_bridge_host(input), input);
+    }
+
+    #[test]
+    fn normalize_bridge_host_leaves_an_unparseable_string_unchanged() {
+        let input = "not a url";
+        assert_eq!(normalize_bridge_host(input), input);
     }
 
     #[test]

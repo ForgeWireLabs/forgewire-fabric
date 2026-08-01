@@ -1071,6 +1071,7 @@ pub struct IntentPayload {
 /// `{"allowed": bool, "needs_approval": bool, "reasons": [...]}`.
 pub async fn evaluate_intent(
     State(state): State<Arc<HubState>>,
+    Extension(actor): Extension<AuthContext>,
     Path(task_id): Path<i64>,
     Json(payload): Json<IntentPayload>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
@@ -1105,6 +1106,7 @@ pub async fn evaluate_intent(
             "command": payload.command,
             "allowed": decision.allowed,
             "reasons": decision.reasons,
+            "actor": attribution(&actor),
         }),
     )
     .await;

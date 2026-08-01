@@ -2,16 +2,17 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use axum::Json;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use zeroize::Zeroize;
 
+use crate::auth::AuthContext;
 use crate::error::ApiError;
 use crate::state::HubState;
-use crate::utils::{audit_append, utc_now};
+use crate::utils::{attribution, audit_append, utc_now};
 
 owned_router! {
     pub fn router, ROUTES {
@@ -31,6 +32,7 @@ pub struct SecretPayload {
 
 pub async fn put_or_rotate_secret(
     State(state): State<Arc<HubState>>,
+    Extension(actor): Extension<AuthContext>,
     Json(mut payload): Json<SecretPayload>,
 ) -> Result<Json<Value>, ApiError> {
     let now = utc_now();
@@ -63,7 +65,7 @@ pub async fn put_or_rotate_secret(
         &state.secrets,
         "secret_rotated",
         None,
-        &json!({"name": payload.name, "version": meta.version, "rotated": existed}),
+        &json!({"name": payload.name, "version": meta.version, "rotated": existed, "actor": attribution(&actor)}),
     )
     .await;
 
@@ -87,6 +89,7 @@ pub async fn list_secrets(
 
 pub async fn delete_secret(
     State(state): State<Arc<HubState>>,
+    Extension(actor): Extension<AuthContext>,
     Path(name): Path<String>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
     let deleted = state
@@ -102,7 +105,7 @@ pub async fn delete_secret(
         &state.secrets,
         "secret_deleted",
         None,
-        &json!({"name": name}),
+        &json!({"name": name, "actor": attribution(&actor)}),
     )
     .await;
     Ok(Json(json!({"deleted": true, "name": name})))

@@ -38,6 +38,7 @@ export const TYPED_AUTH_ERROR_CODES = [
   "RolePolicyViolation",
   "ChallengeInvalid",
   "CredentialReplaySuspected",
+  "RealmAlreadyEstablished",
 ] as const;
 
 export type TypedAuthErrorCode = (typeof TYPED_AUTH_ERROR_CODES)[number];

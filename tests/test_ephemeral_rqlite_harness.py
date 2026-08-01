@@ -46,6 +46,12 @@ HUMAN_TABLES = (
     # Ninth human_* table (114C.3, 114c-3-negative-auth): login-attempt
     # records backing the rolling-window throttle. Same rule, same commit.
     "human_login_attempts",
+    # Tenth identity table (114D D.1): the realm's founding-identity singleton.
+    # Not a `human_*` table (realm-scoped, not account-scoped), but it is
+    # durable identity state created by the same `init_human_accounts_schema`
+    # call, so it belongs under the same "must not leak to the live cluster"
+    # guard. Added here in the commit that introduced it, per the name-lock rule.
+    "realm_identity",
 )
 
 

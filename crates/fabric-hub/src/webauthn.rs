@@ -1,8 +1,10 @@
-//! WebAuthn relying-party construction from settings (114C.6 Slice 1). The
-//! only module in this crate that touches `webauthn_rs` directly --
-//! `fabric-accounts` stays free of it (see that crate's `webauthn` module
-//! doc comment: "no crypto verification" is this codebase's crate-boundary
-//! rule, and running a WebAuthn ceremony is squarely crypto verification).
+//! WebAuthn relying-party construction from settings (114C.6 Slice 1), and
+//! from the realm's founding identity once one exists (114D D.1 --
+//! [`build_from_realm_or_settings`]/[`diagnose_realm_or_settings`]). The only
+//! module in this crate that touches `webauthn_rs` directly -- `fabric-accounts`
+//! stays free of it (see that crate's `webauthn` module doc comment: "no
+//! crypto verification" is this codebase's crate-boundary rule, and running a
+//! WebAuthn ceremony is squarely crypto verification).
 
 use std::sync::Arc;
 
@@ -38,33 +40,21 @@ fn origin_is_secure_context(origin: &Url) -> bool {
     }
 }
 
-/// Build the hub's `Webauthn` ceremony instance from the effective settings
-/// document's `auth.passkeys` block, or `None` if disabled, unconfigured, or
-/// every configured origin fails the secure-context check. Never fails hub
-/// startup on a misconfiguration -- an operator error here degrades to
-/// passkey routes returning `AccountPolicyViolation`, not a crashed hub
-/// (matches the plan's "hub health remains healthy when only an account
-/// resource is restricted").
-pub fn build_from_settings(effective: &serde_json::Value) -> Option<Arc<Webauthn>> {
-    let passkeys = effective.pointer("/auth/passkeys")?;
-    if !passkeys.get("enabled")?.as_bool().unwrap_or(false) {
-        return None;
-    }
-    let rp_id = passkeys.get("rp_id")?.as_str()?;
+/// Shared instance-construction tail: given a (possibly empty) `rp_id`, a
+/// display name, and a set of candidate origin strings, filters origins to
+/// the secure-context set and builds the `Webauthn` instance. Both entry
+/// points -- legacy per-node `auth.passkeys` settings and the realm identity
+/// (114D D.1) -- fan into this so they cannot silently diverge in how origins
+/// are filtered or how the builder is configured.
+fn build_instance<'a>(
+    rp_id: &str,
+    rp_name: &str,
+    raw_origins: impl Iterator<Item = &'a str>,
+) -> Option<Arc<Webauthn>> {
     if rp_id.is_empty() {
         return None;
     }
-    let rp_name = passkeys
-        .get("rp_name")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("ForgeWire Fabric");
-    let origins: Vec<Url> = passkeys
-        .get("allowed_origins")
-        .and_then(|v| v.as_array())
-        .into_iter()
-        .flatten()
-        .filter_map(|v| v.as_str())
+    let origins: Vec<Url> = raw_origins
         .filter_map(|s| Url::parse(s).ok())
         .filter(origin_is_secure_context)
         .collect();
@@ -77,6 +67,72 @@ pub fn build_from_settings(effective: &serde_json::Value) -> Option<Arc<Webauthn
         builder = builder.append_allowed_origin(origin);
     }
     builder.build().ok().map(Arc::new)
+}
+
+/// Build the hub's `Webauthn` ceremony instance from the effective settings
+/// document's `auth.passkeys` block, or `None` if disabled, unconfigured, or
+/// every configured origin fails the secure-context check. Never fails hub
+/// startup on a misconfiguration -- an operator error here degrades to
+/// passkey routes returning `AccountPolicyViolation`, not a crashed hub
+/// (matches the plan's "hub health remains healthy when only an account
+/// resource is restricted").
+///
+/// Superseded by [`build_from_realm_or_settings`] once a realm identity
+/// exists (114D D.1) -- this function remains the pre-114D / no-realm-yet
+/// fallback path, and is still exercised directly by every test below.
+pub fn build_from_settings(effective: &serde_json::Value) -> Option<Arc<Webauthn>> {
+    let passkeys = effective.pointer("/auth/passkeys")?;
+    if !passkeys.get("enabled")?.as_bool().unwrap_or(false) {
+        return None;
+    }
+    let rp_id = passkeys.get("rp_id")?.as_str()?;
+    let rp_name = passkeys
+        .get("rp_name")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("ForgeWire Fabric");
+    let origins = passkeys
+        .get("allowed_origins")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str());
+    build_instance(rp_id, rp_name, origins)
+}
+
+/// Build the hub's `Webauthn` ceremony instance from the realm's founding
+/// identity (114D D.1): `realm.rp_id` + `realm.origins`, with `realm.name` as
+/// the display name. This is the replicated source every node reads, which is
+/// what closes the per-node relying-party trap (114D sec 5) -- a passkey
+/// enrolled against one node's origin verifies on every other node, because
+/// every node builds this instance from the *same* record rather than its own
+/// local settings document.
+fn build_from_realm(realm: &fabric_accounts::domain::RealmIdentity) -> Option<Arc<Webauthn>> {
+    let rp_name = if realm.name.is_empty() {
+        "ForgeWire Fabric"
+    } else {
+        realm.name.as_str()
+    };
+    build_instance(
+        &realm.rp_id,
+        rp_name,
+        realm.origins.iter().map(String::as_str),
+    )
+}
+
+/// The hub-startup entry point (114D D.1): prefer the realm's founding
+/// identity when one has been established; fall back to legacy per-node
+/// `auth.passkeys` settings for a pre-114D deployment, or a node that has not
+/// yet run genesis. Once a realm exists, every node's verifier is built from
+/// this same replicated record -- see [`build_from_realm`].
+pub fn build_from_realm_or_settings(
+    realm: Option<&fabric_accounts::domain::RealmIdentity>,
+    effective: &serde_json::Value,
+) -> Option<Arc<Webauthn>> {
+    match realm {
+        Some(realm) => build_from_realm(realm),
+        None => build_from_settings(effective),
+    }
 }
 
 /// True if `host` is `rp_id` itself or a subdomain of it, on a label
@@ -113,6 +169,71 @@ pub struct WebauthnDoctorReport {
     pub rp_matched_origins: Vec<String>,
     pub ready: bool,
     pub problems: Vec<String>,
+}
+
+/// Shared origin-analysis tail for both [`diagnose`] (settings-sourced) and
+/// [`diagnose_realm`] (realm-identity-sourced, 114D D.1): given the RP ID (if
+/// any) and the raw configured origin strings, computes the secure-context
+/// filter, per-origin RP-ID match, and their associated problem strings.
+/// Pulled out so the two diagnostic entry points cannot silently diverge in
+/// how they explain the *same* underlying `WebauthnBuilder` rules. Returns
+/// `(secure_context_origins, rp_matched_origins, problems)`.
+fn diagnose_origins(
+    rp_id: Option<&str>,
+    configured_origins: &[String],
+) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let mut problems = Vec::new();
+    let parsed_origins: Vec<Url> = configured_origins
+        .iter()
+        .filter_map(|s| Url::parse(s).ok())
+        .collect();
+    for raw in configured_origins {
+        if Url::parse(raw).is_err() {
+            problems.push(format!("{raw} is not a valid URL and will be ignored"));
+        }
+    }
+    let secure_context_origins: Vec<Url> = parsed_origins
+        .into_iter()
+        .filter(origin_is_secure_context)
+        .collect();
+    for origin in configured_origins {
+        let parses_but_is_insecure =
+            Url::parse(origin).is_ok_and(|u| !origin_is_secure_context(&u));
+        if parses_but_is_insecure {
+            problems.push(format!(
+                "{origin} is not a secure context (needs https://, or http:// on 127.0.0.1/localhost/*.localhost) and will be ignored"
+            ));
+        }
+    }
+
+    let rp_matched_origins: Vec<String> = match rp_id {
+        Some(rp_id) => secure_context_origins
+            .iter()
+            .filter(|origin| {
+                origin
+                    .host_str()
+                    .is_some_and(|host| rp_id_matches_origin_host(rp_id, host))
+            })
+            .map(std::string::ToString::to_string)
+            .collect(),
+        None => Vec::new(),
+    };
+    if let Some(rp_id) = rp_id {
+        for origin in &secure_context_origins {
+            let matched = origin
+                .host_str()
+                .is_some_and(|host| rp_id_matches_origin_host(rp_id, host));
+            if !matched {
+                problems.push(format!("{origin} does not match rp_id \"{rp_id}\" and cannot complete a ceremony there"));
+            }
+        }
+    }
+
+    let secure_context_strings = secure_context_origins
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect();
+    (secure_context_strings, rp_matched_origins, problems)
 }
 
 pub fn diagnose(effective: &serde_json::Value) -> WebauthnDoctorReport {
@@ -152,64 +273,76 @@ pub fn diagnose(effective: &serde_json::Value) -> WebauthnDoctorReport {
         problems.push("auth.passkeys.allowed_origins is empty".to_string());
     }
 
-    let parsed_origins: Vec<Url> = configured_origins
-        .iter()
-        .filter_map(|s| Url::parse(s).ok())
-        .collect();
-    for raw in &configured_origins {
-        if Url::parse(raw).is_err() {
-            problems.push(format!("{raw} is not a valid URL and will be ignored"));
-        }
-    }
-    let secure_context_origins: Vec<Url> = parsed_origins
-        .into_iter()
-        .filter(origin_is_secure_context)
-        .collect();
-    for origin in &configured_origins {
-        let parses_but_is_insecure =
-            Url::parse(origin).is_ok_and(|u| !origin_is_secure_context(&u));
-        if parses_but_is_insecure {
-            problems.push(format!(
-                "{origin} is not a secure context (needs https://, or http:// on 127.0.0.1/localhost/*.localhost) and will be ignored"
-            ));
-        }
-    }
-
-    let rp_matched_origins: Vec<String> = match &rp_id {
-        Some(rp_id) => secure_context_origins
-            .iter()
-            .filter(|origin| {
-                origin
-                    .host_str()
-                    .is_some_and(|host| rp_id_matches_origin_host(rp_id, host))
-            })
-            .map(std::string::ToString::to_string)
-            .collect(),
-        None => Vec::new(),
-    };
-    if let Some(rp_id) = &rp_id {
-        for origin in &secure_context_origins {
-            let matched = origin
-                .host_str()
-                .is_some_and(|host| rp_id_matches_origin_host(rp_id, host));
-            if !matched {
-                problems.push(format!("{origin} does not match rp_id \"{rp_id}\" and cannot complete a ceremony there"));
-            }
-        }
-    }
+    let (secure_context_origins, rp_matched_origins, origin_problems) =
+        diagnose_origins(rp_id.as_deref(), &configured_origins);
+    problems.extend(origin_problems);
 
     WebauthnDoctorReport {
         enabled,
         rp_id,
         rp_name,
         configured_origins,
-        secure_context_origins: secure_context_origins
-            .iter()
-            .map(std::string::ToString::to_string)
-            .collect(),
+        secure_context_origins,
         rp_matched_origins,
         ready: build_from_settings(effective).is_some(),
         problems,
+    }
+}
+
+/// [`diagnose`]'s realm-identity-sourced counterpart (114D D.1). A realm has
+/// no separate "enabled" toggle -- its existence *is* the enabled signal --
+/// so `enabled` is always `true` here; the interesting failure modes are an
+/// empty `rp_id`/`origins` or an origin that fails the secure-context/RP-match
+/// checks, exactly as for the settings path.
+fn diagnose_realm(realm: &fabric_accounts::domain::RealmIdentity) -> WebauthnDoctorReport {
+    let rp_id = if realm.rp_id.is_empty() {
+        None
+    } else {
+        Some(realm.rp_id.clone())
+    };
+    let rp_name = if realm.name.is_empty() {
+        "ForgeWire Fabric".to_string()
+    } else {
+        realm.name.clone()
+    };
+    let configured_origins = realm.origins.clone();
+
+    let mut problems = Vec::new();
+    if rp_id.is_none() {
+        problems.push("realm_identity.rp_id is empty".to_string());
+    }
+    if configured_origins.is_empty() {
+        problems.push("realm_identity.origins is empty".to_string());
+    }
+
+    let (secure_context_origins, rp_matched_origins, origin_problems) =
+        diagnose_origins(rp_id.as_deref(), &configured_origins);
+    problems.extend(origin_problems);
+
+    WebauthnDoctorReport {
+        enabled: true,
+        rp_id,
+        rp_name,
+        configured_origins,
+        secure_context_origins,
+        rp_matched_origins,
+        ready: build_from_realm(realm).is_some(),
+        problems,
+    }
+}
+
+/// Diagnose readiness, preferring the realm identity when established (114D
+/// D.1) -- matching [`build_from_realm_or_settings`]'s precedence exactly, so
+/// `report.ready` here can never disagree with what the hub actually built at
+/// startup. This is the function `GET /auth/webauthn/doctor` calls once the
+/// route is wired to also read the realm identity.
+pub fn diagnose_realm_or_settings(
+    realm: Option<&fabric_accounts::domain::RealmIdentity>,
+    effective: &serde_json::Value,
+) -> WebauthnDoctorReport {
+    match realm {
+        Some(realm) => diagnose_realm(realm),
+        None => diagnose(effective),
     }
 }
 
@@ -534,5 +667,145 @@ mod tests {
              options/verify) -- found {state_webauthn_reads}; a dropped read is as \
              much a regression here as an added second instance would be"
         );
+    }
+
+    // ---- 114D D.1: realm-identity-sourced construction/diagnosis ----------
+
+    fn sample_realm(
+        rp_id: &str,
+        name: &str,
+        origins: &[&str],
+    ) -> fabric_accounts::domain::RealmIdentity {
+        fabric_accounts::domain::RealmIdentity {
+            realm_id: "realm-test".to_string(),
+            name: name.to_string(),
+            rp_id: rp_id.to_string(),
+            origins: origins.iter().map(|s| (*s).to_string()).collect(),
+            created_at: "2026-07-24T12:00:00Z".to_string(),
+            genesis_node: Some("DESKTOP-228U8GL".to_string()),
+            key_alg: "ed25519".to_string(),
+        }
+    }
+
+    #[test]
+    fn build_from_realm_or_settings_builds_from_the_realm_when_one_is_established() {
+        let realm = sample_realm("localhost", "Test Realm", &["http://localhost:8765/"]);
+        // Settings deliberately configured for a DIFFERENT (also otherwise
+        // valid) rp_id -- proving the realm wins, not just that either alone
+        // would build.
+        let effective = settings(&json!({
+            "enabled": true, "rp_id": "fabric.example", "rp_name": "Settings Name",
+            "allowed_origins": ["https://fabric.example/"]
+        }));
+        assert!(build_from_realm_or_settings(Some(&realm), &effective).is_some());
+    }
+
+    #[test]
+    fn build_from_realm_or_settings_falls_back_to_settings_when_no_realm_exists() {
+        let effective = settings(&json!({
+            "enabled": true, "rp_id": "fabric.example", "rp_name": "Test",
+            "allowed_origins": ["https://fabric.example/"]
+        }));
+        assert!(build_from_realm_or_settings(None, &effective).is_some());
+    }
+
+    #[test]
+    fn build_from_realm_or_settings_prefers_realm_even_when_the_realm_itself_fails_to_build() {
+        // A realm with no usable origin must NOT silently fall back to
+        // settings -- that would mean a broken realm quietly serving ceremonies
+        // from a per-node config again, defeating the whole point of 114D D.1.
+        let broken_realm = sample_realm("localhost", "Test Realm", &[]);
+        let effective = settings(&json!({
+            "enabled": true, "rp_id": "fabric.example", "rp_name": "Test",
+            "allowed_origins": ["https://fabric.example/"]
+        }));
+        assert!(build_from_realm_or_settings(Some(&broken_realm), &effective).is_none());
+    }
+
+    #[test]
+    fn build_from_realm_uses_the_realm_name_as_rp_name_and_falls_back_when_empty() {
+        // Indirect: rp_name isn't observable from build_from_realm's Option<Arc<Webauthn>>
+        // return alone, so this is exercised through diagnose_realm below instead,
+        // which surfaces rp_name in its report. Kept here as a named anchor test
+        // for the "falls back when empty" behavior specifically.
+        let report = diagnose_realm(&sample_realm("localhost", "", &["http://localhost:8765/"]));
+        assert_eq!(report.rp_name, "ForgeWire Fabric");
+        let report_named = diagnose_realm(&sample_realm(
+            "localhost",
+            "My Realm",
+            &["http://localhost:8765/"],
+        ));
+        assert_eq!(report_named.rp_name, "My Realm");
+    }
+
+    #[test]
+    fn diagnose_realm_reports_no_problems_for_a_healthy_realm() {
+        let report = diagnose_realm(&sample_realm(
+            "localhost",
+            "Test Realm",
+            &["http://localhost:8765/"],
+        ));
+        assert!(report.enabled);
+        assert!(report.ready);
+        assert!(
+            report.problems.is_empty(),
+            "problems: {:?}",
+            report.problems
+        );
+        assert_eq!(report.rp_matched_origins, vec!["http://localhost:8765/"]);
+    }
+
+    #[test]
+    fn diagnose_realm_names_an_empty_rp_id_and_an_empty_origin_set_separately() {
+        let empty_rp_id =
+            diagnose_realm(&sample_realm("", "Test Realm", &["http://localhost:8765/"]));
+        assert!(!empty_rp_id.ready);
+        assert!(empty_rp_id
+            .problems
+            .iter()
+            .any(|p| p.contains("rp_id is empty")));
+
+        let empty_origins = diagnose_realm(&sample_realm("localhost", "Test Realm", &[]));
+        assert!(!empty_origins.ready);
+        assert!(empty_origins
+            .problems
+            .iter()
+            .any(|p| p.contains("origins is empty")));
+    }
+
+    #[test]
+    fn diagnose_realm_or_settings_ready_always_agrees_with_build_from_realm_or_settings() {
+        // Mirrors diagnose_ready_always_agrees_with_build_from_settings, but
+        // across the realm-preferring dispatcher -- the invariant the doctor
+        // route depends on (114D D.1: "ready must never disagree with what
+        // actually got built") must hold for both the realm and no-realm
+        // branches, not just the settings-only path.
+        let effective = settings(&json!({
+            "enabled": true, "rp_id": "fabric.example", "rp_name": "Test",
+            "allowed_origins": ["https://fabric.example/"]
+        }));
+        let cases: Vec<Option<fabric_accounts::domain::RealmIdentity>> = vec![
+            None,
+            Some(sample_realm(
+                "localhost",
+                "Test Realm",
+                &["http://localhost:8765/"],
+            )),
+            Some(sample_realm("", "Test Realm", &["http://localhost:8765/"])),
+            Some(sample_realm("localhost", "Test Realm", &[])),
+            Some(sample_realm(
+                "localhost",
+                "Test Realm",
+                &["http://192.168.1.50:8765/"],
+            )),
+        ];
+        for realm in cases {
+            let report = diagnose_realm_or_settings(realm.as_ref(), &effective);
+            assert_eq!(
+                report.ready,
+                build_from_realm_or_settings(realm.as_ref(), &effective).is_some(),
+                "diagnose_realm_or_settings disagreed with build_from_realm_or_settings for {realm:?}"
+            );
+        }
     }
 }

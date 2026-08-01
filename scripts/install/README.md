@@ -48,6 +48,30 @@ The token is the sole cluster-admission gate — treat it like an SSH key.
 (Invoke-RestMethod http://127.0.0.1:4001/status).store.nodes.id
 ```
 
+## Operator-owned services and files
+
+Consumer repositories can register declarative service overlays without
+patching a standalone Fabric clone. Apply a manifest once with:
+
+```powershell
+pwsh -File scripts\install\install-operator-overlay.ps1 `
+    -ManifestPath C:\Projects\my-consumer\deploy\forgewire\overlay.json `
+    -FabricRoot C:\Projects\forgewire-fabric -Build -Register -StartServices
+```
+
+Registration copies the manifest and a known-good artifact cache to
+`C:\ProgramData\forgewire-operator`. Identity migrations can move existing
+runner keys into the same ACL-protected root. Because this root is separate
+from `C:\ProgramData\forgewire`, normal uninstall/reinstall operations do not
+erase it, and `install-fabric.ps1` automatically replays registered overlays.
+Manifests must reference token/key files; literal secret values are rejected.
+
+Before advancing a deployed standalone clone, run
+`scripts\dr\sync_deployment_clone.ps1`. Dirty changes are committed to a local
+`operator/<host>/<timestamp>` branch and exported as a git bundle outside the
+clone before `main` is fast-forwarded. The script never hard-resets a clone and
+never pushes operator branches to the public mirror.
+
 Two nodes give replication + read-failover; three give automatic write-failover
 (Raft needs a quorum majority).
 
@@ -61,6 +85,7 @@ pwsh -File uninstall-fabric.ps1 -KeepData          # remove services, keep data
 Removes services, scheduled tasks, `C:\ProgramData\forgewire`, `C:\rqlite`, and
 the per-user token at `%USERPROFILE%\.forgewire\hub.token`. Without `-NoBackup`
 it first backs up identities, the rqlite snapshot, and config.
+Registered operator state under `C:\ProgramData\forgewire-operator` is retained.
 
 ## Known gotchas (fixed in the scripts; documented here so they don't recur)
 

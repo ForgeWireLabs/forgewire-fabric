@@ -52,6 +52,57 @@ describe("buildBridgeUrl", () => {
     expect(url.searchParams.get("callback")).toBe("http://127.0.0.1:4321/callback");
   });
 
+  it("rewrites an IP-literal loopback hub url to localhost", () => {
+    // Regression: this is the exact shape the VS Code extension's
+    // auto-discovered local hub uses (`http://127.0.0.1:<port>` in
+    // hubClient.ts), against a realm's default rp_id of "localhost". An
+    // IP-literal origin can never satisfy any rp_id, so the bridge page must
+    // open at a host that actually matches -- mirrors the identical fix
+    // already landed for Desktop's `build_bridge_url` (webauthn_bridge.rs).
+    const url = buildBridgeUrl({
+      hubUrl: "http://127.0.0.1:8765",
+      mode: "login",
+      callbackPort: 53123,
+      state: STATE
+    });
+    expect(url.startsWith("http://localhost:8765/auth/webauthn/bridge?")).toBe(true);
+    // The loopback callback is unaffected -- it is never derived from hubUrl.
+    expect(url).toContain("callback=http%3A%2F%2F127.0.0.1%3A53123%2Fcallback");
+  });
+
+  it("leaves an already-localhost hub url unchanged", () => {
+    const url = buildBridgeUrl({
+      hubUrl: "http://localhost:8765",
+      mode: "register",
+      callbackPort: 1,
+      state: STATE
+    });
+    expect(url.startsWith("http://localhost:8765/auth/webauthn/bridge?")).toBe(true);
+  });
+
+  it("rewrites a .localhost subdomain to localhost too", () => {
+    const url = buildBridgeUrl({
+      hubUrl: "http://tauri.localhost:8765",
+      mode: "login",
+      callbackPort: 1,
+      state: STATE
+    });
+    expect(url.startsWith("http://localhost:8765/auth/webauthn/bridge?")).toBe(true);
+  });
+
+  it("leaves a remote non-loopback hub url unchanged", () => {
+    // A remote hub's rp_id is whatever that realm configured -- this has no
+    // basis to override it, unlike the loopback case where the realm's
+    // default is known.
+    const url = buildBridgeUrl({
+      hubUrl: "https://fabric.example:8765",
+      mode: "login",
+      callbackPort: 1,
+      state: STATE
+    });
+    expect(url.startsWith("https://fabric.example:8765/auth/webauthn/bridge?")).toBe(true);
+  });
+
   it("carries the step-up challenge only when supplied, and never a secret", () => {
     // 114C.7 Slice 4c-3: step-up passes the public WebAuthn request options in
     // the query; login/register never do.

@@ -82,6 +82,15 @@ fn admin_only_routes_reject_every_machine_role() {
         ("POST", "/accounts/acct-1/delete"),
         ("POST", "/accounts/acct-1/tombstone"),
         ("POST", "/accounts/import"),
+        // 2026-07-28 security fix: role-token lifecycle mutation used to be
+        // reviewer-reachable, letting a bare reviewer-role token mint itself
+        // a fresh dispatcher/runner/approver/reviewer token. Now admin-only,
+        // same as every other row in this list -- see auth.rs's
+        // required_roles comment on the /admin/role-tokens branch.
+        ("POST", "/admin/role-tokens"),
+        ("POST", "/admin/role-tokens/split"),
+        ("POST", "/admin/role-tokens/migrate"),
+        ("DELETE", "/admin/role-tokens/rt-1"),
     ];
     for (method, path) in admin_only_routes {
         let roles = required_roles(method, path);

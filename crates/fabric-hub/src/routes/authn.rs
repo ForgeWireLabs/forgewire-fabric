@@ -61,15 +61,15 @@ const CEREMONY_CHALLENGE_TTL_SECS: i64 = 300;
 /// is absent -- matches `config/settings.defaults.json`'s `auth.sessions.
 /// idle_timeout_minutes`. A malformed settings overlay must never make login
 /// itself fail; it degrades to this compiled-in value instead.
-const DEFAULT_IDLE_TIMEOUT_MINUTES: i64 = 60;
+pub(crate) const DEFAULT_IDLE_TIMEOUT_MINUTES: i64 = 60;
 /// Fallback for `auth.sessions.absolute_timeout_hours`; see
 /// [`DEFAULT_IDLE_TIMEOUT_MINUTES`]'s doc comment for why this is a fallback
 /// rather than the only value.
-const DEFAULT_ABSOLUTE_TIMEOUT_HOURS: i64 = 24;
+pub(crate) const DEFAULT_ABSOLUTE_TIMEOUT_HOURS: i64 = 24;
 /// Fallback for `auth.bootstrap.local_only`.
-const DEFAULT_BOOTSTRAP_LOCAL_ONLY: bool = true;
+pub(crate) const DEFAULT_BOOTSTRAP_LOCAL_ONLY: bool = true;
 
-const BOOTSTRAP_SECRET_HEADER: &str = "x-forgewire-bootstrap-secret";
+pub(crate) const BOOTSTRAP_SECRET_HEADER: &str = "x-forgewire-bootstrap-secret";
 
 /// Resolve the live `auth.*` settings overlay (defaults merged with the
 /// hub's rqlite override document, per `fabric-settings`'s three-tier
@@ -77,7 +77,10 @@ const BOOTSTRAP_SECRET_HEADER: &str = "x-forgewire-bootstrap-secret";
 /// back to an empty object, which `setting_i64`/`setting_bool` below then
 /// resolve to their own hardcoded defaults -- a settings-store hiccup must
 /// degrade authentication to compiled-in defaults, never fail it outright.
-async fn effective_auth_settings(state: &HubState) -> Value {
+/// `pub(crate)`: reused by `routes::setup` (114D D.2), which "sits above the
+/// existing bootstrap primitive" (114D sec 15.2) and shares its settings
+/// resolution rather than re-implementing it.
+pub(crate) async fn effective_auth_settings(state: &HubState) -> Value {
     let Ok(document) = state.store.get_settings_document().await else {
         return json!({});
     };
@@ -86,14 +89,14 @@ async fn effective_auth_settings(state: &HubState) -> Value {
         .unwrap_or_else(|_| json!({}))
 }
 
-fn setting_i64(effective: &Value, pointer: &str, default: i64) -> i64 {
+pub(crate) fn setting_i64(effective: &Value, pointer: &str, default: i64) -> i64 {
     effective
         .pointer(pointer)
         .and_then(Value::as_i64)
         .unwrap_or(default)
 }
 
-fn setting_bool(effective: &Value, pointer: &str, default: bool) -> bool {
+pub(crate) fn setting_bool(effective: &Value, pointer: &str, default: bool) -> bool {
     effective
         .pointer(pointer)
         .and_then(Value::as_bool)
@@ -124,7 +127,7 @@ owned_router! {
     }
 }
 
-fn parse_client_kind(raw: Option<&str>) -> ClientKind {
+pub(crate) fn parse_client_kind(raw: Option<&str>) -> ClientKind {
     match raw {
         Some("vsix") => ClientKind::Vsix,
         Some("desktop") => ClientKind::Desktop,
@@ -144,8 +147,12 @@ fn parse_client_kind(raw: Option<&str>) -> ClientKind {
 /// explicit, documented operator risk-acceptance, not a default. Pure and
 /// free of any store/network dependency specifically so it is unit-testable
 /// without constructing a `HubState` or driving a real request through
-/// axum's connect-info extraction.
-fn bootstrap_source_allowed(
+/// axum's connect-info extraction. `pub(crate)`: `routes::setup` (114D D.2)
+/// reuses this exact check for `/setup/complete` -- genesis setup is "the
+/// pre-gate phase," authorized by the same loopback + `bootstrap_open`
+/// primitive `/auth/bootstrap` already uses, not a second implementation of
+/// it (114D sec 6).
+pub(crate) fn bootstrap_source_allowed(
     addr: SocketAddr,
     local_only: bool,
     presented: Option<&str>,
@@ -376,11 +383,12 @@ pub async fn login(
 
 /// 114E: bind a client-supplied session public key to a freshly-issued
 /// session so it authenticates by request signature thereafter. Shared by
-/// password login and passkey login. A bind failure on a fresh session
-/// (which should never happen -- the key is NULL and the session is not
-/// revoked) is surfaced as an error rather than silently downgrading the
-/// client to a bearer-only session it did not ask for.
-async fn bind_session_key_if_present(
+/// password login, passkey login, and (114D D.2) genesis's own post-seal
+/// sign-in. A bind failure on a fresh session (which should never happen --
+/// the key is NULL and the session is not revoked) is surfaced as an error
+/// rather than silently downgrading the client to a bearer-only session it
+/// did not ask for.
+pub(crate) async fn bind_session_key_if_present(
     state: &HubState,
     outcome: &fabric_accounts::repository::LoginOutcome,
     session_public_key: Option<&str>,
@@ -1216,7 +1224,11 @@ pub async fn step_up_verify(
                 &state.secrets,
                 "account.passkey_replay_suspected",
                 None,
-                &json!({ "account_id": account_id, "credential_id": credential.credential_id }),
+                &json!({
+                    "account_id": account_id,
+                    "credential_id": credential.credential_id,
+                    "actor": attribution(&actor),
+                }),
             )
             .await;
         }

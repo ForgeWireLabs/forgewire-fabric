@@ -37,7 +37,7 @@ owned_router! {
 
 use crate::auth::{normalize_roles, AuthContext};
 use crate::state::HubState;
-use crate::utils::{audit_append, utc_now};
+use crate::utils::{attribution, audit_append, utc_now};
 
 #[derive(Debug, Deserialize)]
 pub struct IssueRoleTokenRequest {
@@ -107,6 +107,7 @@ pub async fn issue_role_token(
             "roles": row.roles,
             "created_by": actor.subject,
             "migrated": false,
+            "actor": attribution(&actor),
         }),
     )
     .await
@@ -178,6 +179,7 @@ pub async fn migrate_role_token(
             "roles": row.roles,
             "created_by": actor.subject,
             "migrated": true,
+            "actor": attribution(&actor),
         }),
     )
     .await
@@ -251,6 +253,7 @@ pub async fn split_legacy_role_tokens(
             "tokens": audit_tokens,
             "created_by": actor.subject,
             "legacy_retirement": "pending explicit operator setting",
+            "actor": attribution(&actor),
         }),
     )
     .await
@@ -323,6 +326,7 @@ pub async fn revoke_role_token(
             "label": row.label,
             "roles": row.roles,
             "revoked_by": actor.subject,
+            "actor": attribution(&actor),
         }),
     )
     .await

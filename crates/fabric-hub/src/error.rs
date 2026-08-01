@@ -66,6 +66,7 @@ impl ApiError {
             AccountsError::RolePolicyViolation => StatusCode::FORBIDDEN,
             AccountsError::ChallengeInvalid => StatusCode::BAD_REQUEST,
             AccountsError::CredentialReplaySuspected => StatusCode::FORBIDDEN,
+            AccountsError::RealmAlreadyEstablished => StatusCode::CONFLICT,
         };
         Self {
             status,

@@ -16,11 +16,35 @@ use async_trait::async_trait;
 
 use crate::domain::{
     Account, AccountId, AccountStatus, ClientKind, Credential, CredentialId, Membership,
-    MembershipId, RealmId, Role, Session, SessionId,
+    MembershipId, RealmId, RealmIdentity, Role, Session, SessionId,
 };
 use crate::dto::LoginAttemptDto;
 use crate::error::AccountsResult;
 use crate::secret::SecretString;
+
+/// The realm's founding-identity authority (114D D.1). Read on every hub
+/// startup to configure the WebAuthn verifier from the replicated realm
+/// record (114D sec 15.1); written exactly once, at genesis (114D D.2).
+#[async_trait]
+pub trait RealmRepository: Send + Sync {
+    /// The established realm identity, or `None` if no realm exists yet
+    /// (a fresh, pre-genesis cluster). Drives the `¬realm_established` branch
+    /// of the setup FSM (114D sec 14.1) and lets the WebAuthn builder fall
+    /// back to legacy `auth.passkeys` settings on a pre-114D hub.
+    async fn get_realm_identity(&self) -> AccountsResult<Option<RealmIdentity>>;
+
+    /// Establish the realm's founding identity as a compare-and-set singleton:
+    /// the insert is guarded so exactly one caller wins under concurrent
+    /// genesis, and every loser gets [`crate::error::AccountsError::RealmAlreadyEstablished`]
+    /// with no partial state (114D sec 15.1). Returns the stored record on
+    /// success. `origins` is persisted verbatim (order preserved); the store
+    /// is not responsible for secure-context filtering -- that stays in the
+    /// hub's WebAuthn builder where it already lives.
+    async fn establish_realm_identity(
+        &self,
+        realm: &RealmIdentity,
+    ) -> AccountsResult<RealmIdentity>;
+}
 
 #[async_trait]
 pub trait AccountRepository: Send + Sync {
@@ -166,6 +190,20 @@ pub struct LoginOutcome {
     pub refresh_secret: SecretString,
 }
 
+/// 114D D.2: the result of a successful genesis seal -- the newly
+/// established realm identity, the minted Master account, and its plaintext
+/// recovery codes. Recovery codes follow the same "only this call's return
+/// value ever sees the plaintext" contract as
+/// [`AccountOrchestration::generate_recovery_codes`]: only their hash is
+/// persisted, so a caller that discards this value has permanently lost the
+/// ability to ever redisplay them.
+#[derive(Debug)]
+pub struct GenesisOutcome {
+    pub realm: RealmIdentity,
+    pub account: Account,
+    pub recovery_codes: Vec<SecretString>,
+}
+
 /// Cross-cutting operations spanning more than one of the four repositories
 /// above, or requiring atomicity primitives (a real multi-statement
 /// transaction) those traits do not expose generically. A separate trait
@@ -192,6 +230,58 @@ pub trait AccountOrchestration: Send + Sync {
         password_plaintext: &str,
         now: &str,
     ) -> AccountsResult<Account>;
+
+    /// 114D D.2: atomically establish the realm's founding identity (114D
+    /// sec 15.1) AND the Master's account, password credential, admin
+    /// membership, and durable (non-expiring) recovery codes -- the genesis
+    /// seal, one SQL transaction. Loopback + `bootstrap_open` +
+    /// `¬realm_established` gating is the caller's job (`/setup/complete`);
+    /// this method's own guard is the CAS: the `realm_identity` singleton
+    /// insert and the `human_bootstrap_state` singleton insert are both in
+    /// the *same* transaction as the account rows, so a losing concurrent
+    /// caller -- either singleton already taken -- gets
+    /// [`crate::error::AccountsError::RealmAlreadyEstablished`] or
+    /// [`crate::error::AccountsError::BootstrapClosed`] respectively, with
+    /// **no** partial state either way: the whole batch commits or none of
+    /// it does.
+    ///
+    /// Genesis recovery codes are durable break-glass material
+    /// (`expires_at` NULL, never expires) -- unlike the 72-hour
+    /// admin-assisted codes
+    /// [`generate_recovery_codes`](AccountOrchestration::generate_recovery_codes)
+    /// mints, the Master is not expected to redeem these within days, only
+    /// if their credential is ever lost.
+    ///
+    /// `account_realm_id` is deliberately **not** the same value as the
+    /// realm identity's own freshly-generated `realm_id` (which this method
+    /// still mints internally for the `realm_identity` row). Every
+    /// pre-existing 114C route (`/auth/login`, passkey login/registration,
+    /// every admin account route) is hardcoded to `crate::auth`'s
+    /// `DEFAULT_REALM_ID` when scoping `human_accounts`/`human_memberships`
+    /// -- a fresh per-realm UUID here would mint an account those routes can
+    /// never find (a real bug caught live: genesis's own embedded post-seal
+    /// session worked, because it used the matching realm_id internally, but
+    /// every *subsequent* `/auth/login` failed with `InvalidCredentials`,
+    /// indistinguishable from a wrong password, since account lookup is
+    /// realm-scoped and non-enumerating). The caller passes
+    /// `DEFAULT_REALM_ID` here until a future increment threads a dynamic
+    /// realm_id through the rest of 114C's surface -- a materially larger
+    /// change than this fix, and out of scope for it.
+    #[allow(clippy::too_many_arguments)]
+    async fn complete_genesis(
+        &self,
+        realm_name: &str,
+        rp_id: &str,
+        origins: &[String],
+        key_alg: &str,
+        genesis_node: Option<&str>,
+        account_realm_id: &str,
+        username: &str,
+        display_name: &str,
+        password_plaintext: &str,
+        recovery_code_count: i64,
+        now: &str,
+    ) -> AccountsResult<GenesisOutcome>;
 
     /// Verify a username/password and, on success, issue a new session.
     /// `client_fingerprint`, when supplied, throttles independently of the

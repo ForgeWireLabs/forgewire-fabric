@@ -11,7 +11,7 @@
     "",
     "Source of truth: crates/fabric-hub/src/auth.rs (required_roles)."
   ],
-  "captured": "2026-07-18",
+  "captured": "2026-07-28",
   "source": "crates/fabric-hub/src/auth.rs",
   "work_item": "114",
 
@@ -51,7 +51,13 @@
     { "method": "GET",    "path": "/state/snapshot",                    "roles": ["admin", "reviewer"] },
     { "method": "POST",   "path": "/state/import",                      "roles": ["admin"] },
     { "method": "GET",    "path": "/settings/auth.passkeys",            "roles": ["observer", "reviewer", "admin"] },
-    { "method": "PUT",    "path": "/settings/auth.passkeys",            "roles": ["admin", "reviewer"] }
+    { "method": "PUT",    "path": "/settings/auth.passkeys",            "roles": ["admin", "reviewer"] },
+
+    { "method": "GET",    "path": "/admin/role-tokens",                 "roles": ["admin", "reviewer"] },
+    { "method": "POST",   "path": "/admin/role-tokens",                 "roles": ["admin"] },
+    { "method": "POST",   "path": "/admin/role-tokens/split",           "roles": ["admin"] },
+    { "method": "POST",   "path": "/admin/role-tokens/migrate",         "roles": ["admin"] },
+    { "method": "DELETE", "path": "/admin/role-tokens/rt-1",            "roles": ["admin"] }
   ],
 
   "_route_comment": [
@@ -81,6 +87,15 @@
     "and writes to the auth.* subtree (authentication policy -- admin",
     "territory) admit admin/reviewer, resolving the first-admin passkey-setup",
     "deadlock (114D groundwork). Every other settings key stays reviewer-only",
-    "(PUT /settings/thing above pins that default)."
+    "(PUT /settings/thing above pins that default).",
+    "",
+    "/admin/role-tokens* (2026-07-28 security fix): role-token *lifecycle*",
+    "mutation (issue/split/migrate/revoke) now requires `admin`, not merely",
+    "`reviewer` -- a bare reviewer-role token could previously mint itself a",
+    "fresh dispatcher/runner/approver/reviewer token, a privilege-escalation",
+    "path caught live during a 114C.8 drill re-run. Listing (GET) stays",
+    "reviewer-readable alongside admin, mirroring /accounts' identical",
+    "read/write split. The legacy bearer's own narrow three-path bootstrap",
+    "exception (auth.rs's is_authorized, not this route table) is untouched."
   ]
 }

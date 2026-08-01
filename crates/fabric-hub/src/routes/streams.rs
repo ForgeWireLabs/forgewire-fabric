@@ -253,6 +253,7 @@ pub async fn cancel_task(
 
 pub async fn append_progress(
     State(state): State<Arc<HubState>>,
+    Extension(actor): Extension<AuthContext>,
     Path(task_id): Path<i64>,
     Json(payload): Json<ProgressPayload>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
@@ -296,6 +297,7 @@ pub async fn append_progress(
             &json!({
                 "worker_id": payload.worker_id,
                 "details": payload.details.unwrap_or(Value::Null),
+                "actor": attribution(&actor),
             }),
         )
         .await;
